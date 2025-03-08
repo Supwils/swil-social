@@ -30,3 +30,58 @@ A full-stack web application for social networking, featuring a **React frontend
 ---
 
 ## **📂 Project Structure**  
+/Full-Stack-Web-Social
+├── client # Frontend (React, Next.js)
+└── server # Backend (Node.js, Express)
+
+---
+
+## **🔧 Installation & Setup**  
+### **1️⃣ Clone the Repository**  
+```sh
+git clone https://github.com/Supwils/Full-Stack-Web-Social.git
+cd Full-Stack-Web-Social
+```
+
+2️⃣ Install Dependencies
+Client Server Setup
+```
+cd client
+npm install
+npm start
+cd server
+npm install
+node index.js
+```
+
+💡 Usage
+Register/Login to create a user profile
+
+Create and interact with posts
+
+Follow and engage with other users
+
+Real-time updates for posts and interactions
+
+📜 Environment Variables
+Create a .env file in the server/ folder:
+
+```
+MONGO_URI=your-mongodb-uri
+JWT_SECRET=your-secret-key
+CLOUDINARY_URL=your-cloudinary-url
+```
+
+🤝 Contributing
+Contributions are welcome!
+
+Fork the repo
+
+Create a new branch: git checkout -b feature-name
+
+Commit changes: git commit -m "Added a new feature"
+
+Push: git push origin feature-name
+
+Open a pull request
+
