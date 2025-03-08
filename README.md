@@ -3,6 +3,10 @@ A full-stack web application for social networking, featuring a **React frontend
 
 ---
 
+![Screenshot 2025-03-08 at 1 41 16 AM](https://github.com/user-attachments/assets/bf579538-e095-4842-aeb7-12496f3787c1)
+
+
+
 ## **🚀 Features**  
 - User authentication and profile management  
 - Post creation, editing, and deletion  
