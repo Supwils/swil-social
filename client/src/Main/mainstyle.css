@@ -1,0 +1,750 @@
+/* .mainPage{
+    background-color: #f2f2f2;
+    height: 100%;
+    width: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+} */
+
+/* Button Base Styles */
+body {
+    justify-content: center;
+    display: block;
+}
+
+.mainPage {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    /* full viewport height */
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: var(--spacing-xl) var(--spacing-md);
+    background-color: var(--secondary-light);
+    box-sizing: border-box;
+}
+
+.dynamicButton {
+    background-color: var(--primary-color);
+    border: none;
+    /* Removes default border */
+    border-radius: var(--border-radius-md);
+    color: white;
+    /* Text color */
+    cursor: pointer;
+    /* Changes mouse pointer to hand when hovering */
+    font-size: 16px;
+    /* Text size */
+    font-weight: 600;
+    /* Font weight */
+    padding: 10px 20px;
+    /* Padding around text */
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    margin: var(--spacing-xs) var(--spacing-sm);
+    transition: all var(--transition-fast);
+    user-select: none;
+    /* Prevents text from being selectable */
+    box-shadow: var(--shadow-sm);
+}
+
+/* Hover Styles */
+.dynamicButton:hover {
+    background-color: var(--primary-dark);
+    box-shadow: var(--shadow-md);
+}
+
+.dynamicButton:active {
+    transform: scale(0.98);
+    box-shadow: var(--shadow-sm);
+}
+
+#previewImage {
+    width: 200px;
+    height: 200px;
+    border-radius: var(--border-radius-lg);
+    border: 2px solid var(--accent-color);
+    margin: var(--spacing-md);
+    object-fit: cover;
+    box-shadow: var(--shadow-sm);
+}
+
+#postContent {
+    width: 100%;
+    max-width: 400px;
+    height: 200px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid var(--text-light);
+    margin-top: var(--spacing-lg);
+    padding: var(--spacing-md);
+    resize: none;
+    font-family: 'Montserrat', sans-serif;
+    transition: border-color var(--transition-fast);
+}
+
+#postContent:focus {
+    border-color: var(--primary-color);
+    outline: none;
+}
+
+#updateHeadline {
+    width: 100%;
+    max-width: 400px;
+    height: 40px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid var(--text-light);
+    margin-top: var(--spacing-md);
+    padding: 0 var(--spacing-md);
+    font-family: 'Montserrat', sans-serif;
+    transition: border-color var(--transition-fast);
+}
+
+#updateHeadline:focus {
+    border-color: var(--primary-color);
+    outline: none;
+}
+
+#searchBar {
+    width: 100%;
+    max-width: 400px;
+    height: 40px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid var(--text-light);
+    padding: 0 var(--spacing-md);
+    font-family: 'Montserrat', sans-serif;
+    transition: border-color var(--transition-fast);
+}
+
+#searchBar:focus {
+    border-color: var(--primary-color);
+    outline: none;
+}
+
+.mainTop {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: var(--spacing-xl);
+}
+
+.mainBottom {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.imgAndContent {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: var(--secondary-light);
+    border-radius: var(--border-radius-lg);
+    padding: var(--spacing-lg);
+    box-shadow: var(--shadow-md);
+    margin: var(--spacing-md);
+    flex: 1;
+    min-width: 300px;
+}
+
+#postTitle {
+    width: 100%;
+    max-width: 400px;
+    height: 40px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid var(--text-light);
+    margin-top: var(--spacing-md);
+    padding: 0 var(--spacing-md);
+    font-family: 'Montserrat', sans-serif;
+    transition: border-color var(--transition-fast);
+}
+
+#postTitle:focus {
+    border-color: var(--primary-color);
+    outline: none;
+}
+
+.postImage {
+    max-height: 250px;
+    max-width: 250px;
+    object-fit: cover;
+    border-radius: var(--border-radius-md);
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--transition-fast);
+}
+
+.postImage:hover {
+    transform: scale(1.02);
+}
+
+.postButton {
+    display: flex;
+    justify-content: center;
+    margin-top: var(--spacing-md);
+    width: 100%;
+}
+
+.logoImage {
+    width: 150px;
+    height: 150px;
+    border-radius: var(--border-radius-lg);
+    margin: var(--spacing-md);
+    box-shadow: var(--shadow-md);
+}
+
+.mainPosts {
+    flex: 2;
+    min-width: 300px;
+}
+
+.postViewImage {
+    width: 100%;
+    max-height: 200px;
+    object-fit: cover;
+    border-radius: var(--border-radius-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.eachPosts {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--spacing-md);
+    width: 100%;
+}
+
+.post {
+    width: 300px;
+    background-color: var(--secondary-light);
+    box-shadow: var(--shadow-md);
+    border-radius: var(--border-radius-md);
+    margin: var(--spacing-md) 0;
+    padding: var(--spacing-md);
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+    overflow: hidden;
+    /* Ensures content stays within boundaries */
+}
+
+/* .postsViewer{
+    overflow-x: auto;
+} */
+
+.post:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-lg);
+}
+
+.navigationButtons {
+    display: flex;
+    justify-content: center;
+    margin-top: var(--spacing-lg);
+    gap: var(--spacing-md);
+}
+
+.postsButton {
+    text-align: center;
+    width: 150px;
+}
+
+.searchBar {
+    margin: var(--spacing-md) 0;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+}
+
+.headlinesImage {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid var(--primary-light);
+    margin: var(--spacing-sm);
+    transition: transform var(--transition-fast);
+}
+
+.headlinesImage:hover {
+    transform: scale(1.05);
+}
+
+.followHeadline {
+    width: 250px;
+    max-height: 500px;
+    overflow-y: auto;
+    margin-top: var(--spacing-md);
+    background-color: var(--secondary-light);
+    border-radius: var(--border-radius-lg);
+    padding: var(--spacing-md);
+    box-shadow: var(--shadow-md);
+}
+
+.followHeadline h2 {
+    color: var(--primary-dark);
+    margin-bottom: var(--spacing-md);
+    text-align: center;
+    font-size: 1.5rem;
+}
+
+.followHeadline h3 {
+    color: var(--text-primary);
+    margin: var(--spacing-xs) 0;
+}
+
+.followHeadline p {
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-md);
+}
+
+.footer {
+    margin-top: auto;
+    padding: var(--spacing-lg);
+    width: 100%;
+    text-align: center;
+    color: var(--text-secondary);
+    box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.mainNav {
+    background-color: var(--primary-color);
+    color: white;
+    padding: var(--spacing-md);
+    border-radius: var(--border-radius-md);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-lg);
+}
+
+.mainNav button {
+    background-color: white;
+    color: var(--primary-color);
+    border: none;
+    border-radius: var(--border-radius-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    cursor: pointer;
+    font-weight: 600;
+    transition: background-color var(--transition-fast);
+}
+
+.mainNav button:hover {
+    background-color: var(--secondary-dark);
+}
+
+.mainContent {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+}
+
+.commentsSection {
+    max-height: 200px;
+    /* Adjust the max-height as needed */
+    overflow-y: auto;
+    /* Allows scrolling within the comments section */
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-md);
+    background-color: var(--secondary-dark);
+    border-radius: var(--border-radius-md);
+}
+
+.comment {
+    padding: var(--spacing-sm);
+    margin-bottom: var(--spacing-sm);
+    border-bottom: 1px solid var(--text-light);
+}
+
+.comment:last-child {
+    border-bottom: none;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+
+    .mainTop,
+    .mainBottom {
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .imgAndContent,
+    .followHeadline {
+        width: 100%;
+        max-width: 500px;
+    }
+
+    .eachPosts {
+        justify-content: center;
+    }
+}
+
+/* Fix for long words */
+.post p,
+.post h3,
+.post div {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-all;
+    /* For extremely long strings */
+    max-width: 100%;
+}
+
+.post-header {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: var(--spacing-md);
+}
+
+.post-username {
+    font-weight: 600;
+    color: var(--primary-dark);
+    margin-bottom: var(--spacing-xs);
+}
+
+.post-date {
+    font-size: 0.8rem;
+    color: var(--text-light);
+    margin-bottom: var(--spacing-sm);
+}
+
+.post-content {
+    margin-bottom: var(--spacing-md);
+    line-height: 1.5;
+}
+
+.post-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+}
+
+/* Image modal styles */
+.image-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: var(--spacing-xl);
+}
+
+.image-modal-content {
+    position: relative;
+    max-width: 90%;
+    max-height: 90%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.image-modal-content img {
+    max-width: 100%;
+    max-height: 80vh;
+    object-fit: contain;
+    border-radius: var(--border-radius-md);
+    box-shadow: var(--shadow-lg);
+}
+
+.image-modal-close {
+    position: absolute;
+    top: -40px;
+    right: 0;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1.2rem;
+    transition: background-color var(--transition-fast);
+}
+
+.image-modal-close:hover {
+    background-color: var(--primary-dark);
+}
+
+/* Clickable post images */
+.postImage,
+.postViewImage {
+    max-height: 250px;
+    max-width: 100%;
+    object-fit: cover;
+    border-radius: var(--border-radius-md);
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--transition-fast);
+    cursor: pointer;
+    /* Show pointer cursor to indicate clickable */
+}
+
+.postImage:hover,
+.postViewImage:hover {
+    transform: scale(1.02);
+}
+
+/* Post Creation Form */
+.post-create-header {
+    width: 100%;
+    margin-bottom: var(--spacing-md);
+}
+
+.post-create-header h3 {
+    color: var(--primary-dark);
+    font-size: 1.4rem;
+    text-align: center;
+}
+
+.post-create-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+.post-image-preview {
+    margin-bottom: var(--spacing-md);
+}
+
+.image-upload-placeholder {
+    width: 200px;
+    height: 200px;
+    border: 2px dashed var(--primary-light);
+    border-radius: var(--border-radius-lg);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    background-color: var(--secondary-dark);
+    transition: all var(--transition-fast);
+}
+
+.image-upload-placeholder:hover {
+    border-color: var(--primary-color);
+    background-color: var(--primary-light);
+}
+
+.image-upload-placeholder span {
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+.post-title-input,
+.post-content-input {
+    width: 100%;
+    margin-bottom: var(--spacing-md);
+}
+
+/* Textarea styles for editing posts and comments */
+.edit-textarea,
+.comment-textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--primary-light);
+    border-radius: var(--border-radius-md);
+    resize: vertical;
+    font-family: 'Montserrat', sans-serif;
+    transition: border-color var(--transition-fast);
+    margin-bottom: var(--spacing-sm);
+}
+
+.edit-textarea:focus,
+.comment-textarea:focus {
+    border-color: var(--primary-color);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--primary-light);
+}
+
+.comment-textarea {
+    min-height: 60px;
+}
+
+/* Post Creation Button */
+.post-creation-area {
+    display: flex;
+    justify-content: center;
+    margin: var(--spacing-md) 0;
+    width: 100%;
+}
+
+.create-post-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: var(--border-radius-xl);
+    padding: var(--spacing-md) var(--spacing-lg);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    box-shadow: var(--shadow-md);
+}
+
+.create-post-button:hover {
+    background-color: var(--primary-dark);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+}
+
+.create-post-button:active {
+    transform: translateY(0);
+}
+
+.create-post-button i {
+    margin-right: var(--spacing-sm);
+    font-size: 1.2rem;
+}
+
+/* Post Modal */
+.post-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: var(--spacing-xl);
+}
+
+.post-modal-content {
+    position: relative;
+    background-color: var(--secondary-light);
+    border-radius: var(--border-radius-lg);
+    width: 100%;
+    max-width: 600px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-lg);
+    animation: modalFadeIn 0.3s ease;
+}
+
+@keyframes modalFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.post-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--spacing-md);
+    border-bottom: 1px solid var(--secondary-dark);
+}
+
+.post-modal-header h3 {
+    margin: 0;
+    color: var(--primary-dark);
+    font-size: 1.4rem;
+}
+
+.post-modal-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: color var(--transition-fast);
+}
+
+.post-modal-close:hover {
+    color: var(--primary-dark);
+}
+
+.post-modal-form {
+    padding: var(--spacing-md);
+}
+
+.post-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding: var(--spacing-md);
+    gap: var(--spacing-md);
+    border-top: 1px solid var(--secondary-dark);
+    margin-top: var(--spacing-md);
+}
+
+.cancel-button {
+    background-color: var(--text-light);
+}
+
+.cancel-button:hover {
+    background-color: var(--text-secondary);
+}
+
+.alert-message {
+    color: #e74c3c;
+    margin-left: auto;
+}
+
+/* Adjusted Post Creation Container for Modal */
+.post-modal-form .post-create-container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.post-modal-form #postTitle,
+.post-modal-form #postContent {
+    width: 100%;
+    border: 1px solid var(--text-light);
+    border-radius: var(--border-radius-md);
+    padding: var(--spacing-md);
+    font-family: 'Montserrat', sans-serif;
+    transition: border-color var(--transition-fast);
+}
+
+.post-modal-form #postTitle {
+    height: 40px;
+}
+
+.post-modal-form #postContent {
+    min-height: 150px;
+    resize: vertical;
+}
+
+.post-modal-form #postTitle:focus,
+.post-modal-form #postContent:focus {
+    border-color: var(--primary-color);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--primary-light);
+}
+
+.post-modal-form .image-upload-placeholder {
+    margin: 0 auto;
+}
+
+/* Make sure image preview is centered */
+.post-modal-form #previewImage {
+    margin: 0 auto;
+    display: block;
+}

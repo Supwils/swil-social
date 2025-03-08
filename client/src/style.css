@@ -1,0 +1,136 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap');
+
+:root {
+    /* Color Theme */
+    --primary-color: #4a90e2;
+    /* Main brand color - light blue */
+    --primary-light: #c5deff;
+    --primary-dark: #2c73c7;
+
+    --secondary-color: #f0f6ff;
+    /* Background color */
+    --secondary-light: #ffffff;
+    --secondary-dark: #e6ecf5;
+
+    --accent-color: #6c63ff;
+    /* Accent color for highlights */
+    --accent-light: #a299ff;
+    --accent-dark: #5046e5;
+
+    --text-primary: #333333;
+    --text-secondary: #666666;
+    --text-light: #999999;
+
+    /* Borders */
+    --border-radius-sm: 4px;
+    --border-radius-md: 8px;
+    --border-radius-lg: 12px;
+    --border-radius-xl: 20px;
+
+    /* Shadows */
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.1);
+
+    /* Spacing */
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 16px;
+    --spacing-lg: 24px;
+    --spacing-xl: 32px;
+
+    /* Transitions */
+    --transition-fast: 0.2s ease;
+    --transition-normal: 0.3s ease;
+    --transition-slow: 0.5s ease;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Montserrat', sans-serif;
+}
+
+body {
+    background-color: var(--secondary-color);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    min-height: 100vh;
+    width: 100%;
+}
+
+/* Reset styles for MainPage and Profile - will be styled separately */
+.MainPage,
+.MainPage * {
+    all: initial;
+    font-family: 'Montserrat', sans-serif;
+}
+
+.Profile,
+.Profile * {
+    all: initial;
+    font-family: 'Montserrat', sans-serif;
+}
+
+/* Common button styles */
+.btn {
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: var(--border-radius-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color var(--transition-fast), transform var(--transition-fast);
+    box-shadow: var(--shadow-sm);
+}
+
+.btn:hover {
+    background-color: var(--primary-dark);
+    box-shadow: var(--shadow-md);
+}
+
+.btn:active {
+    transform: scale(0.98);
+}
+
+/* Common input styles */
+.input {
+    border: 1px solid var(--text-light);
+    border-radius: var(--border-radius-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: 14px;
+    transition: border-color var(--transition-fast);
+}
+
+.input:focus {
+    border-color: var(--primary-color);
+    outline: none;
+}
+
+/* Card style */
+.card {
+    background-color: var(--secondary-light);
+    border-radius: var(--border-radius-md);
+    box-shadow: var(--shadow-md);
+    padding: var(--spacing-md);
+    margin: var(--spacing-md) 0;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+}
+
+/* Container */
+.container {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 var(--spacing-md);
+}

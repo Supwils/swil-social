@@ -1,0 +1,116 @@
+/* body{
+    all: initial;
+    background-color: #c9d6ff;
+    
+} */
+body{
+    justify-content: top;
+    display: block;
+
+    
+}
+.theProfile{
+    position: relative;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background:  #c9d6ff;
+    display: flex;
+    /* align-items: center; */
+    /* justify-content: center; */
+    flex-direction: column;
+    overflow: auto;
+    transition: 0.5s;
+    z-index: 2; 
+    /* overflow-y: auto; */
+    padding-left: 10%;
+}
+.backMainButton{
+    width: 150px;
+    
+}
+.updateForm{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+/* Create a container for the two divs */
+.profileContainer {
+    display: flex;   /* Makes the container use flexbox layout */
+    justify-content: space-between;  
+    align-items: center;   /* Aligns the divs vertically in the center, if desired */
+}
+
+.currentInfo, .updateInfo {
+    border: #a3b2e2 0px solid;
+    position: relative;
+    flex: 1;  /* Makes each div take equal space inside the container */
+    margin: 10px;  /* Gives some spacing between the divs and around them */
+    padding: 10px;  /* Adds some padding inside each div */
+    height: 500px;
+    width: 400px;
+}
+.profileImg{
+    width: 200px;
+    height: 200px;
+    border-radius: 40%;
+    border: #a3b2e2 5px solid;
+    margin: 10px;
+}
+.backMainBotton{
+    width: 150px;
+    background-color: #5ea0e2;  /* Color for the button */
+    position:top;
+    text-align: left;
+    display: inline-block;
+    margin-right: 50%;
+}
+.profileContainer .currentInfo h3 {
+    font-size: 30px;
+    margin-top: 20px;
+}
+
+.currentInfo h2{
+    font-size: 40px;
+    color: #3278e9;
+}
+.updateInfo h2{
+    font-size: 40px;
+    color: #3278e9;
+}
+
+.updateForm {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 400px;
+    /* margin: 0 auto; */
+    padding: 20px;
+    border: 1px solid #a3b2e2;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    background-color: #83d1ef;
+}
+
+.updateForm input {
+    width: 100%;
+    padding: 10px 15px;
+    margin-bottom: 10px;
+    border: 3px solid #a3b2e2;
+    border-radius: 4px;
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.updateForm input:focus {
+    border-color: #6478d6;
+}
+.profileNav {
+    /* Example styles */
+    background-color: #c9d6ff;
+    padding: 10px;
+    text-align: left;
+}
