@@ -54,6 +54,29 @@ function getPosts(follower)
     }, []);
     return flatArray;
 }
+
+// Prepare posts with canEdit property to control who can edit
+const enhancePosts = (posts, currentUser) =>
+{
+    if (!posts || !Array.isArray(posts)) return [];
+
+    return posts.map(post => ({
+        ...post,
+        // Ensure text property is always defined
+        text: post.text || post.body || '', // Use body as fallback, or empty string
+        canEdit: post.author === currentUser,
+        // Ensure comments have canEdit property too
+        comment: Array.isArray(post.comment)
+            ? post.comment.map(comment => ({
+                ...comment,
+                // Ensure comment text is always defined
+                text: comment.text || '',
+                canEdit: comment.author === currentUser
+            }))
+            : []
+    }));
+};
+
 function MainPage({ onLogout, onProfile })
 {
 
@@ -403,7 +426,7 @@ function MainPage({ onLogout, onProfile })
                             <button className="dynamicButton" type="submit" onClick={handleSearch}>Search</button>
                         </div>
                         <div className="postsViewer">
-                            <PostsViewer posts={userPosts} />
+                            <PostsViewer posts={enhancePosts(userPosts, userKey)} />
                         </div>
                     </div>
                 </div>
