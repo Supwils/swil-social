@@ -1,0 +1,75 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 25, 23, 0.45);
+  backdrop-filter: blur(4px);
+  z-index: 40;
+  animation: overlayIn var(--dur-base) var(--ease);
+}
+
+[data-theme='dark'] .overlay {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-5);
+  width: calc(100vw - var(--space-5));
+  max-width: 480px;
+  max-height: 85vh;
+  overflow-y: auto;
+  z-index: 50;
+  animation: contentIn var(--dur-base) var(--ease);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: var(--lh-tight);
+  margin-bottom: var(--space-2);
+}
+
+.description {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-4);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes contentIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .content {
+    animation: none;
+  }
+}

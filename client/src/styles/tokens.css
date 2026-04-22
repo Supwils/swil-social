@@ -1,0 +1,136 @@
+/**
+ * Design tokens — 纸本日志 × 侘寂
+ * Source of truth: docs/02-design-system.md
+ * NEVER hardcode hex/px/rem in components. Pull from here.
+ */
+
+:root {
+  /* Surfaces */
+  --color-bg: #faf7f2;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4efe7;
+
+  /* Text */
+  --color-text: #2b2723;
+  --color-text-muted: #7a7268;
+  --color-text-subtle: #a89f92;
+  --color-text-inverse: #faf7f2;
+
+  /* Lines */
+  --color-border: #e8e0d4;
+  --color-border-strong: #d4c9b6;
+
+  /* Accent */
+  --color-accent: #8b6f47;
+  --color-accent-hover: #75593a;
+  --color-accent-soft: #e8ddc9;
+
+  /* Semantic */
+  --color-success: #6b8e4e;
+  --color-warning: #b8860b;
+  --color-danger: #a0453a;
+  --color-info: #557b8c;
+  --color-success-soft: #e6eedf;
+  --color-warning-soft: #f3ebd3;
+  --color-danger-soft: #f0d8d4;
+  --color-info-soft: #dde5ea;
+
+  --color-focus: #8b6f47;
+
+  /* Fonts */
+  --font-serif: 'Cormorant Garamond', 'Noto Serif SC', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Type scale (base 16, ratio 1.25) */
+  --text-display: 2.441rem;
+  --text-h1: 1.953rem;
+  --text-h2: 1.563rem;
+  --text-h3: 1.25rem;
+  --text-body: 1rem;
+  --text-small: 0.875rem;
+  --text-caption: 0.75rem;
+
+  /* Line heights */
+  --lh-tight: 1.2;
+  --lh-snug: 1.35;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.6;
+
+  /* Spacing scale (base 4) */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --space-9: 6rem;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 9999px;
+
+  /* Shadows — used sparingly */
+  --shadow-sm: 0 1px 2px rgba(30, 26, 22, 0.04);
+  --shadow-md: 0 4px 12px rgba(30, 26, 22, 0.06), 0 1px 3px rgba(30, 26, 22, 0.04);
+  --shadow-lg: 0 12px 32px rgba(30, 26, 22, 0.1), 0 2px 6px rgba(30, 26, 22, 0.04);
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+
+  /* Layout */
+  --layout-feed-max: 680px;
+  --layout-sidebar: 240px;
+  --layout-sidebar-collapsed: 64px;
+  --layout-right-rail: 280px;
+  --layout-mobile-bp: 720px;
+}
+
+[data-theme='dark'] {
+  --color-bg: #1a1917;
+  --color-surface: #232220;
+  --color-surface-muted: #2c2a27;
+
+  --color-text: #ede7db;
+  --color-text-muted: #a8a094;
+  --color-text-subtle: #786f62;
+  --color-text-inverse: #1a1917;
+
+  --color-border: #35322d;
+  --color-border-strong: #4a453e;
+
+  --color-accent: #c9a96e;
+  --color-accent-hover: #d9bc84;
+  --color-accent-soft: #3a3226;
+
+  --color-success: #8aae6c;
+  --color-warning: #d4a93a;
+  --color-danger: #c56a5e;
+  --color-info: #7ca3b5;
+  --color-success-soft: #2a3424;
+  --color-warning-soft: #3a3220;
+  --color-danger-soft: #3a2624;
+  --color-info-soft: #243238;
+
+  --color-focus: #c9a96e;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}

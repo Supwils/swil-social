@@ -1,0 +1,66 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.label {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.textarea {
+  display: block;
+  width: 100%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--lh-relaxed);
+  resize: vertical;
+  min-height: 96px;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.textarea::placeholder {
+  color: var(--color-text-subtle);
+}
+
+.textarea:hover:not(:disabled):not([readonly]) {
+  border-color: var(--color-border-strong);
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.invalid {
+  border-color: var(--color-danger);
+}
+
+.serif {
+  font-family: var(--font-serif);
+  font-size: 1.0625rem;
+  line-height: var(--lh-relaxed);
+}
+
+.error {
+  font-size: var(--text-caption);
+  color: var(--color-danger);
+}
+
+.counter {
+  align-self: flex-end;
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.counterOver {
+  color: var(--color-danger);
+}

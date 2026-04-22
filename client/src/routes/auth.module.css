@@ -1,0 +1,373 @@
+/* ─── Page wrapper ─────────────────────────────────────────────────────────── */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  background: var(--color-bg);
+}
+
+/* ─── Outer container (the "stage") ────────────────────────────────────────── */
+
+.container {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  width: 800px;
+  max-width: 100%;
+  min-height: 580px;
+}
+
+/* ─── Form panels ───────────────────────────────────────────────────────────── */
+
+.formContainer {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 50%;
+  overflow-y: auto;
+  padding: var(--space-7) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: var(--space-4);
+  background: var(--color-surface);
+  transition: transform 0.52s var(--ease), opacity 0.52s var(--ease);
+}
+
+/* Push short forms toward center; tall forms scroll naturally from top */
+.formContainer::before,
+.formContainer::after {
+  content: '';
+  flex: 1;
+  min-height: var(--space-2);
+}
+
+/* Thin wabi-sabi scrollbar */
+.formContainer::-webkit-scrollbar {
+  width: 3px;
+}
+
+.formContainer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.formContainer::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-full);
+}
+
+.formContainer::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-subtle);
+}
+
+/* Firefox */
+.formContainer {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* Sign-in panel: starts on the left, visible */
+.signIn {
+  left: 0;
+  z-index: 2;
+}
+
+.container.active .signIn {
+  transform: translateX(100%);
+}
+
+/* Sign-up panel: starts on the left, hidden beneath sign-in */
+.signUp {
+  left: 0;
+  opacity: 0;
+  z-index: 1;
+}
+
+.container.active .signUp {
+  transform: translateX(100%);
+  opacity: 1;
+  z-index: 5;
+  animation: panelReveal 0.52s var(--ease);
+}
+
+@keyframes panelReveal {
+  0%,
+  49.99% {
+    opacity: 0;
+    z-index: 1;
+  }
+  50%,
+  100% {
+    opacity: 1;
+    z-index: 5;
+  }
+}
+
+/* ─── Sliding toggle cover ──────────────────────────────────────────────────── */
+
+.toggleContainer {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 50%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 96px 0 0 80px;
+  z-index: 100;
+  transition: transform 0.52s var(--ease), border-radius 0.52s var(--ease);
+}
+
+.container.active .toggleContainer {
+  transform: translateX(-100%);
+  border-radius: 0 96px 80px 0;
+}
+
+/* The wide inner strip (200% wide so both panels are always rendered) */
+.toggle {
+  background: linear-gradient(
+    150deg,
+    var(--color-accent) 0%,
+    var(--color-accent-hover) 100%
+  );
+  position: relative;
+  left: -100%;
+  height: 100%;
+  width: 200%;
+  transform: translateX(0);
+  transition: transform 0.52s var(--ease);
+}
+
+.container.active .toggle {
+  transform: translateX(50%);
+}
+
+/* Individual half-panels inside the toggle strip */
+.togglePanel {
+  position: absolute;
+  width: 50%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-7);
+  text-align: center;
+  top: 0;
+  transition: transform 0.52s var(--ease);
+}
+
+/* "Sign in" prompt — starts off-screen left */
+.toggleLeft {
+  transform: translateX(-200%);
+}
+
+.container.active .toggleLeft {
+  transform: translateX(0);
+}
+
+/* "Create account" prompt — starts visible on the right */
+.toggleRight {
+  right: 0;
+  transform: translateX(0);
+}
+
+.container.active .toggleRight {
+  transform: translateX(200%);
+}
+
+/* Toggle copy & button */
+.toggleSub {
+  font-size: var(--text-small);
+  color: rgba(250, 247, 242, 0.65);
+  margin-bottom: var(--space-2);
+  letter-spacing: 0.02em;
+}
+
+.toggleHeading {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  font-weight: 500;
+  color: var(--color-text-inverse);
+  line-height: var(--lh-snug);
+  margin-bottom: var(--space-5);
+}
+
+.toggleBtn {
+  background: transparent;
+  border: 1px solid rgba(250, 247, 242, 0.7);
+  color: var(--color-text-inverse);
+  padding: var(--space-2) var(--space-6);
+  border-radius: var(--radius-full);
+  font-size: var(--text-small);
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.toggleBtn:hover {
+  background: var(--color-text-inverse);
+  color: var(--color-accent);
+  border-color: var(--color-text-inverse);
+}
+
+/* ─── Form internals ────────────────────────────────────────────────────────── */
+
+.brand {
+  font-family: var(--font-serif);
+  font-size: var(--text-h3);
+  color: var(--color-accent);
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-1);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: var(--lh-tight);
+  margin-bottom: var(--space-1);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.errorBanner {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: var(--text-small);
+  border: 1px solid transparent;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-subtle);
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.googleLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 40px;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  font-weight: 500;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.googleLink:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+/* ─── Mobile tab switcher (hidden on desktop) ───────────────────────────────── */
+
+.mobileTabs {
+  display: none;
+}
+
+/* ─── Mobile: stack vertically, replace toggle with tab pills ───────────────── */
+
+@media (max-width: 640px) {
+  .page {
+    align-items: flex-start;
+    padding-top: var(--space-7);
+  }
+
+  .container {
+    min-height: unset;
+    overflow: visible;
+    border-radius: var(--radius-lg);
+  }
+
+  .toggleContainer {
+    display: none;
+  }
+
+  .mobileTabs {
+    display: flex;
+    border-bottom: 1px solid var(--color-border);
+    position: relative;
+    z-index: 10;
+  }
+
+  .mobileTab {
+    flex: 1;
+    padding: var(--space-3) var(--space-4);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--color-text-muted);
+    font-size: var(--text-small);
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease);
+    margin-bottom: -1px;
+  }
+
+  .mobileTabActive {
+    color: var(--color-accent);
+    border-bottom-color: var(--color-accent);
+  }
+
+  .formContainer {
+    position: static;
+    width: 100%;
+    height: auto;
+    padding: var(--space-5) var(--space-5) var(--space-6);
+    transform: none !important;
+    opacity: 1 !important;
+    display: none;
+  }
+
+  .signIn {
+    display: flex;
+  }
+
+  .container.active .signIn {
+    display: none;
+  }
+
+  .container.active .signUp {
+    display: flex;
+    animation: none;
+  }
+}

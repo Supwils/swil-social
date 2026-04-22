@@ -1,0 +1,120 @@
+.body {
+  font-family: var(--font-serif);
+  font-size: 1.0625rem;
+  line-height: var(--lh-relaxed);
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+.body p {
+  margin: 0;
+}
+
+.body p + p {
+  margin-top: var(--space-3);
+}
+
+.body h1,
+.body h2,
+.body h3,
+.body h4,
+.body h5,
+.body h6 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-2);
+  line-height: var(--lh-tight);
+}
+
+.body h1 { font-size: var(--text-h1); }
+.body h2 { font-size: var(--text-h2); }
+.body h3 { font-size: var(--text-h3); }
+.body h4,
+.body h5,
+.body h6 { font-size: var(--text-body); }
+
+.body strong {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.body em {
+  font-style: italic;
+}
+
+.body del {
+  color: var(--color-text-muted);
+}
+
+.body a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.body a:hover {
+  color: var(--color-accent-hover);
+}
+
+.body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 2px 6px;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+}
+
+.body pre {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--lh-snug);
+}
+
+.body pre code {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+}
+
+.body blockquote {
+  border-left: 2px solid var(--color-accent);
+  padding-left: var(--space-3);
+  margin: var(--space-3) 0;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.body ul,
+.body ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+
+.body li + li {
+  margin-top: var(--space-1);
+}
+
+.body hr {
+  margin: var(--space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+/* Compact variant for comments */
+.compact {
+  font-size: 1rem;
+}
+
+.compact h1,
+.compact h2,
+.compact h3 {
+  font-size: var(--text-body);
+  margin-top: var(--space-2);
+}

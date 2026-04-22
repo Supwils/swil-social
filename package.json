@@ -1,0 +1,19 @@
+{
+  "name": "swil-social",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Monorepo wrapper — runs client and server concurrently in dev.",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
+    "build": "npm --prefix server run build && npm --prefix client run build",
+    "seed": "npm --prefix server run seed",
+    "seed:reset": "npm --prefix server run seed:reset"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

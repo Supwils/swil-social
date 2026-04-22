@@ -1,0 +1,87 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.backLink {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+}
+
+.backLink:hover {
+  color: var(--color-accent);
+}
+
+.commentsHeader {
+  font-family: var(--font-serif);
+  font-size: var(--text-h3);
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.composeCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.composeActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.comment {
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  gap: var(--space-3);
+}
+
+.commentBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.commentHeader {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.commentAuthor {
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.commentHandle {
+  color: var(--color-text-subtle);
+  font-size: var(--text-small);
+}
+
+.commentDate {
+  margin-left: auto;
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+}
+
+.commentText {
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  line-height: var(--lh-relaxed);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.signInPrompt {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
