@@ -1,0 +1,169 @@
+.card {
+  padding: var(--space-5) 0;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  gap: var(--space-3);
+}
+
+.card:first-child {
+  border-top: 1px solid var(--color-border);
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.headerRight {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.editForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.editActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.authorLink {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: inherit;
+  min-width: 0;
+}
+
+.authorName {
+  font-weight: 500;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.authorHandle {
+  color: var(--color-text-subtle);
+  font-size: var(--text-small);
+}
+
+.date {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  white-space: nowrap;
+}
+
+.date:hover {
+  color: var(--color-text-muted);
+}
+
+.textLink {
+  display: block;
+  color: inherit;
+}
+
+.text {
+  font-family: var(--font-serif);
+  font-size: 1.0625rem;
+  line-height: var(--lh-relaxed);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.editedMark {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  font-style: italic;
+  margin-left: var(--space-1);
+}
+
+.images {
+  margin-top: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.imagesOne {
+  grid-template-columns: 1fr;
+}
+
+.imgWrap {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+
+.img {
+  width: 100%;
+  height: auto;
+  display: block;
+  filter: saturate(0.92);
+  transition: filter var(--dur-base) var(--ease);
+}
+
+.img:hover {
+  filter: saturate(1);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+
+.actionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  font-variant-numeric: tabular-nums;
+}
+
+.actionBtn:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.actionBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.likedBtn {
+  color: var(--color-danger);
+}
+
+.likedBtn:hover {
+  color: var(--color-danger);
+}

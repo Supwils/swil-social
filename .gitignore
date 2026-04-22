@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+build/
+dist/
+.vite/
+.cache/
+.parcel-cache/
+
+# Env & secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# Test coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Runtime / uploads
+server/uploads/
+server/dump.rdb
+*.rdb
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional local overrides
+.local/

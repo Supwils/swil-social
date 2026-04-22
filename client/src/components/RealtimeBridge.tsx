@@ -1,0 +1,183 @@
+import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { useSession } from '@/stores/session.store';
+import { useRealtime } from '@/stores/realtime.store';
+import { qk } from '@/api/queryKeys';
+import * as notificationsApi from '@/api/notifications.api';
+import * as messagesApi from '@/api/messages.api';
+import {
+  connectRealtime,
+  disconnectRealtime,
+  getSocket,
+} from '@/api/realtime';
+import type {
+  NotificationDTO,
+  MessageDTO,
+  ConversationDTO,
+  Paginated,
+} from '@/api/types';
+
+/**
+ * Connects the socket once we know who the user is, subscribes to events,
+ * and bridges them into TanStack Query cache + Zustand unread counts.
+ */
+export function RealtimeBridge() {
+  const user = useSession((s) => s.user);
+  const setConnected = useRealtime((s) => s.setConnected);
+  const setUnreadN = useRealtime((s) => s.setUnreadNotifications);
+  const incUnreadN = useRealtime((s) => s.incUnreadNotifications);
+  const setUnreadC = useRealtime((s) => s.setUnreadConversations);
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    if (!user) {
+      disconnectRealtime();
+      setConnected(false);
+      setUnreadN(0);
+      setUnreadC(0);
+      return;
+    }
+
+    const socket = connectRealtime();
+
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+
+    const onNotification = (raw: unknown) => {
+      const payload = raw as NotificationDTO;
+      incUnreadN(1);
+      // Prepend into cached list if present
+      qc.setQueryData<{ pages: Paginated<NotificationDTO>[]; pageParams: unknown[] }>(
+        qk.notifications.list,
+        (old) => {
+          if (!old) return old;
+          const [first, ...rest] = old.pages;
+          if (!first) return old;
+          return {
+            ...old,
+            pages: [{ ...first, items: [payload, ...first.items] }, ...rest],
+          };
+        },
+      );
+      toast(summarizeNotification(payload));
+    };
+
+    const onNotificationRead = (raw: unknown) => {
+      const payload = raw as { ids: string[] | 'all' };
+      qc.invalidateQueries({ queryKey: qk.notifications.list });
+      // Recompute unread count authoritatively
+      notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
+      void payload;
+    };
+
+    const onMessage = (raw: unknown) => {
+      const payload = raw as MessageDTO;
+      // Append to the message list cache if we have it
+      qc.setQueryData<{ pages: Paginated<MessageDTO>[]; pageParams: unknown[] }>(
+        qk.conversations.messages(payload.conversationId),
+        (old) => {
+          if (!old) return old;
+          const [first, ...rest] = old.pages;
+          if (!first) return old;
+          // Messages are reverse-chron (newest first) in each page → prepend to first page
+          if (first.items.some((m) => m.id === payload.id)) return old;
+          return {
+            ...old,
+            pages: [{ ...first, items: [payload, ...first.items] }, ...rest],
+          };
+        },
+      );
+      // Bump conversation in list cache
+      qc.invalidateQueries({ queryKey: qk.conversations.list });
+      if (payload.sender.id !== user.id) {
+        toast(`@${payload.sender.username}: ${preview(payload.text)}`);
+      }
+    };
+
+    const onConversationUpdate = () => {
+      qc.invalidateQueries({ queryKey: qk.conversations.list });
+      recomputeUnreadConversations();
+    };
+
+    const onMessageRead = (raw: unknown) => {
+      const payload = raw as { conversationId: string; userId: string };
+      qc.setQueryData<{ pages: Paginated<MessageDTO>[]; pageParams: unknown[] }>(
+        qk.conversations.messages(payload.conversationId),
+        (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((pg) => ({
+              ...pg,
+              items: pg.items.map((m) =>
+                m.readBy.includes(payload.userId)
+                  ? m
+                  : { ...m, readBy: [...m.readBy, payload.userId] },
+              ),
+            })),
+          };
+        },
+      );
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('notification', onNotification);
+    socket.on('notification:read', onNotificationRead);
+    socket.on('message', onMessage);
+    socket.on('message:read', onMessageRead);
+    socket.on('conversation:update', onConversationUpdate);
+
+    // Seed unread counts once on mount
+    notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
+    recomputeUnreadConversations();
+
+    function recomputeUnreadConversations() {
+      messagesApi
+        .listConversations({ limit: 50 })
+        .then((page) => {
+          const n = page.items.filter((c: ConversationDTO) => c.unread).length;
+          setUnreadC(n);
+        })
+        .catch(() => undefined);
+    }
+
+    return () => {
+      const s = getSocket();
+      s?.off('connect', onConnect);
+      s?.off('disconnect', onDisconnect);
+      s?.off('notification', onNotification);
+      s?.off('notification:read', onNotificationRead);
+      s?.off('message', onMessage);
+      s?.off('message:read', onMessageRead);
+      s?.off('conversation:update', onConversationUpdate);
+    };
+  }, [user, qc, setConnected, setUnreadN, incUnreadN, setUnreadC]);
+
+  return null;
+}
+
+function summarizeNotification(n: NotificationDTO): string {
+  const name = n.actor.displayName || n.actor.username;
+  switch (n.type) {
+    case 'like':
+      return `${name} liked your ${n.comment ? 'comment' : 'post'}`;
+    case 'comment':
+      return `${name} commented on your post`;
+    case 'reply':
+      return `${name} replied to your comment`;
+    case 'follow':
+      return `${name} started following you`;
+    case 'mention':
+      return `${name} mentioned you`;
+    case 'message':
+      return `${name} sent you a message`;
+    default:
+      return `${name}`;
+  }
+}
+
+function preview(text: string): string {
+  return text.length > 80 ? `${text.slice(0, 80).trimEnd()}…` : text;
+}

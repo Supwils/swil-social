@@ -1,0 +1,66 @@
+# Compose file for local / self-host production parity.
+#
+# Bring up:    docker compose up --build
+# Seed DB:     docker compose exec app node server/dist/../scripts/seed.js  (after P8+ adds compiled seed)
+#              or run the seed against the mongo service from host: MONGODB_URI=mongodb://127.0.0.1:27017/swil npm run seed
+# Tear down:   docker compose down          (keeps volumes)
+# Fresh:       docker compose down -v       (wipes volumes)
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: swil-social:local
+    restart: unless-stopped
+    env_file:
+      - ./server/.env
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/swil_social
+      REDIS_URL: redis://redis:6379
+      COOKIE_SECURE: "false" # flip to true when fronting with TLS
+      SERVE_CLIENT: "true"
+      CORS_ORIGINS: http://localhost:8888
+      OAUTH_SUCCESS_REDIRECT: http://localhost:8888/
+    ports:
+      - "8888:8888"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8888/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--bind_ip_all"]
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  mongo_data:
+  redis_data:

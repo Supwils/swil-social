@@ -1,0 +1,69 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-size: var(--text-h1);
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: var(--lh-tight);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sectionHeader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sectionTitle {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: var(--lh-tight);
+}
+
+.sectionDesc {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.avatarRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
