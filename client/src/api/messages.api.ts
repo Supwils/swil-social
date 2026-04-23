@@ -1,6 +1,13 @@
 import { http, unwrap } from './client';
 import type { ConversationDTO, MessageDTO, Paginated } from './types';
 
+export async function getConversation(id: string): Promise<ConversationDTO> {
+  const out = await unwrap<{ conversation: ConversationDTO }>(
+    http.get(`/conversations/${id}`),
+  );
+  return out.conversation;
+}
+
 export async function listConversations(
   params: { cursor?: string | null; limit?: number } = {},
 ): Promise<Paginated<ConversationDTO>> {

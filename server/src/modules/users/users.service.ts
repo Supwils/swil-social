@@ -74,9 +74,10 @@ export async function searchUsers(
   if (tag) {
     filter.profileTags = { $regex: new RegExp(`^${escapeRegex(tag)}$`, 'i') };
   }
-  return User.find(filter)
+  return (await User.find(filter)
     .limit(Math.min(50, Math.max(1, limit)))
-    .sort({ followerCount: -1 });
+    .sort({ followerCount: -1 })
+    .lean()) as unknown as UserDocument[];
 }
 
 export async function getPopularProfileTags(): Promise<Array<{ tag: string; count: number }>> {

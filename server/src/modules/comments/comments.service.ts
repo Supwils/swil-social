@@ -33,25 +33,26 @@ export async function listForPost(
     status: 'active' as const,
     ...cursorFilterAsc(cursor),
   };
-  const docs = await Comment.find(filter)
+  const docs = (await Comment.find(filter)
     .sort({ createdAt: 1, _id: 1 })
-    .limit(limit + 1);
+    .limit(limit + 1)
+    .lean()) as unknown as CommentDocument[];
 
   const { items, nextCursor } = buildNextCursor(docs, limit);
 
   const authorIds = Array.from(new Set(items.map((c) => c.authorId.toString())));
-  const authors = await User.find({
+  const authors = (await User.find({
     _id: { $in: authorIds.map((id) => new Types.ObjectId(id)) },
-  });
-  const authorById = new Map(authors.map((u) => [u.id, u]));
+  }).lean()) as unknown as UserDocument[];
+  const authorById = new Map(authors.map((u) => [u._id.toString(), u]));
 
   let likedIds = new Set<string>();
   if (viewer && items.length) {
-    const likes = await Like.find({
+    const likes = (await Like.find({
       userId: viewer._id,
       targetType: 'comment',
       targetId: { $in: items.map((c) => c._id) },
-    }).select('targetId');
+    }).select('targetId').lean()) as unknown as Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>;
     likedIds = new Set(likes.map((l) => l.targetId.toString()));
   }
 
@@ -59,7 +60,7 @@ export async function listForPost(
   for (const c of items) {
     const author = authorById.get(c.authorId.toString());
     if (!author) continue;
-    ctxByCommentId.set(c.id, { author, likedByMe: likedIds.has(c.id) });
+    ctxByCommentId.set(c._id.toString(), { author, likedByMe: likedIds.has(c._id.toString()) });
   }
 
   return { items, nextCursor, ctxByCommentId };

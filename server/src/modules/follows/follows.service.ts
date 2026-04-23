@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { Follow, type FollowDocument } from '../../models/follow.model';
 import { User, type UserDocument } from '../../models/user.model';
 import { AppError } from '../../lib/errors';
+import { logger } from '../../lib/logger';
 import {
   type Cursor,
   cursorFilterDesc,
@@ -37,7 +38,18 @@ export async function follow(
   await Promise.all([
     User.updateOne({ _id: follower._id }, { $inc: { followingCount: 1 } }),
     User.updateOne({ _id: target._id }, { $inc: { followerCount: 1 } }),
-  ]);
+  ]).catch(async (err) => {
+    // Count drift: reconcile from the edge collection rather than silently losing consistency
+    logger.error({ err }, 'follower count update failed — reconciling from Follow edges');
+    const [followingCount, followerCount] = await Promise.all([
+      Follow.countDocuments({ followerId: follower._id }),
+      Follow.countDocuments({ followingId: target._id }),
+    ]);
+    await Promise.all([
+      User.updateOne({ _id: follower._id }, { $set: { followingCount } }),
+      User.updateOne({ _id: target._id }, { $set: { followerCount } }),
+    ]);
+  });
 
   await createNotification({
     recipientId: target._id,
@@ -80,9 +92,10 @@ async function listEdges(
       ? { followerId: user._id }
       : { followingId: user._id };
 
-  const docs = await Follow.find({ ...edgeFilter, ...cursorFilterDesc(cursor) })
+  const docs = (await Follow.find({ ...edgeFilter, ...cursorFilterDesc(cursor) })
     .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1);
+    .limit(limit + 1)
+    .lean()) as unknown as FollowDocument[];
 
   const { items, nextCursor } = buildNextCursor(docs, limit);
 
@@ -90,12 +103,12 @@ async function listEdges(
     direction === 'following' ? e.followingId : e.followerId,
   );
   const users = peerIds.length
-    ? await User.find({
+    ? (await User.find({
         _id: { $in: peerIds as Types.ObjectId[] },
         status: 'active',
-      })
+      }).lean()) as unknown as UserDocument[]
     : [];
-  const byId = new Map(users.map((u) => [u.id, u]));
+  const byId = new Map(users.map((u) => [u._id.toString(), u]));
 
   const ordered: UserLiteDTO[] = items
     .map((e) => {

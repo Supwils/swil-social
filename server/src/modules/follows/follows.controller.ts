@@ -16,6 +16,12 @@ export async function unfollow(req: Request, res: Response) {
   return noContent(res);
 }
 
+export async function checkFollowing(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  const following = await followsService.isFollowing(req.user, req.params.username);
+  return ok(res, { following });
+}
+
 export async function listFollowing(req: Request, res: Response) {
   const cursor = decodeCursor(req.query.cursor);
   const limit = parseLimit(req.query.limit, 20);

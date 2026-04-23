@@ -10,6 +10,7 @@ interface RealtimeState {
   incUnreadNotifications: (delta?: number) => void;
   decUnreadNotifications: (delta?: number) => void;
   setUnreadConversations: (n: number) => void;
+  incUnreadConversations: (delta?: number) => void;
 }
 
 export const useRealtime = create<RealtimeState>((set) => ({
@@ -24,4 +25,6 @@ export const useRealtime = create<RealtimeState>((set) => ({
   decUnreadNotifications: (delta = 1) =>
     set((s) => ({ unreadNotifications: Math.max(0, s.unreadNotifications - delta) })),
   setUnreadConversations: (n) => set({ unreadConversations: Math.max(0, n) }),
+  incUnreadConversations: (delta = 1) =>
+    set((s) => ({ unreadConversations: Math.max(0, s.unreadConversations + delta) })),
 }));

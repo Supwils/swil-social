@@ -93,9 +93,10 @@ export async function list(
   };
   if (unreadOnly) filter.read = false;
 
-  const docs = await Notification.find(filter)
+  const docs = (await Notification.find(filter)
     .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1);
+    .limit(limit + 1)
+    .lean()) as unknown as NotificationDocument[];
 
   const { items, nextCursor } = buildNextCursor(docs, limit);
   const hydrated = await hydrateMany(items);
@@ -150,21 +151,21 @@ async function hydrateMany(docs: NotificationDocument[]): Promise<NotificationDT
     new Set(docs.map((d) => d.commentId?.toString()).filter((x): x is string => Boolean(x))),
   );
 
-  const [actors, posts, comments] = await Promise.all([
-    User.find({ _id: { $in: actorIds.map((id) => new Types.ObjectId(id)) } }),
+  const [actors, posts, comments] = (await Promise.all([
+    User.find({ _id: { $in: actorIds.map((id) => new Types.ObjectId(id)) } }).lean(),
     postIds.length
-      ? Post.find({ _id: { $in: postIds.map((id) => new Types.ObjectId(id)) } }).select('text')
+      ? Post.find({ _id: { $in: postIds.map((id) => new Types.ObjectId(id)) } }).select('text').lean()
       : Promise.resolve([]),
     commentIds.length
-      ? Comment.find({ _id: { $in: commentIds.map((id) => new Types.ObjectId(id)) } }).select('text')
+      ? Comment.find({ _id: { $in: commentIds.map((id) => new Types.ObjectId(id)) } }).select('text').lean()
       : Promise.resolve([]),
-  ]);
+  ])) as unknown as [UserDocument[], { _id: Types.ObjectId; text: string }[], { _id: Types.ObjectId; text: string }[]];
 
   const actorById = new Map<string, UserLiteDTO>(
-    actors.map((u) => [u.id, toUserLiteDTO(u)]),
+    actors.map((u) => [u._id.toString(), toUserLiteDTO(u)]),
   );
-  const postById = new Map(posts.map((p) => [p.id, p.text]));
-  const commentById = new Map(comments.map((c) => [c.id, c.text]));
+  const postById = new Map(posts.map((p) => [p._id.toString(), p.text]));
+  const commentById = new Map(comments.map((c) => [c._id.toString(), c.text]));
 
   return docs
     .map((d) => {
@@ -187,7 +188,7 @@ function toNotificationDTO(
   commentText?: string,
 ): NotificationDTO {
   return {
-    id: doc.id,
+    id: doc._id.toString(),
     type: doc.type,
     actor,
     post: doc.postId

@@ -28,6 +28,7 @@ export function RealtimeBridge() {
   const setUnreadN = useRealtime((s) => s.setUnreadNotifications);
   const incUnreadN = useRealtime((s) => s.incUnreadNotifications);
   const setUnreadC = useRealtime((s) => s.setUnreadConversations);
+  const incUnreadC = useRealtime((s) => s.incUnreadConversations);
   const qc = useQueryClient();
 
   useEffect(() => {
@@ -81,7 +82,7 @@ export function RealtimeBridge() {
           const [first, ...rest] = old.pages;
           if (!first) return old;
           // Messages are reverse-chron (newest first) in each page → prepend to first page
-          if (first.items.some((m) => m.id === payload.id)) return old;
+          if (old.pages.some((pg) => pg.items.some((m) => m.id === payload.id))) return old;
           return {
             ...old,
             pages: [{ ...first, items: [payload, ...first.items] }, ...rest],
@@ -90,14 +91,16 @@ export function RealtimeBridge() {
       );
       // Bump conversation in list cache
       qc.invalidateQueries({ queryKey: qk.conversations.list });
-      if (payload.sender.id !== user.id) {
+      // Suppress toast if user is already viewing this conversation
+      const onThisThread = window.location.pathname === `/messages/${payload.conversationId}`;
+      if (payload.sender.id !== user.id && !onThisThread) {
         toast(`@${payload.sender.username}: ${preview(payload.text)}`);
       }
     };
 
     const onConversationUpdate = () => {
       qc.invalidateQueries({ queryKey: qk.conversations.list });
-      recomputeUnreadConversations();
+      incUnreadC(1);
     };
 
     const onMessageRead = (raw: unknown) => {
@@ -131,17 +134,10 @@ export function RealtimeBridge() {
 
     // Seed unread counts once on mount
     notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
-    recomputeUnreadConversations();
-
-    function recomputeUnreadConversations() {
-      messagesApi
-        .listConversations({ limit: 50 })
-        .then((page) => {
-          const n = page.items.filter((c: ConversationDTO) => c.unread).length;
-          setUnreadC(n);
-        })
-        .catch(() => undefined);
-    }
+    messagesApi
+      .listConversations({ limit: 50 })
+      .then((page) => setUnreadC(page.items.filter((c: ConversationDTO) => c.unread).length))
+      .catch(() => undefined);
 
     return () => {
       const s = getSocket();
@@ -153,7 +149,7 @@ export function RealtimeBridge() {
       s?.off('message:read', onMessageRead);
       s?.off('conversation:update', onConversationUpdate);
     };
-  }, [user, qc, setConnected, setUnreadN, incUnreadN, setUnreadC]);
+  }, [user, qc, setConnected, setUnreadN, incUnreadN, setUnreadC, incUnreadC]);
 
   return null;
 }

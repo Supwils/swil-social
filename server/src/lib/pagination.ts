@@ -81,7 +81,7 @@ export function cursorFilterAsc(
   };
 }
 
-export function buildNextCursor<T extends { createdAt: Date; id?: string }>(
+export function buildNextCursor<T extends { createdAt: Date; _id: Types.ObjectId }>(
   items: T[],
   limit: number,
 ): { items: T[]; nextCursor: string | null } {
@@ -90,8 +90,7 @@ export function buildNextCursor<T extends { createdAt: Date; id?: string }>(
   }
   const page = items.slice(0, limit);
   const last = page[page.length - 1];
-  const id = last.id;
-  if (!id) return { items: page, nextCursor: null };
+  const id = last._id.toString();
   return {
     items: page,
     nextCursor: encodeCursor({ t: last.createdAt.toISOString(), id }),

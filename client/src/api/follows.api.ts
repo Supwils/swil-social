@@ -1,6 +1,11 @@
 import { http, unwrap } from './client';
 import type { Paginated, UserLiteDTO } from './types';
 
+export async function checkFollowing(username: string): Promise<boolean> {
+  const out = await unwrap<{ following: boolean }>(http.get(`/users/${username}/follow`));
+  return out.following;
+}
+
 export async function follow(username: string): Promise<void> {
   await http.post(`/users/${username}/follow`);
 }

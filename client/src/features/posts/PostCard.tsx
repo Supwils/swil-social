@@ -31,6 +31,7 @@ import {
 import { useSession } from '@/stores/session.store';
 import { formatRelative, formatAbsolute } from '@/lib/formatDate';
 import { MarkdownBody } from './MarkdownBody';
+import { InlineComments } from './InlineComments';
 import s from './PostCard.module.css';
 
 export function PostCard({ post }: { post: PostDTO }) {
@@ -41,6 +42,7 @@ export function PostCard({ post }: { post: PostDTO }) {
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
   const [draftText, setDraftText] = useState(post.text);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
@@ -226,7 +228,7 @@ export function PostCard({ post }: { post: PostDTO }) {
             </div>
           </form>
         ) : (
-          <Link to={`/p/${post.id}`} className={s.textLink} aria-label="Open post">
+          <Link to={`/p/${post.id}`} className={s.textLink} aria-label="Open post" draggable={false}>
             <MarkdownBody source={post.text} />
             {post.editedAt && <span className={s.editedMark}>· {t('common.edited')}</span>}
           </Link>
@@ -282,11 +284,19 @@ export function PostCard({ post }: { post: PostDTO }) {
             <Heart size={16} weight={post.likedByMe ? 'fill' : 'regular'} aria-hidden />
             <span>{post.likeCount}</span>
           </button>
-          <Link to={`/p/${post.id}`} className={s.actionBtn} aria-label="Comments">
-            <ChatCircle size={16} weight="regular" aria-hidden />
+          <button
+            type="button"
+            className={clsx(s.actionBtn, commentsOpen && s.activeBtn)}
+            onClick={() => setCommentsOpen((v) => !v)}
+            aria-expanded={commentsOpen}
+            aria-label="Toggle comments"
+          >
+            <ChatCircle size={16} weight={commentsOpen ? 'fill' : 'regular'} aria-hidden />
             <span>{post.commentCount}</span>
-          </Link>
+          </button>
         </footer>
+
+        <InlineComments postId={post.id} open={commentsOpen} />
       </div>
 
       {lightboxIndex !== null && (

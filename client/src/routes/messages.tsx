@@ -1,15 +1,16 @@
-import { type FormEvent, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
 import * as messagesApi from '@/api/messages.api';
+import * as usersApi from '@/api/users.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
-import { Avatar, Button, EmptyState } from '@/components/primitives';
+import { Avatar, EmptyState } from '@/components/primitives';
 import { formatRelative } from '@/lib/formatDate';
-import type { ApiError, ConversationDTO } from '@/api/types';
+import type { ApiError, ConversationDTO, UserLiteDTO } from '@/api/types';
 import s from './messages.module.css';
 
 export default function MessagesRoute() {
@@ -17,7 +18,6 @@ export default function MessagesRoute() {
   const me = useSession((st) => st.user);
   const nav = useNavigate();
   const qc = useQueryClient();
-  const [recipient, setRecipient] = useState('');
 
   const q = useInfiniteQuery({
     queryKey: qk.conversations.list,
@@ -28,20 +28,13 @@ export default function MessagesRoute() {
   });
 
   const start = useMutation({
-    mutationFn: () => messagesApi.findOrCreate(recipient.trim()),
+    mutationFn: (username: string) => messagesApi.findOrCreate(username),
     onSuccess: (convo) => {
-      setRecipient('');
       qc.invalidateQueries({ queryKey: qk.conversations.list });
       nav(`/messages/${convo.id}`);
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
   });
-
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!recipient.trim()) return;
-    start.mutate();
-  };
 
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
 
@@ -51,25 +44,7 @@ export default function MessagesRoute() {
         <h1 className={s.title}>{t('messages.title')}</h1>
       </header>
 
-      <form className={s.newForm} onSubmit={onSubmit}>
-        <input
-          type="text"
-          className={s.newInput}
-          placeholder={t('messages.placeholder')}
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-          aria-label="Recipient username"
-          pattern="[a-zA-Z0-9_]{3,24}"
-        />
-        <Button
-          variant="primary"
-          size="sm"
-          type="submit"
-          disabled={start.isPending || !recipient.trim()}
-        >
-          {t('messages.start')}
-        </Button>
-      </form>
+      <UserSearchCompose onSelect={(username) => start.mutate(username)} loading={start.isPending} />
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState
@@ -83,13 +58,111 @@ export default function MessagesRoute() {
       ))}
 
       {q.hasNextPage && (
-        <Button variant="ghost" onClick={() => q.fetchNextPage()}>
+        <button type="button" className={s.loadOlderBtn} onClick={() => q.fetchNextPage()}>
           {t('messages.loadMore')}
-        </Button>
+        </button>
       )}
     </div>
   );
 }
+
+/* ---- User search compose ---- */
+
+function UserSearchCompose({
+  onSelect,
+  loading,
+}: {
+  onSelect: (username: string) => void;
+  loading: boolean;
+}) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const trimmed = query.trim();
+
+  const search = useQuery({
+    queryKey: qk.users.search(trimmed),
+    queryFn: ({ signal }) => usersApi.searchUsers(trimmed, signal),
+    enabled: trimmed.length >= 1,
+    staleTime: 15_000,
+    placeholderData: (prev) => prev,
+  });
+
+  const results: UserLiteDTO[] = search.data ?? [];
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const pick = (user: UserLiteDTO) => {
+    setQuery('');
+    setOpen(false);
+    onSelect(user.username);
+  };
+
+  return (
+    <div className={s.searchWrap} ref={wrapRef}>
+      <div className={s.searchRow}>
+        <input
+          ref={inputRef}
+          type="text"
+          className={s.newInput}
+          placeholder={t('messages.placeholder')}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          aria-label="Search users"
+          aria-autocomplete="list"
+          aria-expanded={open && results.length > 0}
+          autoComplete="off"
+        />
+        {loading && <span className={s.searchSpinner} aria-hidden />}
+      </div>
+
+      {open && trimmed.length >= 1 && (
+        <ul className={s.searchDropdown} role="listbox">
+          {results.length === 0 && !search.isLoading && (
+            <li className={s.searchEmpty}>{t('messages.noUsers')}</li>
+          )}
+          {results.map((u) => (
+            <li key={u.id} role="option" aria-selected={false}>
+              <button
+                type="button"
+                className={s.searchItem}
+                onMouseDown={(e) => {
+                  // mousedown fires before blur — prevent input losing focus before pick
+                  e.preventDefault();
+                  pick(u);
+                }}
+              >
+                <Avatar src={u.avatarUrl} name={u.displayName || u.username} size="sm" alt="" />
+                <div className={s.searchItemText}>
+                  <span className={s.searchItemName}>{u.displayName || u.username}</span>
+                  <span className={s.searchItemHandle}>@{u.username}</span>
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ---- Conversation row ---- */
 
 function ConversationRow({ convo, selfId }: { convo: ConversationDTO; selfId: string }) {
   const { t } = useTranslation();

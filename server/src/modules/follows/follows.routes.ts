@@ -36,6 +36,13 @@ followsRouter.get(
   asyncHandler(ctrl.listFollowers),
 );
 
+followsRouter.get(
+  '/follow',
+  requireUser,
+  validate(usernameParam, 'params'),
+  asyncHandler(ctrl.checkFollowing),
+);
+
 followsRouter.post(
   '/follow',
   requireUser,

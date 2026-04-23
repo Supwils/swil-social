@@ -101,6 +101,8 @@
 .textLink {
   display: block;
   color: inherit;
+  user-select: text;
+  -webkit-user-drag: none;
 }
 
 .text {
@@ -297,4 +299,12 @@
 
 .likedBtn:hover {
   color: var(--color-danger);
+}
+
+.activeBtn {
+  color: var(--color-accent);
+}
+
+.activeBtn:hover {
+  color: var(--color-accent);
 }

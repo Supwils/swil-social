@@ -24,9 +24,10 @@ async function paginate(
   cursor: Cursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  const docs = await Post.find({ ...filter, ...cursorFilterDesc(cursor) })
+  const docs = (await Post.find({ ...filter, ...cursorFilterDesc(cursor) })
     .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1);
+    .limit(limit + 1)
+    .lean()) as unknown as PostDocument[];
   const { items, nextCursor } = buildNextCursor(docs, limit);
   const ctxById = await hydratePosts(items, viewer);
   return { items, nextCursor, ctxById };
@@ -40,7 +41,7 @@ export async function following(
   cursor: Cursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  const followingEdges = await Follow.find({ followerId: viewer._id }).select('followingId');
+  const followingEdges = await Follow.find({ followerId: viewer._id }).select('followingId').lean();
   const authorIds: Types.ObjectId[] = [
     viewer._id,
     ...followingEdges.map((e) => e.followingId),

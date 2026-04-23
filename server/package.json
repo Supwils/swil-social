@@ -19,11 +19,11 @@
     "seed:reset": "tsx scripts/seed.ts -- --reset"
   },
   "dependencies": {
-    "@types/passport-google-oauth20": "^2.0.16",
-    "bcrypt": "^5.1.1",
     "@aws-sdk/client-s3": "^3.600.0",
     "@aws-sdk/lib-storage": "^3.600.0",
-    "sharp": "^0.33.4",
+    "@types/passport-google-oauth20": "^2.0.16",
+    "bcrypt": "^5.1.1",
+    "cloudinary": "^2.9.0",
     "connect-mongo": "^5.1.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
@@ -39,6 +39,7 @@
     "pino": "^9.4.0",
     "pino-http": "^10.3.0",
     "pino-pretty": "^11.2.2",
+    "sharp": "^0.33.4",
     "socket.io": "^4.8.3",
     "zod": "^3.23.8"
   },

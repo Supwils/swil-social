@@ -126,7 +126,7 @@ export async function updatePost(
   post.editedAt = new Date();
   await post.save();
 
-  return getPostForViewer(post.id, actor);
+  return getPostForViewer(post._id.toString(), actor);
 }
 
 export async function deletePost(postId: string, actor: UserDocument): Promise<void> {
@@ -220,39 +220,39 @@ export async function hydratePosts(
     p.mentionIds.forEach((m) => mentionIds.add(m.toString()));
   }
 
-  const [authors, tags, mentions, likes] = await Promise.all([
-    User.find({ _id: { $in: Array.from(authorIds).map((id) => new Types.ObjectId(id)) } }),
+  const [authors, tags, mentions, likes] = (await Promise.all([
+    User.find({ _id: { $in: Array.from(authorIds).map((id) => new Types.ObjectId(id)) } }).lean(),
     tagIds.size
-      ? Tag.find({ _id: { $in: Array.from(tagIds).map((id) => new Types.ObjectId(id)) } })
+      ? Tag.find({ _id: { $in: Array.from(tagIds).map((id) => new Types.ObjectId(id)) } }).lean()
       : Promise.resolve([] as TagDocument[]),
     mentionIds.size
-      ? User.find({ _id: { $in: Array.from(mentionIds).map((id) => new Types.ObjectId(id)) } })
+      ? User.find({ _id: { $in: Array.from(mentionIds).map((id) => new Types.ObjectId(id)) } }).lean()
       : Promise.resolve([] as UserDocument[]),
     viewer && posts.length
       ? Like.find({
           userId: viewer._id,
           targetType: 'post',
           targetId: { $in: posts.map((p) => p._id) },
-        }).select('targetId')
-      : Promise.resolve([] as Array<{ targetId: Types.ObjectId }>),
-  ]);
+        }).select('targetId').lean()
+      : Promise.resolve([] as Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>),
+  ])) as unknown as [UserDocument[], TagDocument[], UserDocument[], Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>];
 
-  const authorById = new Map(authors.map((u) => [u.id, u]));
-  const tagById = new Map(tags.map((t) => [t.id, t]));
-  const mentionById = new Map(mentions.map((u) => [u.id, u]));
+  const authorById = new Map(authors.map((u) => [u._id.toString(), u]));
+  const tagById = new Map(tags.map((t) => [t._id.toString(), t]));
+  const mentionById = new Map(mentions.map((u) => [u._id.toString(), u]));
   const likedSet = new Set(likes.map((l) => l.targetId.toString()));
 
   const out = new Map<string, PostDTOContext>();
   for (const p of posts) {
     const author = authorById.get(p.authorId.toString());
     if (!author) continue;
-    out.set(p.id, {
+    out.set(p._id.toString(), {
       author,
       tags: p.tagIds.map((t) => tagById.get(t.toString())).filter((x): x is TagDocument => !!x),
       mentions: p.mentionIds
         .map((m) => mentionById.get(m.toString()))
         .filter((x): x is UserDocument => !!x),
-      likedByMe: likedSet.has(p.id),
+      likedByMe: likedSet.has(p._id.toString()),
     });
   }
   return out;

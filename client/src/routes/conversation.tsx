@@ -1,5 +1,12 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useState } from 'react';
-import { useInfiniteQuery, useMutation } from '@tanstack/react-query';
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import clsx from 'clsx';
@@ -8,10 +15,11 @@ import { useTranslation } from 'react-i18next';
 import * as messagesApi from '@/api/messages.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
-import { Avatar, Button, Spinner } from '@/components/primitives';
-import { emit } from '@/api/realtime';
+import { Avatar, Spinner } from '@/components/primitives';
+import { emit, on } from '@/api/realtime';
+import { useRealtime } from '@/stores/realtime.store';
 import { formatRelative } from '@/lib/formatDate';
-import type { ApiError, MessageDTO } from '@/api/types';
+import type { ApiError, MessageDTO, Paginated } from '@/api/types';
 import s from './messages.module.css';
 
 export default function ConversationRoute() {
@@ -19,20 +27,34 @@ export default function ConversationRoute() {
   const { id = '' } = useParams<{ id: string }>();
   const me = useSession((st) => st.user);
   const nav = useNavigate();
+  const qc = useQueryClient();
   const [text, setText] = useState('');
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const decUnreadC = useRealtime((s) => s.incUnreadConversations); // called with -1
 
+  // Join/leave conversation room
   useEffect(() => {
     if (!id) return;
     emit('conversation:join', { conversationId: id });
-    return () => {
-      emit('conversation:leave', { conversationId: id });
-    };
+    return () => { emit('conversation:leave', { conversationId: id }); };
   }, [id]);
 
+  // Mark read on enter and decrement nav badge
   useEffect(() => {
     if (!id) return;
-    messagesApi.markRead(id).catch(() => undefined);
-  }, [id]);
+    messagesApi.markRead(id)
+      .then(() => decUnreadC(-1))
+      .catch(() => undefined);
+  }, [id, decUnreadC]);
+
+  // Fetch conversation metadata (participants) — fixes blank header on new convos
+  const convo = useQuery({
+    queryKey: qk.conversations.byId(id),
+    queryFn: () => messagesApi.getConversation(id),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+  });
 
   const q = useInfiniteQuery({
     queryKey: qk.conversations.messages(id),
@@ -43,17 +65,44 @@ export default function ConversationRoute() {
     enabled: Boolean(id),
   });
 
+  // Realtime: RealtimeBridge (global) handles cache updates and toast for all conversations.
+  // Here we only need to mark the conversation as read when messages arrive while viewing it.
+  useEffect(() => {
+    if (!id) return;
+    return on('message', (payload) => {
+      const msg = payload as MessageDTO;
+      if (msg.conversationId !== id) return;
+      if (msg.sender.id === me?.id) return;
+      messagesApi.markRead(id).catch(() => undefined);
+    });
+  }, [id, me?.id]);
+
   const send = useMutation({
     mutationFn: () => messagesApi.send(id, text.trim()),
-    onSuccess: () => {
+    onSuccess: (msg) => {
       setText('');
+      // Reset textarea height
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      // Prepend to cache
+      qc.setQueryData(
+        qk.conversations.messages(id),
+        (old: InfiniteData<Paginated<MessageDTO>> | undefined) => {
+          if (!old) {
+            return { pages: [{ items: [msg], nextCursor: null }], pageParams: [null] };
+          }
+          const [first, ...rest] = old.pages;
+          return { ...old, pages: [{ ...first, items: [msg, ...first.items] }, ...rest] };
+        },
+      );
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
   });
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!text.trim() || send.isPending) return;
     send.mutate();
   };
 
@@ -64,14 +113,24 @@ export default function ConversationRoute() {
     }
   };
 
-  const messages = useMemo(
-    () => q.data?.pages.flatMap((p) => p.items) ?? [],
-    [q.data],
-  );
+  // Auto-resize textarea as user types
+  const autoResize = useCallback((el: HTMLTextAreaElement) => {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, []);
 
+  const onTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    autoResize(e.target);
+  };
+
+  const messages = q.data?.pages.flatMap((p) => p.items) ?? [];
+
+  // Derive the other participant from conversation metadata (reliable) or messages (fallback)
   const other =
+    convo.data?.participants.find((p) => p.id !== me?.id) ??
+    convo.data?.participants[0] ??
     messages.find((m) => m.sender.id !== me?.id)?.sender ??
-    messages[0]?.sender ??
     null;
 
   if (!id) {
@@ -92,40 +151,48 @@ export default function ConversationRoute() {
             <span className={s.rowDate}>@{other.username}</span>
           </Link>
         )}
+        {!other && convo.isLoading && <Spinner />}
       </header>
 
-      <div className={s.threadBody}>
+      <div className={s.threadBody} ref={bodyRef}>
         {q.isLoading && <Spinner />}
+        {q.hasNextPage && (
+          <div className={s.loadOlder}>
+            <button
+              type="button"
+              className={s.loadOlderBtn}
+              onClick={() => q.fetchNextPage()}
+              disabled={q.isFetchingNextPage}
+            >
+              {q.isFetchingNextPage ? <Spinner /> : t('messages.loadOlder')}
+            </button>
+          </div>
+        )}
         {messages.map((m) => (
           <MessageBubble key={m.id} m={m} mine={m.sender.id === me?.id} />
         ))}
-        {q.hasNextPage && (
-          <div className={s.loadOlder}>
-            <Button variant="ghost" size="sm" onClick={() => q.fetchNextPage()}>
-              {t('messages.loadOlder')}
-            </Button>
-          </div>
-        )}
       </div>
 
       <form onSubmit={onSubmit} className={s.composeRow}>
         <textarea
+          ref={textareaRef}
           className={s.composeInput}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={onTextChange}
           onKeyDown={onKeyDown}
           placeholder={t('messages.messagePlaceholder')}
           maxLength={4000}
           rows={1}
           aria-label="Your message"
         />
-        <Button
-          variant="primary"
+        <button
           type="submit"
+          className={s.sendBtn}
           disabled={send.isPending || !text.trim()}
+          aria-label={t('messages.send')}
         >
-          {t('messages.send')}
-        </Button>
+          {send.isPending ? <Spinner /> : t('messages.send')}
+        </button>
       </form>
     </div>
   );
@@ -133,11 +200,11 @@ export default function ConversationRoute() {
 
 function MessageBubble({ m, mine }: { m: MessageDTO; mine: boolean }) {
   return (
-    <div>
+    <div className={clsx(s.bubbleWrap, mine && s.bubbleWrapMine)}>
       <div className={clsx(s.message, mine && s.messageMine)}>{m.text}</div>
-      <div className={s.messageMeta}>
-        <time dateTime={m.createdAt}>{formatRelative(m.createdAt)}</time>
-      </div>
+      <time dateTime={m.createdAt} className={clsx(s.messageMeta, mine && s.messageMetaMine)}>
+        {formatRelative(m.createdAt)}
+      </time>
     </div>
   );
 }

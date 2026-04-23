@@ -91,6 +91,7 @@
     "posts": "Posts",
     "follow": "Follow",
     "unfollow": "Unfollow",
+    "message": "Message",
     "loadMore": "Load more",
     "notFound": "User not found",
     "notFoundDesc": "No one on swil goes by @{{username}} yet."
@@ -121,7 +122,8 @@
     "back": "Messages",
     "messagePlaceholder": "Write a message — Enter to send, Shift+Enter for a newline",
     "send": "Send",
-    "loadOlder": "Load older"
+    "loadOlder": "Load older",
+    "noUsers": "No users found"
   },
   "settings": {
     "title": "Settings",

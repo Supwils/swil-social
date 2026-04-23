@@ -1,0 +1,230 @@
+/* Expand/collapse via CSS grid trick — no JS height measurement needed */
+.panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 280ms cubic-bezier(0.4, 0, 0.2, 1);
+  margin-left: calc(40px + var(--space-3));
+}
+
+.panel.open {
+  grid-template-rows: 1fr;
+}
+
+.inner {
+  overflow: hidden;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+/* Compose */
+
+.compose {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding-bottom: var(--space-2);
+}
+
+.composeField {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.textarea {
+  width: 100%;
+  resize: none;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  color: var(--color-text);
+  font-family: var(--font-serif);
+  font-size: 0.9375rem;
+  line-height: var(--lh-relaxed);
+  padding: var(--space-1) 0;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease);
+  field-sizing: content;
+  min-height: 2.4rem;
+}
+
+.textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+.textarea:focus {
+  border-bottom-color: var(--color-accent);
+}
+
+.composeActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  animation: fadeUp 150ms var(--ease) both;
+}
+
+.cancelBtn {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.cancelBtn:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.submitBtn {
+  font-size: var(--text-small);
+  font-weight: 500;
+  color: var(--color-accent);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.submitBtn:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.submitBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Sign-in prompt */
+
+.signIn {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  padding: var(--space-2) 0;
+}
+
+.signIn a {
+  color: var(--color-accent);
+  margin-right: 0.25em;
+}
+
+/* Loading */
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3) 0;
+}
+
+/* Comment list */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+  animation: fadeUp 200ms var(--ease) both;
+}
+
+.item:last-child {
+  border-bottom: none;
+}
+
+.itemBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.itemHeader {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.author {
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.author:hover {
+  color: var(--color-accent);
+}
+
+.handle {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+}
+
+.time {
+  margin-left: auto;
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.itemText {
+  font-family: var(--font-serif);
+  font-size: 0.9375rem;
+  line-height: var(--lh-relaxed);
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+/* Load more */
+
+.loadMore {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  padding: var(--space-1) 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.loadMore:hover:not(:disabled) {
+  color: var(--color-accent);
+}
+
+.loadMore:disabled {
+  cursor: default;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}

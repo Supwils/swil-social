@@ -55,12 +55,13 @@ export async function listForViewer(
   cursor: Cursor | null,
   limit: number,
 ): Promise<{ items: ConversationDTO[]; nextCursor: string | null }> {
-  const docs = await Conversation.find({
+  const docs = (await Conversation.find({
     participantIds: viewer._id,
     ...cursorFilterDesc(cursor, 'lastMessageAt'),
   })
     .sort({ lastMessageAt: -1, _id: -1 })
-    .limit(limit + 1);
+    .limit(limit + 1)
+    .lean()) as unknown as ConversationDocument[];
 
   // buildNextCursor uses createdAt; we sort by lastMessageAt so compute cursors from that field.
   const pageSlice = docs.length > limit ? docs.slice(0, limit) : docs;
@@ -73,19 +74,19 @@ export async function listForViewer(
     if (c.lastMessageId) lastMessageIds.add(c.lastMessageId.toString());
   }
 
-  const [users, messages] = await Promise.all([
+  const [users, messages] = (await Promise.all([
     User.find({
       _id: { $in: Array.from(participantIds).map((id) => new Types.ObjectId(id)) },
-    }),
+    }).lean(),
     lastMessageIds.size
       ? Message.find({
           _id: { $in: Array.from(lastMessageIds).map((id) => new Types.ObjectId(id)) },
-        })
+        }).lean()
       : Promise.resolve([] as MessageDocument[]),
-  ]);
+  ])) as unknown as [UserDocument[], MessageDocument[]];
 
-  const userById = new Map(users.map((u) => [u.id, u]));
-  const msgById = new Map(messages.map((m) => [m.id, m]));
+  const userById = new Map(users.map((u) => [u._id.toString(), u]));
+  const msgById = new Map(messages.map((m) => [m._id.toString(), m]));
 
   const items: ConversationDTO[] = pageSlice.map((c) => {
     const people = c.participantIds
@@ -111,9 +112,26 @@ export async function listForViewer(
 
 function encodeLastMessageCursor(c: ConversationDocument): string {
   return Buffer.from(
-    JSON.stringify({ t: c.lastMessageAt.toISOString(), id: c.id }),
+    JSON.stringify({ t: c.lastMessageAt.toISOString(), id: c._id.toString() }),
     'utf8',
   ).toString('base64url');
+}
+
+export async function getById(
+  viewer: UserDocument,
+  conversationId: string,
+): Promise<ConversationDTO> {
+  const convo = await assertMember(viewer, conversationId);
+  const participants = (await User.find({ _id: { $in: convo.participantIds } }).lean()) as unknown as UserDocument[];
+  let lastMessage: MessageDTO | null = null;
+  if (convo.lastMessageId) {
+    const msg = await Message.findById(convo.lastMessageId);
+    if (msg) {
+      const sender = participants.find((u) => u._id.equals(msg.senderId));
+      if (sender) lastMessage = toMessageDTO(msg, sender);
+    }
+  }
+  return toConversationDTO(convo, participants, viewer.id, lastMessage);
 }
 
 /* ---------- messages ---------- */
@@ -131,16 +149,17 @@ export async function listMessages(
     deletedFor: { $ne: viewer._id },
     ...cursorFilterDesc(cursor),
   };
-  const docs = await Message.find(filter)
+  const docs = (await Message.find(filter)
     .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1);
+    .limit(limit + 1)
+    .lean()) as unknown as MessageDocument[];
   const { items, nextCursor } = buildNextCursor(docs, limit);
 
   const senderIds = Array.from(new Set(items.map((m) => m.senderId.toString())));
-  const senders = await User.find({
+  const senders = (await User.find({
     _id: { $in: senderIds.map((id) => new Types.ObjectId(id)) },
-  });
-  const byId = new Map(senders.map((u) => [u.id, u]));
+  }).lean()) as unknown as UserDocument[];
+  const byId = new Map(senders.map((u) => [u._id.toString(), u]));
 
   const hydrated: MessageDTO[] = items
     .map((m) => {
@@ -177,11 +196,11 @@ export async function send(
   );
 
   const dto = toMessageDTO(message, sender);
-  emitToConversation(convo.id, 'message', dto);
+  emitToConversation(convo._id.toString(), 'message', dto);
   // Notify each other participant individually (their `user:<id>` room) for
   // inbox badges and toasts when they're not currently in the thread.
   for (const otherId of otherIds) {
-    emitToUser(otherId, 'conversation:update', { conversationId: convo.id });
+    emitToUser(otherId, 'conversation:update', { conversationId: convo._id.toString() });
     await createNotification({
       recipientId: otherId,
       actorId: sender._id,
@@ -207,8 +226,8 @@ export async function markRead(viewer: UserDocument, conversationId: string): Pr
     ),
   ]);
 
-  emitToConversation(convo.id, 'message:read', {
-    conversationId: convo.id,
+  emitToConversation(convo._id.toString(), 'message:read', {
+    conversationId: convo._id.toString(),
     userId: viewer.id,
     at: new Date().toISOString(),
   });
@@ -219,7 +238,7 @@ async function assertMember(
   conversationId: string,
 ): Promise<ConversationDocument> {
   if (!Types.ObjectId.isValid(conversationId)) throw AppError.notFound('Conversation not found');
-  const convo = await Conversation.findById(conversationId);
+  const convo = (await Conversation.findById(conversationId).lean()) as unknown as ConversationDocument | null;
   if (!convo || !convo.participantIds.some((id) => id.equals(viewer._id))) {
     throw AppError.notFound('Conversation not found');
   }

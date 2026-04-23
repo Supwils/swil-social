@@ -1,10 +1,11 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import * as usersApi from '@/api/users.api';
 import * as feedApi from '@/api/feed.api';
 import * as followsApi from '@/api/follows.api';
+import * as messagesApi from '@/api/messages.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
 import { PostCard } from '@/features/posts/PostCard';
@@ -75,6 +76,7 @@ export default function UserRoute() {
   const { username = '' } = useParams<{ username: string }>();
   const me = useSession((st) => st.user);
   const qc = useQueryClient();
+  const nav = useNavigate();
 
   const user = useQuery({
     queryKey: qk.users.byUsername(username),
@@ -92,12 +94,27 @@ export default function UserRoute() {
 
   const isSelf = Boolean(me && user.data && me.id === user.data.id);
 
+  const followStatus = useQuery({
+    queryKey: qk.users.followStatus(username),
+    queryFn: () => followsApi.checkFollowing(username),
+    enabled: Boolean(me && !isSelf && user.data),
+    staleTime: 30_000,
+  });
+  const isFollowingUser = followStatus.data ?? false;
+
+  const message = useMutation({
+    mutationFn: () => messagesApi.findOrCreate(username),
+    onSuccess: (convo) => nav(`/messages/${convo.id}`),
+    onError: (err) => toast.error((err as unknown as ApiError).message),
+  });
+
   const follow = useMutation({
     mutationFn: () => followsApi.follow(username),
     onSuccess: () => {
       qc.setQueryData<UserDTO>(qk.users.byUsername(username), (old) =>
         old ? { ...old, followerCount: old.followerCount + 1 } : old,
       );
+      qc.setQueryData(qk.users.followStatus(username), true);
       toast.success(`Following @${username}`);
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
@@ -109,6 +126,7 @@ export default function UserRoute() {
       qc.setQueryData<UserDTO>(qk.users.byUsername(username), (old) =>
         old ? { ...old, followerCount: Math.max(0, old.followerCount - 1) } : old,
       );
+      qc.setQueryData(qk.users.followStatus(username), false);
       toast.success(`Unfollowed @${username}`);
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
@@ -174,19 +192,29 @@ export default function UserRoute() {
           </div>
           {!isSelf && me && (
             <div className={s.actions}>
+              {isFollowingUser ? (
+                <Button
+                  variant="subtle"
+                  onClick={() => unfollow.mutate()}
+                  disabled={unfollow.isPending || followStatus.isLoading}
+                >
+                  {t('profile.unfollow')}
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  onClick={() => follow.mutate()}
+                  disabled={follow.isPending || followStatus.isLoading}
+                >
+                  {t('profile.follow')}
+                </Button>
+              )}
               <Button
-                variant="primary"
-                onClick={() => follow.mutate()}
-                disabled={follow.isPending}
+                variant="ghost"
+                onClick={() => message.mutate()}
+                disabled={message.isPending}
               >
-                {t('profile.follow')}
-              </Button>
-              <Button
-                variant="subtle"
-                onClick={() => unfollow.mutate()}
-                disabled={unfollow.isPending}
-              >
-                {t('profile.unfollow')}
+                {t('profile.message')}
               </Button>
             </div>
           )}

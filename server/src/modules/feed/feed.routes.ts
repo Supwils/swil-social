@@ -18,7 +18,7 @@ const pagingQuery = z.object({
 function pageToDtos(items: PostDocument[], ctxById: Map<string, PostDTOContext>) {
   return items
     .map((p) => {
-      const ctx = ctxById.get(p.id);
+      const ctx = ctxById.get(p._id.toString());
       return ctx ? toPostDTO(p, ctx) : null;
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);

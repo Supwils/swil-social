@@ -11,6 +11,8 @@ export const qk = {
     posts: (username: string) => ['users', username, 'posts'] as const,
     following: (username: string) => ['users', username, 'following'] as const,
     followers: (username: string) => ['users', username, 'followers'] as const,
+    followStatus: (username: string) => ['users', username, 'follow-status'] as const,
+    search: (q: string) => ['users', 'search', q] as const,
   },
   posts: {
     byId: (id: string) => ['posts', id] as const,

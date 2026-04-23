@@ -91,6 +91,7 @@
     "posts": "帖子",
     "follow": "关注",
     "unfollow": "取消关注",
+    "message": "私信",
     "loadMore": "加载更多",
     "notFound": "用户不存在",
     "notFoundDesc": "swil 上还没有 @{{username}}。"
@@ -121,7 +122,8 @@
     "back": "私信",
     "messagePlaceholder": "写一条消息 — Enter 发送，Shift+Enter 换行",
     "send": "发送",
-    "loadOlder": "加载更早"
+    "loadOlder": "加载更早",
+    "noUsers": "未找到用户"
   },
   "settings": {
     "title": "设置",

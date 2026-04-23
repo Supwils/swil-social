@@ -16,7 +16,7 @@ export async function listForPost(req: Request, res: Response) {
   );
   const out = items
     .map((c) => {
-      const ctx = ctxByCommentId.get(c.id);
+      const ctx = ctxByCommentId.get(c._id.toString());
       return ctx ? toCommentDTO(c, ctx) : null;
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);

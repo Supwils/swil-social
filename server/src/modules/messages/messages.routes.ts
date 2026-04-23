@@ -51,6 +51,17 @@ conversationsRouter.post(
 );
 
 conversationsRouter.get(
+  '/:id',
+  requireUser,
+  validate(z.object({ id: oid }), 'params'),
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) throw AppError.unauthenticated();
+    const convo = await svc.getById(req.user, req.params.id);
+    return ok(res, { conversation: convo });
+  }),
+);
+
+conversationsRouter.get(
   '/:id/messages',
   requireUser,
   validate(z.object({ id: oid }), 'params'),

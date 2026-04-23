@@ -79,7 +79,7 @@ export interface TagDTO {
 
 export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): UserDTO {
   const base: UserDTO = {
-    id: user.id,
+    id: user._id.toString(),
     username: user.username,
     usernameDisplay: user.usernameDisplay,
     displayName: user.displayName,
@@ -105,7 +105,7 @@ export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): Us
 
 export function toUserLiteDTO(user: UserDocument): UserLiteDTO {
   return {
-    id: user.id,
+    id: user._id.toString(),
     username: user.username,
     usernameDisplay: user.usernameDisplay,
     displayName: user.displayName,
@@ -129,7 +129,7 @@ export type { CommentDocument } from '../models/comment.model';
 
 export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
   return {
-    id: post.id,
+    id: post._id.toString(),
     author: toUserLiteDTO(ctx.author),
     text: post.text,
     images: post.images.map((i) => ({
@@ -164,7 +164,7 @@ export interface CommentDTOContext {
 
 export function toCommentDTO(comment: CommentDocument, ctx: CommentDTOContext): CommentDTO {
   return {
-    id: comment.id,
+    id: comment._id.toString(),
     postId: comment.postId.toString(),
     parentId: comment.parentId ? comment.parentId.toString() : null,
     author: toUserLiteDTO(ctx.author),
@@ -212,7 +212,7 @@ export interface ConversationDTO {
 
 export function toMessageDTO(msg: MessageDocument, sender: UserDocument): MessageDTO {
   return {
-    id: msg.id,
+    id: msg._id.toString(),
     conversationId: msg.conversationId.toString(),
     sender: toUserLiteDTO(sender),
     text: msg.text,
@@ -228,7 +228,7 @@ export function toConversationDTO(
   lastMessage: MessageDTO | null,
 ): ConversationDTO {
   return {
-    id: convo.id,
+    id: convo._id.toString(),
     participants: participants.map(toUserLiteDTO),
     lastMessage,
     unread: convo.unreadBy.some((id) => id.toString() === viewerId),

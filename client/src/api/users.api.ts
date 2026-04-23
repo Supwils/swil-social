@@ -13,7 +13,7 @@ export async function updateMe(patch: Partial<{
   location: string | null;
   website: string | null;
   birthdate: string | null;
-  preferences: UserDTO['preferences'];
+  preferences: Partial<NonNullable<UserDTO['preferences']>>;
   profileTags: string[];
 }>): Promise<UserDTO> {
   const out = await unwrap<{ user: UserDTO }>(http.patch('/users/me', patch));
@@ -38,6 +38,13 @@ export async function getPopularProfileTags(): Promise<Array<{ tag: string; coun
     http.get('/users/profile-tags'),
   );
   return out.tags;
+}
+
+export async function searchUsers(query: string, signal?: AbortSignal): Promise<UserLiteDTO[]> {
+  const out = await unwrap<{ items: UserLiteDTO[] }>(
+    http.get('/users', { params: { search: query.trim(), limit: 6 }, signal }),
+  );
+  return out.items;
 }
 
 export async function updateAvatar(file: File): Promise<string | null> {
