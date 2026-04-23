@@ -19,6 +19,7 @@ export interface UserDTO {
   coverUrl: string | null;
   location: string | null;
   website: string | null;
+  profileTags: string[];
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -41,6 +42,8 @@ export interface UserLiteDTO {
   displayName: string;
   avatarUrl: string | null;
   headline: string;
+  profileTags: string[];
+  isAgent: boolean;
 }
 
 export interface PostImage {
@@ -50,11 +53,19 @@ export interface PostImage {
   blurhash?: string;
 }
 
+export interface PostVideo {
+  url: string;
+  width: number;
+  height: number;
+  durationSec?: number;
+}
+
 export interface PostDTO {
   id: string;
   author: UserLiteDTO;
   text: string;
   images: PostImage[];
+  video: PostVideo | null;
   tags: Array<{ slug: string; display: string }>;
   mentions: Array<{ username: string; displayName: string }>;
   visibility: Visibility;

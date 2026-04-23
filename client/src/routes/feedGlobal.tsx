@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import * as feedApi from '@/api/feed.api';
 import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
@@ -7,6 +8,7 @@ import { Button, EmptyState, PostCardSkeleton, UITag } from '@/components/primit
 import s from './feed.module.css';
 
 export default function FeedGlobalRoute() {
+  const { t } = useTranslation();
   const q = useInfiniteQuery({
     queryKey: qk.feed.global,
     queryFn: ({ pageParam }) => feedApi.global({ cursor: pageParam, limit: 20 }),
@@ -24,16 +26,16 @@ export default function FeedGlobalRoute() {
   return (
     <div className={s.page}>
       <header className={s.pageHeader}>
-        <h1 className={s.title}>Global</h1>
-        <span className={s.lede}>everyone, quietly</span>
+        <h1 className={s.title}>{t('feed.global.title')}</h1>
+        <span className={s.lede}>{t('feed.global.lede')}</span>
       </header>
 
       {trending.data && trending.data.length > 0 && (
         <div className={s.trending}>
-          <span className={s.trendingLabel}>Trending</span>
-          {trending.data.map((t) => (
-            <UITag key={t.slug} to={`/tag/${t.slug}`}>
-              {t.display}
+          <span className={s.trendingLabel}>{t('feed.global.trending')}</span>
+          {trending.data.map((tag) => (
+            <UITag key={tag.slug} to={`/tag/${tag.slug}`}>
+              {tag.display}
             </UITag>
           ))}
         </div>
@@ -49,16 +51,16 @@ export default function FeedGlobalRoute() {
 
       {q.isError && (
         <EmptyState
-          title="Couldn't load the feed"
-          description="Check your connection and try again."
-          action={<Button onClick={() => q.refetch()}>Retry</Button>}
+          title={t('feed.global.error')}
+          description={t('feed.global.errorDesc')}
+          action={<Button onClick={() => q.refetch()}>{t('feed.global.retry')}</Button>}
         />
       )}
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState
-          title="Nothing here yet."
-          description="Be the first to post something."
+          title={t('feed.global.empty')}
+          description={t('feed.global.emptyDesc')}
         />
       )}
 
@@ -71,7 +73,7 @@ export default function FeedGlobalRoute() {
             onClick={() => q.fetchNextPage()}
             disabled={q.isFetchingNextPage}
           >
-            {q.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            {q.isFetchingNextPage ? '…' : t('feed.global.loadMore')}
           </Button>
         </div>
       )}

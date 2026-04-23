@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { ArrowLeft } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import * as postsApi from '@/api/posts.api';
 import * as commentsApi from '@/api/comments.api';
 import { qk } from '@/api/queryKeys';
@@ -22,6 +23,7 @@ import { formatRelative } from '@/lib/formatDate';
 import s from './post.module.css';
 
 export default function PostRoute() {
+  const { t } = useTranslation();
   const { id = '' } = useParams<{ id: string }>();
   const me = useSession((st) => st.user);
   const qc = useQueryClient();
@@ -72,9 +74,9 @@ export default function PostRoute() {
   if (post.isError || !post.data) {
     return (
       <EmptyState
-        title="Post not found"
-        description="This post may have been removed or is private."
-        action={<Button onClick={() => nav('/feed')}>Back to feed</Button>}
+        title={t('post.notFound')}
+        description={t('post.notFoundDesc')}
+        action={<Button onClick={() => nav('/feed')}>{t('post.backToFeed')}</Button>}
       />
     );
   }
@@ -84,15 +86,15 @@ export default function PostRoute() {
   return (
     <div className={s.page}>
       <Link to="/feed" className={s.backLink}>
-        <ArrowLeft size={14} weight="regular" aria-hidden /> Back
+        <ArrowLeft size={14} weight="regular" aria-hidden /> {t('post.back')}
       </Link>
 
       <PostCard post={post.data} />
 
       <h2 className={s.commentsHeader}>
         {post.data.commentCount > 0
-          ? `${post.data.commentCount} comment${post.data.commentCount === 1 ? '' : 's'}`
-          : 'No comments yet'}
+          ? t('post.commentsCount', { count: post.data.commentCount })
+          : t('post.noComments')}
       </h2>
 
       {me ? (
@@ -101,7 +103,7 @@ export default function PostRoute() {
             <Textarea
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
-              placeholder="Add a comment…"
+              placeholder={t('post.commentPlaceholder')}
               rows={3}
               maxLength={2000}
               showCounter
@@ -113,7 +115,7 @@ export default function PostRoute() {
                 type="submit"
                 disabled={submit.isPending || !commentText.trim()}
               >
-                {submit.isPending ? 'Posting…' : 'Post comment'}
+                {submit.isPending ? t('post.commentPosting') : t('post.postComment')}
               </Button>
             </div>
           </form>
@@ -121,7 +123,8 @@ export default function PostRoute() {
       ) : (
         <Card>
           <p className={s.signInPrompt}>
-            <Link to="/login">Sign in</Link> to join the conversation.
+            <Link to="/login">{t('post.signInToComment')}</Link>
+            {t('post.toJoinConversation')}
           </p>
         </Card>
       )}
@@ -153,7 +156,7 @@ export default function PostRoute() {
 
       {comments.hasNextPage && (
         <Button variant="ghost" onClick={() => comments.fetchNextPage()}>
-          Load more comments
+          {t('post.loadMoreComments')}
         </Button>
       )}
     </div>

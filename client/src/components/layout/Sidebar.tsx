@@ -1,38 +1,43 @@
+import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   HouseSimple,
   Globe,
   User as UserIcon,
+  UsersThree,
   Gear,
   SignOut,
   Bell,
   ChatsCircle,
+  NotePencil,
 } from '@phosphor-icons/react';
 import { toast } from 'sonner';
+import { useTranslation } from 'react-i18next';
 import { useSession } from '@/stores/session.store';
-import { useUI } from '@/stores/ui.store';
 import { useRealtime } from '@/stores/realtime.store';
 import * as authApi from '@/api/auth.api';
 import { Avatar } from '@/components/primitives/Avatar';
 import { Button } from '@/components/primitives/Button';
+import { Dialog } from '@/components/primitives/Dialog';
+import { PostComposer } from '@/features/posts/PostComposer';
 import s from './Sidebar.module.css';
 
 export function Sidebar() {
+  const { t } = useTranslation();
   const user = useSession((st) => st.user);
   const clear = useSession((st) => st.clear);
-  const theme = useUI((st) => st.theme);
-  const setTheme = useUI((st) => st.setTheme);
   const unreadN = useRealtime((st) => st.unreadNotifications);
   const unreadC = useRealtime((st) => st.unreadConversations);
   const nav = useNavigate();
+  const [composerOpen, setComposerOpen] = useState(false);
 
   const handleLogout = async () => {
     try {
       await authApi.logout();
     } finally {
       clear();
-      toast.success('Signed out');
+      toast.success(t('nav.signOut'));
       nav('/login');
     }
   };
@@ -50,49 +55,51 @@ export function Sidebar() {
       <nav className={s.nav}>
         <NavLink to="/feed" className={linkClass} end>
           <HouseSimple weight="regular" className={s.icon} aria-hidden />
-          <span>Following</span>
+          <span>{t('nav.following')}</span>
         </NavLink>
         <NavLink to="/global" className={linkClass}>
           <Globe weight="regular" className={s.icon} aria-hidden />
-          <span>Global</span>
+          <span>{t('nav.global')}</span>
         </NavLink>
         <NavLink to="/notifications" className={linkClass}>
           <Bell weight="regular" className={s.icon} aria-hidden />
-          <span>Notifications</span>
+          <span>{t('nav.notifications')}</span>
           {unreadN > 0 && <span className={s.dot} aria-label={`${unreadN} unread`} />}
         </NavLink>
         <NavLink to="/messages" className={linkClass}>
           <ChatsCircle weight="regular" className={s.icon} aria-hidden />
-          <span>Messages</span>
+          <span>{t('nav.messages')}</span>
           {unreadC > 0 && <span className={s.dot} aria-label={`${unreadC} unread`} />}
         </NavLink>
         {user && (
           <NavLink to={`/u/${user.username}`} className={linkClass}>
             <UserIcon weight="regular" className={s.icon} aria-hidden />
-            <span>Profile</span>
+            <span>{t('nav.profile')}</span>
           </NavLink>
         )}
+        <NavLink to="/explore/people" className={linkClass}>
+          <UsersThree weight="regular" className={s.icon} aria-hidden />
+          <span>{t('nav.people')}</span>
+        </NavLink>
         <NavLink to="/settings" className={linkClass}>
           <Gear weight="regular" className={s.icon} aria-hidden />
-          <span>Settings</span>
+          <span>{t('nav.settings')}</span>
         </NavLink>
       </nav>
 
-      <div className={s.footer}>
-        <div className={s.themeRow}>
-          <label htmlFor="theme-select">Theme</label>
-          <select
-            id="theme-select"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value as typeof theme)}
-            className={s.themeSelect}
-          >
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </div>
+      {user && (
+        <>
+          <button className={s.postBtn} onClick={() => setComposerOpen(true)}>
+            <NotePencil weight="regular" size={20} aria-hidden />
+            <span>{t('nav.newPost')}</span>
+          </button>
+          <Dialog open={composerOpen} onOpenChange={setComposerOpen}>
+            <PostComposer bare onSuccess={() => setComposerOpen(false)} />
+          </Dialog>
+        </>
+      )}
 
+      <div className={s.footer}>
         {user && (
           <NavLink to={`/u/${user.username}`} className={s.userCard}>
             <Avatar src={user.avatarUrl} name={user.displayName || user.username} size="md" />
@@ -110,7 +117,7 @@ export function Sidebar() {
           leadingIcon={<SignOut size={16} aria-hidden />}
           fullWidth
         >
-          Sign out
+          {t('nav.signOut')}
         </Button>
       </div>
     </aside>

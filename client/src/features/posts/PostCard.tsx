@@ -7,9 +7,14 @@ import {
   DotsThree,
   PencilSimple,
   Trash,
+  Robot,
+  User,
+  ArrowLeft,
+  ArrowRight,
 } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import { toast } from 'sonner';
+import { useTranslation } from 'react-i18next';
 import * as likesApi from '@/api/likes.api';
 import * as postsApi from '@/api/posts.api';
 import type { PostDTO, Paginated, ApiError } from '@/api/types';
@@ -29,6 +34,7 @@ import { MarkdownBody } from './MarkdownBody';
 import s from './PostCard.module.css';
 
 export function PostCard({ post }: { post: PostDTO }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const me = useSession((st) => st.user);
   const isMine = Boolean(me && me.id === post.author.id);
@@ -36,6 +42,7 @@ export function PostCard({ post }: { post: PostDTO }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [draftText, setDraftText] = useState(post.text);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const like = useMutation({
     mutationFn: async () =>
@@ -90,9 +97,9 @@ export function PostCard({ post }: { post: PostDTO }) {
       );
       qc.setQueryData(['posts', post.id], updated);
       setEditing(false);
-      toast.success('Post updated');
+      toast.success(t('post.updated'));
     },
-    onError: (err) => toast.error((err as unknown as ApiError).message ?? 'Edit failed'),
+    onError: (err) => toast.error((err as unknown as ApiError).message ?? t('post.editFailed')),
   });
 
   const deleteMutation = useMutation({
@@ -117,9 +124,9 @@ export function PostCard({ post }: { post: PostDTO }) {
       );
       qc.removeQueries({ queryKey: ['posts', post.id] });
       setDeleting(false);
-      toast.success('Post deleted');
+      toast.success(t('post.deleted'));
     },
-    onError: (err) => toast.error((err as unknown as ApiError).message ?? 'Delete failed'),
+    onError: (err) => toast.error((err as unknown as ApiError).message ?? t('post.deleteFailed')),
   });
 
   const onSubmitEdit = (e: FormEvent) => {
@@ -128,7 +135,7 @@ export function PostCard({ post }: { post: PostDTO }) {
     editMutation.mutate();
   };
 
-  const onlyOne = post.images.length === 1;
+  const galleryClass = (s as Record<string, string>)[`images${post.images.length}`] ?? s.images1;
 
   return (
     <article className={s.card}>
@@ -147,6 +154,16 @@ export function PostCard({ post }: { post: PostDTO }) {
               {post.author.displayName || post.author.username}
             </span>
             <span className={s.authorHandle}>@{post.author.username}</span>
+            {post.author.isAgent ? (
+              <span className={s.badgeAgent} title={t('common.aiAgent')}>
+                <Robot size={11} weight="fill" aria-hidden />
+                {t('common.ai')}
+              </span>
+            ) : (
+              <span className={s.badgeHuman} title={t('common.human')}>
+                <User size={11} weight="fill" aria-hidden />
+              </span>
+            )}
           </Link>
           <div className={s.headerRight}>
             <Link
@@ -167,10 +184,10 @@ export function PostCard({ post }: { post: PostDTO }) {
                     setEditing(true);
                   }}
                 >
-                  <PencilSimple size={14} aria-hidden /> Edit
+                  <PencilSimple size={14} aria-hidden /> {t('post.edit')}
                 </MenuItem>
                 <MenuItem danger onSelect={() => setDeleting(true)}>
-                  <Trash size={14} aria-hidden /> Delete
+                  <Trash size={14} aria-hidden /> {t('post.delete')}
                 </MenuItem>
               </Menu>
             )}
@@ -196,7 +213,7 @@ export function PostCard({ post }: { post: PostDTO }) {
                 type="button"
                 onClick={() => setEditing(false)}
               >
-                Cancel
+                {t('post.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -204,32 +221,50 @@ export function PostCard({ post }: { post: PostDTO }) {
                 type="submit"
                 disabled={editMutation.isPending || !draftText.trim() || draftText === post.text}
               >
-                {editMutation.isPending ? 'Saving…' : 'Save'}
+                {editMutation.isPending ? t('post.saving') : t('post.save')}
               </Button>
             </div>
           </form>
         ) : (
           <Link to={`/p/${post.id}`} className={s.textLink} aria-label="Open post">
             <MarkdownBody source={post.text} />
-            {post.editedAt && <span className={s.editedMark}>· edited</span>}
+            {post.editedAt && <span className={s.editedMark}>· {t('common.edited')}</span>}
           </Link>
         )}
 
         {post.images.length > 0 && (
-          <div className={clsx(s.images, onlyOne && s.imagesOne)}>
-            {post.images.map((img) => (
-              <div key={img.url} className={s.imgWrap}>
+          <div className={clsx(s.images, galleryClass)}>
+            {post.images.map((img, idx) => (
+              <button
+                key={img.url}
+                type="button"
+                className={s.imgWrap}
+                onClick={() => setLightboxIndex(idx)}
+                aria-label={`View image ${idx + 1} of ${post.images.length}`}
+              >
                 <img src={img.url} alt="" loading="lazy" className={s.img} />
-              </div>
+              </button>
             ))}
+          </div>
+        )}
+
+        {post.video && (
+          <div className={s.videoWrap}>
+            <video
+              src={post.video.url}
+              controls
+              playsInline
+              className={s.video}
+              style={{ aspectRatio: `${post.video.width} / ${post.video.height}` }}
+            />
           </div>
         )}
 
         {post.tags.length > 0 && (
           <div className={s.tags}>
-            {post.tags.map((t) => (
-              <UITag key={t.slug} to={`/tag/${t.slug}`}>
-                {t.display}
+            {post.tags.map((tag) => (
+              <UITag key={tag.slug} to={`/tag/${tag.slug}`}>
+                {tag.display}
               </UITag>
             ))}
           </div>
@@ -254,22 +289,62 @@ export function PostCard({ post }: { post: PostDTO }) {
         </footer>
       </div>
 
+      {lightboxIndex !== null && (
+        <Dialog
+          open
+          onOpenChange={(open) => { if (!open) setLightboxIndex(null); }}
+          title=""
+          contentClassName={s.lightboxContent}
+        >
+          <div className={s.lightboxInner}>
+            <img
+              src={post.images[lightboxIndex]?.url}
+              alt=""
+              className={s.lightboxImg}
+            />
+            {post.images.length > 1 && (
+              <div className={s.lightboxNav}>
+                <button
+                  type="button"
+                  className={s.lightboxBtn}
+                  onClick={() => setLightboxIndex((i) => ((i ?? 0) - 1 + post.images.length) % post.images.length)}
+                  aria-label="Previous image"
+                >
+                  <ArrowLeft size={18} weight="bold" aria-hidden />
+                </button>
+                <span className={s.lightboxCounter}>
+                  {lightboxIndex + 1} / {post.images.length}
+                </span>
+                <button
+                  type="button"
+                  className={s.lightboxBtn}
+                  onClick={() => setLightboxIndex((i) => ((i ?? 0) + 1) % post.images.length)}
+                  aria-label="Next image"
+                >
+                  <ArrowRight size={18} weight="bold" aria-hidden />
+                </button>
+              </div>
+            )}
+          </div>
+        </Dialog>
+      )}
+
       <Dialog
         open={deleting}
         onOpenChange={setDeleting}
-        title="Delete this post?"
-        description="This cannot be undone. The post will be hidden from your feed and anyone else's."
+        title={t('post.confirmDelete')}
+        description={t('post.confirmDeleteDesc')}
       >
         <DialogActions>
           <Button variant="ghost" onClick={() => setDeleting(false)}>
-            Cancel
+            {t('post.cancel')}
           </Button>
           <Button
             variant="danger"
             onClick={() => deleteMutation.mutate()}
             disabled={deleteMutation.isPending}
           >
-            {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+            {deleteMutation.isPending ? t('post.deleting') : t('post.delete')}
           </Button>
         </DialogActions>
       </Dialog>

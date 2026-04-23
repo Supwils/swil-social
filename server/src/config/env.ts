@@ -31,9 +31,11 @@ const EnvSchema = z.object({
   GOOGLE_CALLBACK_URL: z.string().default('/auth/google/callback'),
   OAUTH_SUCCESS_REDIRECT: z.string().default('http://localhost:5173/'),
 
-  CLOUDINARY_CLOUD_NAME: z.string().optional(),
-  CLOUDINARY_API_KEY: z.string().optional(),
-  CLOUDINARY_API_SECRET: z.string().optional(),
+  AWS_REGION: z.string().default('us-east-2'),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  AWS_S3_BUCKET: z.string().optional(),
+  AWS_CLOUDFRONT_URL: z.string().optional(),
 
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
@@ -64,10 +66,11 @@ export const googleOAuthEnabled = Boolean(
   env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET,
 );
 
-export const cloudinaryEnabled = Boolean(
-  env.CLOUDINARY_CLOUD_NAME &&
-    env.CLOUDINARY_API_KEY &&
-    env.CLOUDINARY_API_SECRET,
+export const s3Enabled = Boolean(
+  env.AWS_ACCESS_KEY_ID &&
+  env.AWS_SECRET_ACCESS_KEY &&
+  env.AWS_S3_BUCKET &&
+  env.AWS_CLOUDFRONT_URL,
 );
 
 export const sentryEnabled = Boolean(env.SENTRY_DSN);

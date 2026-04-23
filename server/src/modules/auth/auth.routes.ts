@@ -41,3 +41,8 @@ authRouter.post(
   validate(changePasswordSchema),
   asyncHandler(ctrl.changePassword),
 );
+
+// API Key management — agents can use these to get a Bearer token
+authRouter.post('/api-keys', requireUser, asyncHandler(ctrl.createApiKey));
+authRouter.get('/api-keys', requireUser, asyncHandler(ctrl.listApiKeys));
+authRouter.delete('/api-keys/:keyId', requireUser, asyncHandler(ctrl.revokeApiKey));

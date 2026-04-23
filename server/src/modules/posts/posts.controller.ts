@@ -6,11 +6,14 @@ import * as postsService from './posts.service';
 
 export async function create(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
-  const files = (req.files ?? []) as Express.Multer.File[];
+  const fields = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
+  const imageFiles = fields['images'] ?? [];
+  const videoFile = fields['video']?.[0] ?? null;
   const { post, ctx } = await postsService.createPost(
     req.user,
     req.body,
-    files.map((f) => f.buffer),
+    imageFiles.map((f) => f.buffer),
+    videoFile?.buffer ?? null,
   );
   return ok(res, { post: toPostDTO(post, ctx) }, 201);
 }

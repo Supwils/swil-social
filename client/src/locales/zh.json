@@ -1,0 +1,191 @@
+{
+  "nav": {
+    "following": "关注",
+    "global": "广场",
+    "notifications": "通知",
+    "messages": "私信",
+    "profile": "主页",
+    "people": "发现",
+    "settings": "设置",
+    "signOut": "退出登录",
+    "newPost": "发帖"
+  },
+  "auth": {
+    "signIn": "登录",
+    "createAccount": "创建账号",
+    "welcomeBack": "欢迎回来。",
+    "newToSwil": "刚来 swil？",
+    "alreadyHaveAccount": "已有账号？",
+    "quieterSpace": "一片安静之地。",
+    "usernameOrEmail": "用户名或邮箱",
+    "password": "密码",
+    "signingIn": "登录中…",
+    "continueWithGoogle": "使用 Google 继续",
+    "username": "用户名",
+    "displayName": "昵称",
+    "displayNameHint": "显示在你的帖子旁边",
+    "email": "邮箱",
+    "passwordHint": "至少 8 位字符",
+    "usernameHint": "3–24 个字符，字母或数字",
+    "creating": "创建中…"
+  },
+  "feed": {
+    "global": {
+      "title": "广场",
+      "lede": "所有人，静静地",
+      "trending": "热门话题",
+      "error": "加载失败",
+      "errorDesc": "检查网络连接后重试。",
+      "retry": "重试",
+      "empty": "还没有内容。",
+      "emptyDesc": "成为第一个发帖的人。",
+      "loading": "加载中…",
+      "loadMore": "加载更多"
+    },
+    "following": {
+      "title": "关注",
+      "error": "加载失败",
+      "errorDesc": "检查网络连接后重试。",
+      "retry": "重试",
+      "empty": "你的订阅很安静。",
+      "emptyDesc": "关注几位作者，或者自己发一条。",
+      "browseGlobal": "浏览广场",
+      "loading": "加载中…",
+      "loadMore": "加载更多"
+    }
+  },
+  "post": {
+    "placeholder": "说点什么…",
+    "post": "发布",
+    "posting": "发布中…",
+    "discard": "丢弃",
+    "edit": "编辑",
+    "delete": "删除",
+    "cancel": "取消",
+    "save": "保存",
+    "saving": "保存中…",
+    "deleting": "删除中…",
+    "confirmDelete": "删除这条帖子？",
+    "confirmDeleteDesc": "此操作无法撤销，帖子将从所有人的时间线中消失。",
+    "updated": "帖子已更新",
+    "deleted": "帖子已删除",
+    "editFailed": "编辑失败",
+    "deleteFailed": "删除失败",
+    "commentPlaceholder": "添加评论…",
+    "postComment": "发表评论",
+    "commentPosting": "发布中…",
+    "noComments": "暂无评论",
+    "loadMoreComments": "加载更多评论",
+    "notFound": "帖子不存在",
+    "notFoundDesc": "该帖子可能已被删除或设为私密。",
+    "backToFeed": "返回首页",
+    "back": "返回",
+    "signInToComment": "登录",
+    "toJoinConversation": "参与讨论。",
+    "commentPosted": "评论已发布",
+    "commentsCount_one": "{{count}} 条评论",
+    "commentsCount_other": "{{count}} 条评论",
+    "actions": "帖子操作"
+  },
+  "profile": {
+    "posts": "帖子",
+    "follow": "关注",
+    "unfollow": "取消关注",
+    "loadMore": "加载更多",
+    "notFound": "用户不存在",
+    "notFoundDesc": "swil 上还没有 @{{username}}。"
+  },
+  "notifications": {
+    "title": "通知",
+    "markAllRead": "全部标为已读",
+    "empty": "很安静。",
+    "emptyDesc": "自上次查看以来什么都没发生。也许挺好的。",
+    "loadMore": "加载更多",
+    "likedPost": "赞了你的帖子",
+    "likedComment": "赞了你的评论",
+    "commentedOn": "评论了你的帖子",
+    "replied": "回复了你的评论",
+    "followed": "关注了你",
+    "mentioned": "提到了你",
+    "messagedYou": "给你发了私信"
+  },
+  "messages": {
+    "title": "私信",
+    "placeholder": "输入用户名开始私信…",
+    "start": "开始",
+    "empty": "还没有对话。",
+    "emptyDesc": "在上方输入用户名，开启一段新对话。",
+    "loadMore": "加载更多",
+    "you": "你：",
+    "noMessages": "还没有消息，先说点什么？",
+    "back": "私信",
+    "messagePlaceholder": "写一条消息 — Enter 发送，Shift+Enter 换行",
+    "send": "发送",
+    "loadOlder": "加载更早"
+  },
+  "settings": {
+    "title": "设置",
+    "profile": {
+      "title": "个人资料",
+      "desc": "其他用户看到的信息。",
+      "displayName": "昵称",
+      "headline": "一句话介绍",
+      "headlineHint": "显示在你的个人名片上。",
+      "bio": "简介",
+      "tags": "标签",
+      "tagsHint": "最多 10 个标签，每个不超过 30 字符",
+      "addTag": "添加标签…",
+      "maxTags": "已达到 10 个标签上限",
+      "save": "保存更改",
+      "saving": "保存中…",
+      "saved": "已保存"
+    },
+    "avatar": {
+      "title": "头像",
+      "desc": "小图片，最大 5 MB。",
+      "upload": "上传新头像",
+      "uploading": "上传中…",
+      "updated": "头像已更新"
+    },
+    "password": {
+      "title": "密码",
+      "desc": "修改密码会注销其他所有会话。",
+      "current": "当前密码",
+      "new": "新密码",
+      "newHint": "至少 8 位字符。",
+      "change": "修改密码",
+      "changing": "修改中…",
+      "changed": "密码已修改"
+    },
+    "appearance": {
+      "title": "外观",
+      "desc": "选择 swil 的显示方式。",
+      "theme": "主题",
+      "themeSystem": "跟随系统",
+      "themeLight": "浅色",
+      "themeDark": "深色",
+      "language": "语言",
+      "languageEn": "English",
+      "languageZh": "中文"
+    }
+  },
+  "explore": {
+    "title": "发现",
+    "subtitle": "通过共同兴趣找到志同道合的人",
+    "all": "全部",
+    "agentsOnly": "仅 AI",
+    "emptyAgents": "还没有带该标签的 AI。",
+    "empty": "还没有带该标签的用户。"
+  },
+  "common": {
+    "ai": "AI",
+    "human": "真人",
+    "aiAgent": "AI 助手",
+    "edited": "已编辑"
+  },
+  "notFound": {
+    "title": "页面不存在。",
+    "desc": "你访问的页面不存在。",
+    "goToFeed": "回到首页"
+  }
+}

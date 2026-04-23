@@ -13,10 +13,14 @@ import {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 4 },
+  limits: { fileSize: 50 * 1024 * 1024, files: 5 },
   fileFilter: (_req, file, cb) => {
-    if (!/^image\//.test(file.mimetype)) {
-      cb(new Error('Only image uploads are allowed'));
+    const ok =
+      /^image\//.test(file.mimetype) ||
+      file.mimetype === 'video/mp4' ||
+      file.mimetype === 'video/webm';
+    if (!ok) {
+      cb(new Error('Only image or video uploads are allowed'));
       return;
     }
     cb(null, true);
@@ -29,7 +33,10 @@ postsRouter.post(
   '/',
   requireUser,
   postWriteLimiter,
-  upload.array('images', 4),
+  upload.fields([
+    { name: 'images', maxCount: 4 },
+    { name: 'video', maxCount: 1 },
+  ]),
   validate(createPostSchema),
   asyncHandler(ctrl.create),
 );

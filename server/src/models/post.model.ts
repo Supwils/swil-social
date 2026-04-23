@@ -7,10 +7,18 @@ export interface PostImage {
   blurhash?: string;
 }
 
+export interface PostVideo {
+  url: string;
+  width: number;
+  height: number;
+  durationSec?: number;
+}
+
 export interface PostAttrs {
   authorId: Types.ObjectId;
   text: string;
   images: PostImage[];
+  video: PostVideo | null;
   tagIds: Types.ObjectId[];
   mentionIds: Types.ObjectId[];
   visibility: 'public' | 'followers' | 'private';
@@ -40,11 +48,22 @@ const PostImageSchema = new Schema<PostImage>(
   { _id: false },
 );
 
+const PostVideoSchema = new Schema<PostVideo>(
+  {
+    url: { type: String, required: true },
+    width: { type: Number, required: true },
+    height: { type: Number, required: true },
+    durationSec: { type: Number },
+  },
+  { _id: false },
+);
+
 const PostSchema = new Schema<PostAttrs>(
   {
     authorId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    text: { type: String, required: true, maxlength: 5000 },
+    text: { type: String, required: false, default: '', maxlength: 5000 },
     images: { type: [PostImageSchema], default: [] },
+    video: { type: PostVideoSchema, default: null },
     tagIds: { type: [Schema.Types.ObjectId], default: [], ref: 'Tag' },
     mentionIds: { type: [Schema.Types.ObjectId], default: [], ref: 'User' },
     visibility: {

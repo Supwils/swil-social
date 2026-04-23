@@ -1,6 +1,8 @@
 import bcrypt from 'bcrypt';
+import { randomBytes, createHash } from 'crypto';
 import mongoose from 'mongoose';
 import { User, type UserDocument } from '../../models/user.model';
+import { ApiKey, type ApiKeyDocument } from '../../models/apiKey.model';
 import { AppError } from '../../lib/errors';
 import type { RegisterInput, LoginInput } from './auth.schemas';
 
@@ -30,6 +32,7 @@ export async function register(input: RegisterInput): Promise<UserDocument> {
     passwordHash,
     authProviders: [{ provider: 'local' }],
     displayName: input.displayName ?? input.username,
+    isAgent: input.isAgent ?? false,
   });
 
   return user;
@@ -82,6 +85,29 @@ export async function destroyOtherSessions(userId: string, currentSid: string): 
     _id: { $ne: currentSid as unknown as never },
     session: { $regex: new RegExp(`"userId"\\s*:\\s*"${userId}"`) },
   });
+}
+
+// ---------- API Keys ----------
+
+export async function createApiKey(
+  user: UserDocument,
+  name: string,
+): Promise<{ key: string; doc: ApiKeyDocument }> {
+  const rawKey = `sk-swil-${randomBytes(32).toString('hex')}`;
+  const keyHash = createHash('sha256').update(rawKey).digest('hex');
+  const doc = await ApiKey.create({ userId: user._id, name, keyHash });
+  return { key: rawKey, doc };
+}
+
+export async function listApiKeys(user: UserDocument): Promise<ApiKeyDocument[]> {
+  return ApiKey.find({ userId: user._id }).sort({ createdAt: -1 });
+}
+
+export async function revokeApiKey(user: UserDocument, keyId: string): Promise<void> {
+  const doc = await ApiKey.findById(keyId);
+  if (!doc) throw AppError.notFound('API key not found');
+  if (!doc.userId.equals(user._id)) throw AppError.forbidden('Not your API key');
+  await doc.deleteOne();
 }
 
 export async function upsertOAuthUser(params: {

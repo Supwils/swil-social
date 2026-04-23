@@ -70,6 +70,7 @@ export function createApp(opts: AppOptions = {}): Express {
           fontSrc: ["'self'", 'data:', ...fontAndStyleHosts],
           imgSrc: imageSrc,
           connectSrc: ["'self'", 'ws:', 'wss:'],
+          mediaSrc: ["'self'", 'https://res.cloudinary.com'],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
           baseUri: selfOnly,
@@ -94,8 +95,28 @@ export function createApp(opts: AppOptions = {}): Express {
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     }),
   );
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  // 100 kb is plenty for JSON payloads. Image uploads go through multer
+  // (multipart), not this parser, so tightening this does not affect uploads.
+  app.use(express.json({ limit: '100kb' }));
+  app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+  // Strip MongoDB operator keys ($...) from request inputs to prevent
+  // query injection. Zod catches most cases, but this is defense-in-depth.
+  app.use((req, _res, next) => {
+    const strip = (obj: unknown): void => {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+      for (const key of Object.keys(obj as Record<string, unknown>)) {
+        if (key.startsWith('$') || key.includes('.')) {
+          delete (obj as Record<string, unknown>)[key];
+        } else {
+          strip((obj as Record<string, unknown>)[key]);
+        }
+      }
+    };
+    strip(req.body);
+    strip(req.query);
+    next();
+  });
   app.use(cookieParser());
   app.use(opts.sessionMiddleware ?? createSessionMiddleware());
 

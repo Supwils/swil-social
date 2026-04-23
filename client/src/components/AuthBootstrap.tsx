@@ -5,6 +5,7 @@ import { qk } from '@/api/queryKeys';
 import { onUnauthorized } from '@/api/client';
 import * as authApi from '@/api/auth.api';
 import { useUI } from '@/stores/ui.store';
+import type { LanguagePreference } from '@/stores/ui.store';
 import { applyTheme, watchSystemTheme } from '@/lib/applyTheme';
 
 /**
@@ -19,6 +20,7 @@ export function AuthBootstrap() {
   const clear = useSession((s) => s.clear);
   const qc = useQueryClient();
   const theme = useUI((s) => s.theme);
+  const setLanguage = useUI((s) => s.setLanguage);
 
   useEffect(() => {
     applyTheme(theme);
@@ -40,7 +42,12 @@ export function AuthBootstrap() {
       .then((user) => {
         if (!active) return;
         setUser(user);
-        if (user) qc.setQueryData(qk.auth.me, user);
+        if (user) {
+          qc.setQueryData(qk.auth.me, user);
+          if (user.preferences?.language) {
+            setLanguage(user.preferences.language as LanguagePreference);
+          }
+        }
       })
       .catch(() => {
         if (!active) return;

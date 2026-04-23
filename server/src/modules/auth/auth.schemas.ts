@@ -13,6 +13,7 @@ export const registerSchema = z.object({
   email: z.string().email(),
   password: passwordSchema,
   displayName: z.string().trim().max(80).optional(),
+  isAgent: z.boolean().optional(),
 });
 
 export const loginSchema = z.object({
