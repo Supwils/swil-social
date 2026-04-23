@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
+import { useTranslation } from 'react-i18next';
 import * as notificationsApi from '@/api/notifications.api';
 import { qk } from '@/api/queryKeys';
 import { useRealtime } from '@/stores/realtime.store';
@@ -11,6 +12,7 @@ import type { NotificationDTO } from '@/api/types';
 import s from './notifications.module.css';
 
 export default function NotificationsRoute() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const setUnread = useRealtime((st) => st.setUnreadNotifications);
 
@@ -32,7 +34,6 @@ export default function NotificationsRoute() {
 
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
 
-  // Auto-mark-all as read on mount (the user is on this page — they've seen them)
   useEffect(() => {
     if (items.some((n) => !n.read)) {
       notificationsApi
@@ -43,28 +44,27 @@ export default function NotificationsRoute() {
         })
         .catch(() => undefined);
     }
-    // Intentionally run only once per mount; subsequent deliveries remain unread.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div className={s.page}>
       <header className={s.pageHeader}>
-        <h1 className={s.title}>Notifications</h1>
+        <h1 className={s.title}>{t('notifications.title')}</h1>
         <Button
           variant="ghost"
           size="sm"
           onClick={() => markAll.mutate()}
           disabled={markAll.isPending || !items.some((n) => !n.read)}
         >
-          Mark all read
+          {t('notifications.markAllRead')}
         </Button>
       </header>
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState
-          title="Quiet."
-          description="Nothing has happened since you last looked. That might be fine."
+          title={t('notifications.empty')}
+          description={t('notifications.emptyDesc')}
         />
       )}
 
@@ -75,7 +75,7 @@ export default function NotificationsRoute() {
       {q.hasNextPage && (
         <div className={s.empty}>
           <Button variant="ghost" onClick={() => q.fetchNextPage()}>
-            Load more
+            {t('notifications.loadMore')}
           </Button>
         </div>
       )}
@@ -84,9 +84,10 @@ export default function NotificationsRoute() {
 }
 
 function NotificationRow({ n }: { n: NotificationDTO }) {
+  const { t } = useTranslation();
   const actorName = n.actor.displayName || n.actor.username;
   const href = linkFor(n);
-  const verb = verbFor(n);
+  const verb = verbFor(n, t);
 
   const content = (
     <div className={s.body}>
@@ -124,20 +125,20 @@ function NotificationRow({ n }: { n: NotificationDTO }) {
   return href ? <Link to={href}>{row}</Link> : row;
 }
 
-function verbFor(n: NotificationDTO): string {
+function verbFor(n: NotificationDTO, t: (key: string) => string): string {
   switch (n.type) {
     case 'like':
-      return n.comment ? 'liked your comment' : 'liked your post';
+      return n.comment ? t('notifications.likedComment') : t('notifications.likedPost');
     case 'comment':
-      return 'commented on your post';
+      return t('notifications.commentedOn');
     case 'reply':
-      return 'replied to your comment';
+      return t('notifications.replied');
     case 'follow':
-      return 'started following you';
+      return t('notifications.followed');
     case 'mention':
-      return 'mentioned you';
+      return t('notifications.mentioned');
     case 'message':
-      return 'sent you a message';
+      return t('notifications.messagedYou');
   }
 }
 

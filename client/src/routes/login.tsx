@@ -2,6 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { useTranslation } from 'react-i18next';
 import * as authApi from '@/api/auth.api';
 import { useSession } from '@/stores/session.store';
 import { qk } from '@/api/queryKeys';
@@ -12,6 +13,7 @@ import s from './auth.module.css';
 type Panel = 'login' | 'register';
 
 export default function AuthPage() {
+  const { t } = useTranslation();
   const loc = useLocation();
   const [panel, setPanel] = useState<Panel>(
     loc.pathname === '/register' ? 'register' : 'login'
@@ -24,19 +26,18 @@ export default function AuthPage() {
   return (
     <div className={s.page}>
       <div className={`${s.container} ${panel === 'register' ? s.active : ''}`}>
-        {/* Mobile-only tab switcher */}
         <div className={s.mobileTabs}>
           <button
             className={`${s.mobileTab} ${panel === 'login' ? s.mobileTabActive : ''}`}
             onClick={() => setPanel('login')}
           >
-            Sign in
+            {t('auth.signIn')}
           </button>
           <button
             className={`${s.mobileTab} ${panel === 'register' ? s.mobileTabActive : ''}`}
             onClick={() => setPanel('register')}
           >
-            Create account
+            {t('auth.createAccount')}
           </button>
         </div>
 
@@ -46,17 +47,17 @@ export default function AuthPage() {
         <div className={s.toggleContainer}>
           <div className={s.toggle}>
             <div className={`${s.togglePanel} ${s.toggleLeft}`}>
-              <p className={s.toggleSub}>Already have an account?</p>
-              <h2 className={s.toggleHeading}>Welcome back.</h2>
+              <p className={s.toggleSub}>{t('auth.alreadyHaveAccount')}</p>
+              <h2 className={s.toggleHeading}>{t('auth.welcomeBack')}</h2>
               <button className={s.toggleBtn} onClick={() => setPanel('login')}>
-                Sign in
+                {t('auth.signIn')}
               </button>
             </div>
             <div className={`${s.togglePanel} ${s.toggleRight}`}>
-              <p className={s.toggleSub}>New to swil?</p>
-              <h2 className={s.toggleHeading}>A quieter space.</h2>
+              <p className={s.toggleSub}>{t('auth.newToSwil')}</p>
+              <h2 className={s.toggleHeading}>{t('auth.quieterSpace')}</h2>
               <button className={s.toggleBtn} onClick={() => setPanel('register')}>
-                Create account
+                {t('auth.createAccount')}
               </button>
             </div>
           </div>
@@ -67,6 +68,7 @@ export default function AuthPage() {
 }
 
 function LoginPanel() {
+  const { t } = useTranslation();
   const [usernameOrEmail, setUE] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -99,18 +101,18 @@ function LoginPanel() {
   return (
     <div className={`${s.formContainer} ${s.signIn}`}>
       <div className={s.brand}>swil</div>
-      <h1 className={s.title}>Sign in</h1>
+      <h1 className={s.title}>{t('auth.signIn')}</h1>
 
       <form onSubmit={onSubmit} className={s.form} noValidate>
         <Input
-          label="Username or email"
+          label={t('auth.usernameOrEmail')}
           autoComplete="username"
           value={usernameOrEmail}
           onChange={(e) => setUE(e.target.value)}
           required
         />
         <Input
-          label="Password"
+          label={t('auth.password')}
           type="password"
           autoComplete="current-password"
           value={password}
@@ -119,17 +121,18 @@ function LoginPanel() {
         />
         {error && <div className={s.errorBanner} role="alert">{error}</div>}
         <Button variant="primary" type="submit" disabled={busy} fullWidth>
-          {busy ? 'Signing in…' : 'Sign in'}
+          {busy ? t('auth.signingIn') : t('auth.signIn')}
         </Button>
       </form>
 
       <div className={s.divider}>or</div>
-      <a href="/auth/google" className={s.googleLink}>Continue with Google</a>
+      <a href="/auth/google" className={s.googleLink}>{t('auth.continueWithGoogle')}</a>
     </div>
   );
 }
 
 function RegisterPanel() {
+  const { t } = useTranslation();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -165,26 +168,26 @@ function RegisterPanel() {
   return (
     <div className={`${s.formContainer} ${s.signUp}`}>
       <div className={s.brand}>swil</div>
-      <h1 className={s.title}>Create account</h1>
+      <h1 className={s.title}>{t('auth.createAccount')}</h1>
 
       <form onSubmit={onSubmit} className={s.form} noValidate>
         <Input
-          label="Username"
+          label={t('auth.username')}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           pattern="[a-zA-Z0-9_]{3,24}"
-          hint="3–24 characters, letters and digits"
+          hint={t('auth.usernameHint')}
           error={fields.username}
           required
         />
         <Input
-          label="Display name"
+          label={t('auth.displayName')}
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          hint="Shown next to your posts"
+          hint={t('auth.displayNameHint')}
         />
         <Input
-          label="Email"
+          label={t('auth.email')}
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -192,18 +195,18 @@ function RegisterPanel() {
           required
         />
         <Input
-          label="Password"
+          label={t('auth.password')}
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           minLength={8}
-          hint="At least 8 characters"
+          hint={t('auth.passwordHint')}
           error={fields.password}
           required
         />
         {error && <div className={s.errorBanner} role="alert">{error}</div>}
         <Button variant="primary" type="submit" disabled={busy} fullWidth>
-          {busy ? 'Creating…' : 'Create account'}
+          {busy ? t('auth.creating') : t('auth.createAccount')}
         </Button>
       </form>
     </div>

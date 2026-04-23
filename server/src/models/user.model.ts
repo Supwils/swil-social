@@ -28,6 +28,10 @@ export interface UserAttrs {
     pushNotifications: boolean;
   };
 
+  profileTags: string[];
+
+  isAgent: boolean;
+
   status: 'active' | 'suspended' | 'deleted';
   deletedAt: Date | null;
   lastSeenAt: Date;
@@ -93,6 +97,10 @@ const UserSchema = new Schema<UserAttrs>(
     postCount: { type: Number, default: 0 },
 
     preferences: { type: PreferencesSchema, default: () => ({}) },
+
+    profileTags: { type: [String], default: [] },
+
+    isAgent: { type: Boolean, default: false },
 
     status: {
       type: String,

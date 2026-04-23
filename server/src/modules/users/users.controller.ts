@@ -11,12 +11,18 @@ export async function getByUsername(req: Request, res: Response) {
 }
 
 export async function search(req: Request, res: Response) {
-  const { search: query, limit } = req.query as unknown as {
-    search: string;
+  const { search: query, tag, limit } = req.query as unknown as {
+    search?: string;
+    tag?: string;
     limit?: number;
   };
-  const users = await usersService.searchUsers(query, limit ?? 10);
+  const users = await usersService.searchUsers(query, tag, limit ?? 10);
   return ok(res, { items: users.map(toUserLiteDTO) });
+}
+
+export async function getPopularProfileTags(_req: Request, res: Response) {
+  const tags = await usersService.getPopularProfileTags();
+  return ok(res, { tags });
 }
 
 export async function updateMe(req: Request, res: Response) {

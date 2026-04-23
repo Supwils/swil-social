@@ -38,3 +38,27 @@ export async function uploadBufferToCloudinary(
     stream.end(buffer);
   });
 }
+
+export async function uploadVideoBufferToCloudinary(
+  buffer: Buffer,
+  folder: string,
+): Promise<{ url: string; width: number; height: number; durationSec?: number }> {
+  if (!cloudinaryEnabled) {
+    throw new Error('Cloudinary not configured');
+  }
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder, resource_type: 'video' },
+      (error, result) => {
+        if (error || !result) return reject(error ?? new Error('upload failed'));
+        resolve({
+          url: result.secure_url,
+          width: result.width,
+          height: result.height,
+          ...(result.duration != null ? { durationSec: Math.round(result.duration) } : {}),
+        });
+      },
+    );
+    stream.end(buffer);
+  });
+}

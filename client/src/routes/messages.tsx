@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import clsx from 'clsx';
+import { useTranslation } from 'react-i18next';
 import * as messagesApi from '@/api/messages.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
@@ -12,6 +13,7 @@ import type { ApiError, ConversationDTO } from '@/api/types';
 import s from './messages.module.css';
 
 export default function MessagesRoute() {
+  const { t } = useTranslation();
   const me = useSession((st) => st.user);
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -46,14 +48,14 @@ export default function MessagesRoute() {
   return (
     <div className={s.page}>
       <header className={s.pageHeader}>
-        <h1 className={s.title}>Messages</h1>
+        <h1 className={s.title}>{t('messages.title')}</h1>
       </header>
 
       <form className={s.newForm} onSubmit={onSubmit}>
         <input
           type="text"
           className={s.newInput}
-          placeholder="username to message…"
+          placeholder={t('messages.placeholder')}
           value={recipient}
           onChange={(e) => setRecipient(e.target.value)}
           aria-label="Recipient username"
@@ -65,14 +67,14 @@ export default function MessagesRoute() {
           type="submit"
           disabled={start.isPending || !recipient.trim()}
         >
-          Start
+          {t('messages.start')}
         </Button>
       </form>
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState
-          title="No conversations yet."
-          description="Start one above — enter a username and a new room opens."
+          title={t('messages.empty')}
+          description={t('messages.emptyDesc')}
         />
       )}
 
@@ -82,7 +84,7 @@ export default function MessagesRoute() {
 
       {q.hasNextPage && (
         <Button variant="ghost" onClick={() => q.fetchNextPage()}>
-          Load more
+          {t('messages.loadMore')}
         </Button>
       )}
     </div>
@@ -90,6 +92,7 @@ export default function MessagesRoute() {
 }
 
 function ConversationRow({ convo, selfId }: { convo: ConversationDTO; selfId: string }) {
+  const { t } = useTranslation();
   const other = convo.participants.find((p) => p.id !== selfId) ?? convo.participants[0];
   if (!other) return null;
   return (
@@ -105,9 +108,9 @@ function ConversationRow({ convo, selfId }: { convo: ConversationDTO; selfId: st
         <div className={s.rowPreview}>
           {convo.lastMessage
             ? convo.lastMessage.sender.id === selfId
-              ? `You: ${convo.lastMessage.text}`
+              ? `${t('messages.you')}${convo.lastMessage.text}`
               : convo.lastMessage.text
-            : 'No messages yet — say something.'}
+            : t('messages.noMessages')}
         </div>
       </div>
     </Link>

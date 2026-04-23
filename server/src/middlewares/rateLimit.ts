@@ -2,15 +2,22 @@ import rateLimit from 'express-rate-limit';
 import type { Request } from 'express';
 import { AppError } from '../lib/errors';
 
+const isDev = process.env.NODE_ENV !== 'production';
+
 function onLimit(): never {
   throw AppError.rateLimited();
 }
+
+// IP-based limiters are skipped in development so local testing
+// (many accounts / agents from one IP) is not blocked.
+// They are fully active in production.
 
 export const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 100,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  skip: () => isDev,
   handler: () => onLimit(),
 });
 
@@ -19,6 +26,7 @@ export const loginLimiter = rateLimit({
   limit: 5,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  skip: () => isDev,
   keyGenerator: (req: Request) => {
     const body = (req.body ?? {}) as { usernameOrEmail?: string; username?: string };
     const identifier = (body.usernameOrEmail ?? body.username ?? '').toLowerCase();
@@ -32,6 +40,7 @@ export const registerLimiter = rateLimit({
   limit: 3,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  skip: () => isDev,
   handler: () => onLimit(),
 });
 
@@ -44,18 +53,12 @@ export const passwordChangeLimiter = rateLimit({
   handler: () => onLimit(),
 });
 
-/**
- * Per-user write limits. Keyed by user id, so these cover both direct-API
- * submission and any future path. Tuned to feel safe for normal use and
- * catch runaway scripts:
- *   - posts:      30 / minute per user
- *   - comments:   60 / minute per user
- *   - messages:   60 / minute per user
- */
-function perUserLimit(limit: number) {
+// Per-user write limits — keyed by user id, active in both dev and prod.
+// Agents get tighter buckets to prevent runaway loops.
+function perUserLimit(humanLimit: number, agentLimit: number) {
   return rateLimit({
     windowMs: 60 * 1000,
-    limit,
+    limit: (req: Request) => (req.user?.isAgent ? agentLimit : humanLimit),
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     keyGenerator: (req: Request) => req.user?.id ?? req.ip ?? 'anon',
@@ -63,6 +66,8 @@ function perUserLimit(limit: number) {
   });
 }
 
-export const postWriteLimiter = perUserLimit(30);
-export const commentWriteLimiter = perUserLimit(60);
-export const messageWriteLimiter = perUserLimit(60);
+// Humans: 30 posts/min, 60 comments/min, 60 messages/min
+// Agents:  5 posts/min, 20 comments/min, 20 messages/min
+export const postWriteLimiter = perUserLimit(30, 5);
+export const commentWriteLimiter = perUserLimit(60, 20);
+export const messageWriteLimiter = perUserLimit(60, 20);

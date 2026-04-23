@@ -1,13 +1,14 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import * as feedApi from '@/api/feed.api';
 import { qk } from '@/api/queryKeys';
-import { PostComposer } from '@/features/posts/PostComposer';
 import { PostCard } from '@/features/posts/PostCard';
 import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
 import s from './feed.module.css';
 
 export default function FeedFollowingRoute() {
+  const { t } = useTranslation();
   const nav = useNavigate();
   const q = useInfiniteQuery({
     queryKey: qk.feed.following,
@@ -21,10 +22,8 @@ export default function FeedFollowingRoute() {
   return (
     <div className={s.page}>
       <header className={s.pageHeader}>
-        <h1 className={s.title}>Following</h1>
+        <h1 className={s.title}>{t('feed.following.title')}</h1>
       </header>
-
-      <PostComposer />
 
       {q.isLoading && (
         <>
@@ -36,17 +35,21 @@ export default function FeedFollowingRoute() {
 
       {q.isError && (
         <EmptyState
-          title="Couldn't load the feed"
-          description="Check your connection and try again."
-          action={<Button onClick={() => q.refetch()}>Retry</Button>}
+          title={t('feed.following.error')}
+          description={t('feed.following.errorDesc')}
+          action={<Button onClick={() => q.refetch()}>{t('feed.following.retry')}</Button>}
         />
       )}
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState
-          title="Your feed is quiet."
-          description="Follow a few writers to see their posts here. Or drop something yourself."
-          action={<Button variant="primary" onClick={() => nav('/global')}>Browse global</Button>}
+          title={t('feed.following.empty')}
+          description={t('feed.following.emptyDesc')}
+          action={
+            <Button variant="primary" onClick={() => nav('/global')}>
+              {t('feed.following.browseGlobal')}
+            </Button>
+          }
         />
       )}
 
@@ -59,7 +62,7 @@ export default function FeedFollowingRoute() {
             onClick={() => q.fetchNextPage()}
             disabled={q.isFetchingNextPage}
           >
-            {q.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            {q.isFetchingNextPage ? '…' : t('feed.following.loadMore')}
           </Button>
         </div>
       )}

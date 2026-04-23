@@ -49,6 +49,36 @@ export async function me(req: Request, res: Response) {
   return ok(res, { user: toUserDTO(req.user, { self: true }) });
 }
 
+export async function createApiKey(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  const name: string = req.body.name ?? 'default';
+  const { key, doc } = await authService.createApiKey(req.user, name);
+  return ok(res, {
+    key,
+    apiKey: { id: doc.id, name: doc.name, createdAt: doc.createdAt },
+    warning: 'Store this key securely — it will not be shown again',
+  }, 201);
+}
+
+export async function listApiKeys(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  const keys = await authService.listApiKeys(req.user);
+  return ok(res, {
+    apiKeys: keys.map((k) => ({
+      id: k.id,
+      name: k.name,
+      createdAt: k.createdAt,
+      lastUsedAt: k.lastUsedAt ?? null,
+    })),
+  });
+}
+
+export async function revokeApiKey(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  await authService.revokeApiKey(req.user, req.params.keyId);
+  return noContent(res);
+}
+
 export async function changePassword(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
   const { currentPassword, newPassword } = req.body;

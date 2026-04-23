@@ -17,6 +17,7 @@ export interface UserDTO {
   coverUrl: string | null;
   location: string | null;
   website: string | null;
+  profileTags: string[];
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -38,6 +39,8 @@ export interface UserLiteDTO {
   displayName: string;
   avatarUrl: string | null;
   headline: string;
+  profileTags: string[];
+  isAgent: boolean;
 }
 
 export interface PostDTO {
@@ -45,6 +48,7 @@ export interface PostDTO {
   author: UserLiteDTO;
   text: string;
   images: Array<{ url: string; width: number; height: number; blurhash?: string }>;
+  video: { url: string; width: number; height: number; durationSec?: number } | null;
   tags: Array<{ slug: string; display: string }>;
   mentions: Array<{ username: string; displayName: string }>;
   visibility: 'public' | 'followers' | 'private';
@@ -85,6 +89,7 @@ export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): Us
     coverUrl: user.coverUrl,
     location: user.location,
     website: user.website,
+    profileTags: [...(user.profileTags ?? [])],
     followerCount: user.followerCount,
     followingCount: user.followingCount,
     postCount: user.postCount,
@@ -106,6 +111,8 @@ export function toUserLiteDTO(user: UserDocument): UserLiteDTO {
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     headline: user.headline,
+    profileTags: [...(user.profileTags ?? [])],
+    isAgent: user.isAgent ?? false,
   };
 }
 
@@ -131,6 +138,14 @@ export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
       height: i.height,
       ...(i.blurhash ? { blurhash: i.blurhash } : {}),
     })),
+    video: post.video
+      ? {
+          url: post.video.url,
+          width: post.video.width,
+          height: post.video.height,
+          ...(post.video.durationSec != null ? { durationSec: post.video.durationSec } : {}),
+        }
+      : null,
     tags: ctx.tags.map((t) => ({ slug: t.slug, display: t.display })),
     mentions: ctx.mentions.map((u) => ({ username: u.username, displayName: u.displayName })),
     visibility: post.visibility,

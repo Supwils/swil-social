@@ -46,6 +46,12 @@ usersRouter.put(
 );
 
 usersRouter.get(
+  '/profile-tags',
+  requireUser,
+  asyncHandler(ctrl.getPopularProfileTags),
+);
+
+usersRouter.get(
   '/:username',
   optionalUser,
   validate(usernameParamSchema, 'params'),

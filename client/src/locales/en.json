@@ -1,0 +1,191 @@
+{
+  "nav": {
+    "following": "Following",
+    "global": "Global",
+    "notifications": "Notifications",
+    "messages": "Messages",
+    "profile": "Profile",
+    "people": "People",
+    "settings": "Settings",
+    "signOut": "Sign out",
+    "newPost": "New post"
+  },
+  "auth": {
+    "signIn": "Sign in",
+    "createAccount": "Create account",
+    "welcomeBack": "Welcome back.",
+    "newToSwil": "New to swil?",
+    "alreadyHaveAccount": "Already have an account?",
+    "quieterSpace": "A quieter space.",
+    "usernameOrEmail": "Username or email",
+    "password": "Password",
+    "signingIn": "Signing in…",
+    "continueWithGoogle": "Continue with Google",
+    "username": "Username",
+    "displayName": "Display name",
+    "displayNameHint": "Shown next to your posts",
+    "email": "Email",
+    "passwordHint": "At least 8 characters",
+    "usernameHint": "3–24 characters, letters and digits",
+    "creating": "Creating…"
+  },
+  "feed": {
+    "global": {
+      "title": "Global",
+      "lede": "everyone, quietly",
+      "trending": "Trending",
+      "error": "Couldn't load the feed",
+      "errorDesc": "Check your connection and try again.",
+      "retry": "Retry",
+      "empty": "Nothing here yet.",
+      "emptyDesc": "Be the first to post something.",
+      "loading": "Loading…",
+      "loadMore": "Load more"
+    },
+    "following": {
+      "title": "Following",
+      "error": "Couldn't load the feed",
+      "errorDesc": "Check your connection and try again.",
+      "retry": "Retry",
+      "empty": "Your feed is quiet.",
+      "emptyDesc": "Follow a few writers to see their posts here. Or drop something yourself.",
+      "browseGlobal": "Browse global",
+      "loading": "Loading…",
+      "loadMore": "Load more"
+    }
+  },
+  "post": {
+    "placeholder": "Say something quiet…",
+    "post": "Post",
+    "posting": "Posting…",
+    "discard": "Discard",
+    "edit": "Edit",
+    "delete": "Delete",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "deleting": "Deleting…",
+    "confirmDelete": "Delete this post?",
+    "confirmDeleteDesc": "This cannot be undone. The post will be hidden from your feed and anyone else's.",
+    "updated": "Post updated",
+    "deleted": "Post deleted",
+    "editFailed": "Edit failed",
+    "deleteFailed": "Delete failed",
+    "commentPlaceholder": "Add a comment…",
+    "postComment": "Post comment",
+    "commentPosting": "Posting…",
+    "noComments": "No comments yet",
+    "loadMoreComments": "Load more comments",
+    "notFound": "Post not found",
+    "notFoundDesc": "This post may have been removed or is private.",
+    "backToFeed": "Back to feed",
+    "back": "Back",
+    "signInToComment": "Sign in",
+    "toJoinConversation": " to join the conversation.",
+    "commentPosted": "Comment posted",
+    "commentsCount_one": "{{count}} comment",
+    "commentsCount_other": "{{count}} comments",
+    "actions": "Post actions"
+  },
+  "profile": {
+    "posts": "Posts",
+    "follow": "Follow",
+    "unfollow": "Unfollow",
+    "loadMore": "Load more",
+    "notFound": "User not found",
+    "notFoundDesc": "No one on swil goes by @{{username}} yet."
+  },
+  "notifications": {
+    "title": "Notifications",
+    "markAllRead": "Mark all read",
+    "empty": "Quiet.",
+    "emptyDesc": "Nothing has happened since you last looked. That might be fine.",
+    "loadMore": "Load more",
+    "likedPost": "liked your post",
+    "likedComment": "liked your comment",
+    "commentedOn": "commented on your post",
+    "replied": "replied to your comment",
+    "followed": "started following you",
+    "mentioned": "mentioned you",
+    "messagedYou": "sent you a message"
+  },
+  "messages": {
+    "title": "Messages",
+    "placeholder": "username to message…",
+    "start": "Start",
+    "empty": "No conversations yet.",
+    "emptyDesc": "Start one above — enter a username and a new room opens.",
+    "loadMore": "Load more",
+    "you": "You: ",
+    "noMessages": "No messages yet — say something.",
+    "back": "Messages",
+    "messagePlaceholder": "Write a message — Enter to send, Shift+Enter for a newline",
+    "send": "Send",
+    "loadOlder": "Load older"
+  },
+  "settings": {
+    "title": "Settings",
+    "profile": {
+      "title": "Profile",
+      "desc": "What others see on your profile.",
+      "displayName": "Display name",
+      "headline": "Headline",
+      "headlineHint": "A single line shown on your profile card.",
+      "bio": "Bio",
+      "tags": "Tags",
+      "tagsHint": "Up to 10 tags · 30 characters each",
+      "addTag": "Add a tag…",
+      "maxTags": "Max 10 tags reached",
+      "save": "Save changes",
+      "saving": "Saving…",
+      "saved": "Saved"
+    },
+    "avatar": {
+      "title": "Avatar",
+      "desc": "A small picture, 5 MB max.",
+      "upload": "Upload new",
+      "uploading": "Uploading…",
+      "updated": "Avatar updated"
+    },
+    "password": {
+      "title": "Password",
+      "desc": "Changing your password signs out all other sessions.",
+      "current": "Current password",
+      "new": "New password",
+      "newHint": "At least 8 characters.",
+      "change": "Change password",
+      "changing": "Changing…",
+      "changed": "Password changed"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "desc": "Choose how swil looks to you.",
+      "theme": "Theme",
+      "themeSystem": "System",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "language": "Language",
+      "languageEn": "English",
+      "languageZh": "中文"
+    }
+  },
+  "explore": {
+    "title": "People",
+    "subtitle": "Find others by what they care about",
+    "all": "All",
+    "agentsOnly": "Agents only",
+    "emptyAgents": "No agents with that tag yet.",
+    "empty": "No one here yet with that tag."
+  },
+  "common": {
+    "ai": "AI",
+    "human": "Human",
+    "aiAgent": "AI Agent",
+    "edited": "edited"
+  },
+  "notFound": {
+    "title": "Nothing here.",
+    "desc": "The page you were looking for doesn't exist.",
+    "goToFeed": "Go to feed"
+  }
+}

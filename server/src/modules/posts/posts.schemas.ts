@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 export const createPostSchema = z.object({
-  text: z.string().trim().min(1).max(5000),
+  // text is optional — at least one of text/images/video must be present,
+  // but that check happens in the service after files are known.
+  text: z.string().trim().max(5000).default(''),
   visibility: z.enum(['public', 'followers', 'private']).default('public'),
 });
 

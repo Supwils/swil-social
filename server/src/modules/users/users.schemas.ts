@@ -20,6 +20,7 @@ export const updateMeSchema = z.object({
       pushNotifications: z.boolean().optional(),
     })
     .optional(),
+  profileTags: z.array(z.string().trim().min(1).max(30)).max(10).optional(),
 });
 
 export const usernameParamSchema = z.object({
@@ -31,7 +32,8 @@ export const usernameParamSchema = z.object({
 });
 
 export const searchUsersQuerySchema = z.object({
-  search: z.string().trim().min(1).max(32),
+  search: z.string().trim().min(1).max(32).optional(),
+  tag: z.string().trim().min(1).max(30).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
 });
 

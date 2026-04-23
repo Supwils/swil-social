@@ -10,11 +10,13 @@ export async function create(input: {
   text: string;
   visibility?: Visibility;
   images?: File[];
+  video?: File | null;
 }): Promise<PostDTO> {
   const fd = new FormData();
   fd.append('text', input.text);
   fd.append('visibility', input.visibility ?? 'public');
   for (const img of input.images ?? []) fd.append('images', img);
+  if (input.video) fd.append('video', input.video);
 
   const out = await unwrap<{ post: PostDTO }>(
     http.post('/posts', fd, {

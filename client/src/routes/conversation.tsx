@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import clsx from 'clsx';
 import { ArrowLeft } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import * as messagesApi from '@/api/messages.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
@@ -14,12 +15,12 @@ import type { ApiError, MessageDTO } from '@/api/types';
 import s from './messages.module.css';
 
 export default function ConversationRoute() {
+  const { t } = useTranslation();
   const { id = '' } = useParams<{ id: string }>();
   const me = useSession((st) => st.user);
   const nav = useNavigate();
   const [text, setText] = useState('');
 
-  // Join the conversation room so we get live `message` events for this thread.
   useEffect(() => {
     if (!id) return;
     emit('conversation:join', { conversationId: id });
@@ -28,7 +29,6 @@ export default function ConversationRoute() {
     };
   }, [id]);
 
-  // Mark read on entry + on each new message when the tab is visible.
   useEffect(() => {
     if (!id) return;
     messagesApi.markRead(id).catch(() => undefined);
@@ -47,7 +47,6 @@ export default function ConversationRoute() {
     mutationFn: () => messagesApi.send(id, text.trim()),
     onSuccess: () => {
       setText('');
-      // server emits to room; we get our own message back via socket — no manual append here
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
   });
@@ -70,8 +69,6 @@ export default function ConversationRoute() {
     [q.data],
   );
 
-  // Figure out who the other participant is from the first message or bounce back.
-  // Minor: before the thread exists, server still returns 200 with empty items.
   const other =
     messages.find((m) => m.sender.id !== me?.id)?.sender ??
     messages[0]?.sender ??
@@ -86,7 +83,7 @@ export default function ConversationRoute() {
     <div className={s.thread}>
       <header className={s.threadHeader}>
         <Link to="/messages" className={s.backLink}>
-          <ArrowLeft size={14} weight="regular" aria-hidden /> Messages
+          <ArrowLeft size={14} weight="regular" aria-hidden /> {t('messages.back')}
         </Link>
         {other && (
           <Link to={`/u/${other.username}`} className={s.threadPeer}>
@@ -105,7 +102,7 @@ export default function ConversationRoute() {
         {q.hasNextPage && (
           <div className={s.loadOlder}>
             <Button variant="ghost" size="sm" onClick={() => q.fetchNextPage()}>
-              Load older
+              {t('messages.loadOlder')}
             </Button>
           </div>
         )}
@@ -117,7 +114,7 @@ export default function ConversationRoute() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Write a message — Enter to send, Shift+Enter for a newline"
+          placeholder={t('messages.messagePlaceholder')}
           maxLength={4000}
           rows={1}
           aria-label="Your message"
@@ -127,7 +124,7 @@ export default function ConversationRoute() {
           type="submit"
           disabled={send.isPending || !text.trim()}
         >
-          Send
+          {t('messages.send')}
         </Button>
       </form>
     </div>

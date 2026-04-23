@@ -1,12 +1,12 @@
 import { Types } from 'mongoose';
-import { Post, type PostDocument, type PostImage } from '../../models/post.model';
+import { Post, type PostDocument, type PostImage, type PostVideo } from '../../models/post.model';
 import { User, type UserDocument } from '../../models/user.model';
 import { Tag, type TagDocument } from '../../models/tag.model';
 import { Follow } from '../../models/follow.model';
 import { Like } from '../../models/like.model';
 import { AppError } from '../../lib/errors';
 import { extractTags, extractMentionUsernames } from '../../lib/extract';
-import { uploadBufferToCloudinary } from '../../config/cloudinary';
+import { uploadBufferToS3, uploadVideoBufferToS3, deleteFromS3 } from '../../config/s3';
 import type { PostDTOContext } from '../../lib/dto';
 import type { CreatePostInput, UpdatePostInput } from './posts.schemas';
 import { createNotification } from '../notifications/notifications.service';
@@ -15,22 +15,39 @@ export async function createPost(
   author: UserDocument,
   input: CreatePostInput,
   imageBuffers: Buffer[] = [],
+  videoBuffer: Buffer | null = null,
 ): Promise<{ post: PostDocument; ctx: PostDTOContext }> {
+  const hasText = input.text.trim().length > 0;
+  if (!hasText && imageBuffers.length === 0 && videoBuffer === null) {
+    throw AppError.validation('A post must have text, at least one image, or a video');
+  }
+
+  if (imageBuffers.length > 0 && videoBuffer !== null) {
+    throw AppError.validation('A post cannot contain both images and a video');
+  }
+
+  const MAX_IMG = 5 * 1024 * 1024;
+  for (const buf of imageBuffers) {
+    if (buf.length > MAX_IMG) throw AppError.validation('Image files may not exceed 5 MB');
+  }
+
   const tags = extractTags(input.text);
   const mentionUsernames = extractMentionUsernames(input.text);
 
-  const [tagDocs, mentionDocs, images] = await Promise.all([
+  const [tagDocs, mentionDocs, images, video] = await Promise.all([
     upsertTagsForPost(tags),
     mentionUsernames.length
       ? User.find({ username: { $in: mentionUsernames }, status: 'active' })
       : Promise.resolve([] as UserDocument[]),
     uploadImages(imageBuffers),
+    uploadVideo(videoBuffer),
   ]);
 
   const post = await Post.create({
     authorId: author._id,
     text: input.text,
     images,
+    video,
     tagIds: tagDocs.map((t) => t._id),
     mentionIds: mentionDocs.map((u) => u._id),
     visibility: input.visibility,
@@ -121,10 +138,15 @@ export async function deletePost(postId: string, actor: UserDocument): Promise<v
   post.deletedAt = new Date();
   await post.save();
 
-  await User.updateOne({ _id: actor._id }, { $inc: { postCount: -1 } });
-  if (post.tagIds.length) {
-    await Tag.updateMany({ _id: { $in: post.tagIds } }, { $inc: { postCount: -1 } });
-  }
+  await Promise.all([
+    User.updateOne({ _id: actor._id }, { $inc: { postCount: -1 } }),
+    post.tagIds.length
+      ? Tag.updateMany({ _id: { $in: post.tagIds } }, { $inc: { postCount: -1 } })
+      : Promise.resolve(null),
+    // Delete media from S3 (non-fatal — logged inside deleteFromS3)
+    ...post.images.map((img) => deleteFromS3(img.url)),
+    post.video ? deleteFromS3(post.video.url) : Promise.resolve(),
+  ]);
 }
 
 /**
@@ -166,9 +188,19 @@ async function upsertTagsForPost(
 async function uploadImages(buffers: Buffer[]): Promise<PostImage[]> {
   if (buffers.length === 0) return [];
   const uploads = await Promise.all(
-    buffers.map((b) => uploadBufferToCloudinary(b, 'swil-social/posts')),
+    buffers.map((b) => uploadBufferToS3(b, 'posts')),
   );
   return uploads.map((u) => ({ url: u.url, width: u.width, height: u.height }));
+}
+
+async function uploadVideo(buffer: Buffer | null): Promise<PostVideo | null> {
+  if (!buffer) return null;
+  const result = await uploadVideoBufferToS3(buffer, 'posts');
+  return {
+    url: result.url,
+    width: result.width,
+    height: result.height,
+  };
 }
 
 /**

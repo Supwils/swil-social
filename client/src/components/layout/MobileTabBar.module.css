@@ -51,4 +51,27 @@
     width: 22px;
     height: 22px;
   }
+
+  .composeBtn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .composeBtnInner {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-full);
+    background: var(--color-accent);
+    color: var(--color-text-inverse);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--dur-fast) var(--ease);
+  }
+
+  .composeBtn:active .composeBtnInner {
+    background: var(--color-accent-hover);
+  }
 }
