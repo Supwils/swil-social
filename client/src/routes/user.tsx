@@ -46,6 +46,7 @@ const STICKER_COLORS = [
 ];
 
 function TagWallpaper({ tags }: { tags: string[] }) {
+  const { t } = useTranslation();
   return (
     <div className={s.tagWallpaper} aria-hidden>
       {tags.map((tag, i) => {
@@ -63,7 +64,7 @@ function TagWallpaper({ tags }: { tags: string[] }) {
               border: `1px solid ${col.border}`,
             }}
           >
-            {tag}
+            {t(`tags.labels.${tag}`, tag)}
           </span>
         );
       })}
@@ -180,7 +181,7 @@ export default function UserRoute() {
                   to={`/explore/people?tag=${encodeURIComponent(tag)}`}
                   className={s.profileTag}
                 >
-                  {tag}
+                  {t(`tags.labels.${tag}`, tag)}
                 </Link>
               ))}
             </div>

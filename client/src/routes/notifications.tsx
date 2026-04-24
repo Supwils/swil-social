@@ -1,13 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import * as notificationsApi from '@/api/notifications.api';
 import { qk } from '@/api/queryKeys';
 import { useRealtime } from '@/stores/realtime.store';
 import { formatRelative } from '@/lib/formatDate';
-import { Avatar, Button, EmptyState } from '@/components/primitives';
+import { Avatar, Button, Dialog, DialogActions, EmptyState, NotificationSkeleton } from '@/components/primitives';
 import type { NotificationDTO } from '@/api/types';
 import s from './notifications.module.css';
 
@@ -15,6 +16,7 @@ export default function NotificationsRoute() {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const setUnread = useRealtime((st) => st.setUnreadNotifications);
+  const autoMarked = useRef(false);
 
   const q = useInfiniteQuery({
     queryKey: qk.notifications.list,
@@ -24,6 +26,8 @@ export default function NotificationsRoute() {
     getNextPageParam: (last) => last.nextCursor,
   });
 
+  const [confirmingClear, setConfirmingClear] = useState(false);
+
   const markAll = useMutation({
     mutationFn: () => notificationsApi.markRead({ all: true }),
     onSuccess: () => {
@@ -32,34 +36,65 @@ export default function NotificationsRoute() {
     },
   });
 
+  const clearAll = useMutation({
+    mutationFn: () => notificationsApi.clearAll(),
+    onSuccess: () => {
+      setUnread(0);
+      qc.setQueryData(qk.notifications.list, { pages: [], pageParams: [] });
+      setConfirmingClear(false);
+      toast.success(t('notifications.cleared'));
+    },
+  });
+
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
 
   useEffect(() => {
-    if (items.some((n) => !n.read)) {
-      notificationsApi
-        .markRead({ all: true })
-        .then(() => {
-          setUnread(0);
-          qc.invalidateQueries({ queryKey: qk.notifications.list });
-        })
-        .catch(() => undefined);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!q.isSuccess || autoMarked.current || !items.some((n) => !n.read)) return;
+    autoMarked.current = true;
+    notificationsApi
+      .markRead({ all: true })
+      .then(() => {
+        setUnread(0);
+        qc.invalidateQueries({ queryKey: qk.notifications.list });
+      })
+      .catch(() => {
+        autoMarked.current = false;
+      });
+  }, [items, q.isSuccess, qc, setUnread]);
 
   return (
     <div className={s.page}>
       <header className={s.pageHeader}>
         <h1 className={s.title}>{t('notifications.title')}</h1>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => markAll.mutate()}
-          disabled={markAll.isPending || !items.some((n) => !n.read)}
-        >
-          {t('notifications.markAllRead')}
-        </Button>
+        <div className={s.headerActions}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => markAll.mutate()}
+            disabled={markAll.isPending || !items.some((n) => !n.read)}
+          >
+            {t('notifications.markAllRead')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirmingClear(true)}
+            disabled={items.length === 0}
+          >
+            {t('notifications.clearAll')}
+          </Button>
+        </div>
       </header>
+
+      {q.isLoading && (
+        <>
+          <NotificationSkeleton />
+          <NotificationSkeleton />
+          <NotificationSkeleton />
+          <NotificationSkeleton />
+          <NotificationSkeleton />
+        </>
+      )}
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState
@@ -79,6 +114,26 @@ export default function NotificationsRoute() {
           </Button>
         </div>
       )}
+
+      <Dialog
+        open={confirmingClear}
+        onOpenChange={(open) => { if (!open) setConfirmingClear(false); }}
+        title={t('notifications.confirmClear')}
+        description={t('notifications.confirmClearDesc')}
+      >
+        <DialogActions>
+          <Button variant="ghost" onClick={() => setConfirmingClear(false)}>
+            {t('post.cancel')}
+          </Button>
+          <Button
+            variant="danger"
+            onClick={() => clearAll.mutate()}
+            disabled={clearAll.isPending}
+          >
+            {t('notifications.clearAll')}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }

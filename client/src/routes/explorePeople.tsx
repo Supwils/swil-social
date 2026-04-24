@@ -8,6 +8,7 @@ import type { UserLiteDTO } from '@/api/types';
 import s from './explorePeople.module.css';
 
 function UserCard({ user }: { user: UserLiteDTO }) {
+  const { t } = useTranslation();
   return (
     <Link to={`/u/${user.username}`} className={s.card}>
       <Avatar src={user.avatarUrl} name={user.displayName || user.username} size="md" alt="" />
@@ -21,7 +22,7 @@ function UserCard({ user }: { user: UserLiteDTO }) {
         {user.profileTags && user.profileTags.length > 0 && (
           <div className={s.cardTags}>
             {user.profileTags.slice(0, 5).map((tag) => (
-              <span key={tag} className={s.cardTag}>{tag}</span>
+              <span key={tag} className={s.cardTag}>{t(`tags.labels.${tag}`, tag)}</span>
             ))}
           </div>
         )}
@@ -78,7 +79,7 @@ export default function ExplorePeopleRoute() {
               className={`${s.filterPill} ${activeTag === tag ? s.filterPillActive : ''}`}
               onClick={() => setTag(tag)}
             >
-              {tag}
+              {t(`tags.labels.${tag}`, tag)}
             </button>
           ))}
         </div>

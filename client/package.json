@@ -14,6 +14,7 @@
     "lint": "echo 'lint is configured in P8'"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.2.2",
     "@phosphor-icons/react": "^2.1.7",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
@@ -27,6 +28,7 @@
     "marked": "^18.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-hook-form": "^7.73.1",
     "react-i18next": "^17.0.4",
     "react-router-dom": "^6.26.2",
     "socket.io-client": "^4.8.3",

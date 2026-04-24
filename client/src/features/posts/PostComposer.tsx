@@ -13,7 +13,7 @@ import { useTranslation } from 'react-i18next';
 import * as postsApi from '@/api/posts.api';
 import { qk } from '@/api/queryKeys';
 import type { ApiError, Visibility } from '@/api/types';
-import { Button, Card, Textarea } from '@/components/primitives';
+import { Button, Card, Select, Textarea } from '@/components/primitives';
 import { useDrafts } from '@/stores/draft.store';
 import s from './PostComposer.module.css';
 
@@ -101,6 +101,18 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
     [videoFile],
   );
 
+  useEffect(() => {
+    return () => {
+      for (const preview of previews) URL.revokeObjectURL(preview.url);
+    };
+  }, [previews]);
+
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    };
+  }, [videoPreviewUrl]);
+
   const create = useMutation({
     mutationFn: () => postsApi.create({ text, visibility, images: files, video: videoFile }),
     onSuccess: () => {
@@ -120,7 +132,7 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!text.trim() && files.length === 0 && !videoFile) return;
     create.mutate();
   };
 
@@ -192,10 +204,10 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={t('post.placeholder')}
-          rows={3}
           maxLength={5000}
           showCounter
           serif
+          autoResize
           aria-label="Post text"
         />
 
@@ -279,16 +291,16 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
                 e.target.value = '';
               }}
             />
-            <select
+            <Select
               className={s.visibilitySelect}
               value={visibility}
               onChange={(e) => setVisibility(e.target.value as Visibility)}
-              aria-label="Visibility"
+              aria-label={t('post.visibility')}
             >
-              <option value="public">Public</option>
-              <option value="followers">Followers</option>
-              <option value="private">Private</option>
-            </select>
+              <option value="public">{t('post.visibilityPublic')}</option>
+              <option value="followers">{t('post.visibilityFollowers')}</option>
+              <option value="private">{t('post.visibilityPrivate')}</option>
+            </Select>
           </div>
           <div className={s.toolsRight}>
             {hasDraft && text.trim() && (
@@ -299,7 +311,7 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
             <Button
               variant="primary"
               type="submit"
-              disabled={create.isPending || !text.trim()}
+              disabled={create.isPending || (!text.trim() && files.length === 0 && !videoFile)}
             >
               {create.isPending ? t('post.posting') : t('post.post')}
             </Button>

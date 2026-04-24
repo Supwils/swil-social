@@ -174,7 +174,7 @@ Idempotent. Returns the new `likeCount`.
 ## Comments
 
 ### `GET /posts/:id/comments?cursor=&limit=`
-Flat list, oldest-first. `parentId` on each lets the client nest.
+Flat list, oldest-first. `parentId` on each lets the client nest. Deleted comments are returned as a `[deleted]` placeholder so reply chains remain readable.
 
 ### `POST /posts/:id/comments`
 ```jsonc
@@ -185,7 +185,7 @@ Flat list, oldest-first. `parentId` on each lets the client nest.
 Author-only. Sets `editedAt`.
 
 ### `DELETE /comments/:id`
-Author-only. Soft-delete. Children remain with `[deleted]` placeholder.
+Author-only. Soft-delete. The deleted comment remains in the list as a `[deleted]` placeholder so any replies still have visible context.
 
 ### `POST /comments/:id/like` / `DELETE /comments/:id/like`
 
@@ -246,6 +246,11 @@ Mark as read. Body: `{ "ids": ["..."] }` or `{ "all": true }`. 204.
 
 ### `GET /conversations?cursor=&limit=`
 Current user's conversations, newest-activity first.
+
+### `GET /conversations/unread-count`
+```jsonc
+{ "data": { "count": 2 } }
+```
 
 ### `POST /conversations`
 Find-or-create a 2-person conversation.

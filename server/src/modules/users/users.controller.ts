@@ -3,6 +3,7 @@ import { ok } from '../../lib/respond';
 import { toUserDTO, toUserLiteDTO } from '../../lib/dto';
 import { AppError } from '../../lib/errors';
 import * as usersService from './users.service';
+import { TAG_CATEGORIES, ALL_PRESET_TAGS } from '../../lib/tagPresets';
 
 export async function getByUsername(req: Request, res: Response) {
   const user = await usersService.findByUsername(req.params.username);
@@ -23,6 +24,13 @@ export async function search(req: Request, res: Response) {
 export async function getPopularProfileTags(_req: Request, res: Response) {
   const tags = await usersService.getPopularProfileTags();
   return ok(res, { tags });
+}
+
+export async function getProfileTagPresets(_req: Request, res: Response) {
+  return ok(res, {
+    categories: TAG_CATEGORIES,
+    all: ALL_PRESET_TAGS,
+  });
 }
 
 export async function updateMe(req: Request, res: Response) {

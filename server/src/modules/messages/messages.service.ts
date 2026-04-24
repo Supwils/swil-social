@@ -42,12 +42,20 @@ export async function findOrCreateWith(
   const existing = await Conversation.findOne({ participantKey: key });
   if (existing) return { conversation: existing, created: false };
 
-  const convo = await Conversation.create({
-    participantIds,
-    participantKey: key,
-    lastMessageAt: new Date(),
-  });
-  return { conversation: convo, created: true };
+  try {
+    const convo = await Conversation.create({
+      participantIds,
+      participantKey: key,
+      lastMessageAt: new Date(),
+    });
+    return { conversation: convo, created: true };
+  } catch (err: unknown) {
+    const e = err as { code?: number };
+    if (e.code !== 11000) throw err;
+    const raced = await Conversation.findOne({ participantKey: key });
+    if (!raced) throw err;
+    return { conversation: raced, created: false };
+  }
 }
 
 export async function listForViewer(
@@ -108,6 +116,13 @@ export async function listForViewer(
     : null;
 
   return { items, nextCursor };
+}
+
+export async function unreadCount(viewer: UserDocument): Promise<number> {
+  return Conversation.countDocuments({
+    participantIds: viewer._id,
+    unreadBy: viewer._id,
+  });
 }
 
 function encodeLastMessageCursor(c: ConversationDocument): string {

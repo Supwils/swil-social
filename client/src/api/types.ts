@@ -20,6 +20,7 @@ export interface UserDTO {
   location: string | null;
   website: string | null;
   profileTags: string[];
+  isAgent: boolean;
   followerCount: number;
   followingCount: number;
   postCount: number;

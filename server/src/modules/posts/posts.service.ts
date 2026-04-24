@@ -11,6 +11,12 @@ import type { PostDTOContext } from '../../lib/dto';
 import type { CreatePostInput, UpdatePostInput } from './posts.schemas';
 import { createNotification } from '../notifications/notifications.service';
 
+interface UploadedMedia {
+  images: PostImage[];
+  video: PostVideo | null;
+  urls: string[];
+}
+
 export async function createPost(
   author: UserDocument,
   input: CreatePostInput,
@@ -34,24 +40,29 @@ export async function createPost(
   const tags = extractTags(input.text);
   const mentionUsernames = extractMentionUsernames(input.text);
 
-  const [tagDocs, mentionDocs, images, video] = await Promise.all([
+  const [tagDocs, mentionDocs, media] = await Promise.all([
     upsertTagsForPost(tags),
     mentionUsernames.length
       ? User.find({ username: { $in: mentionUsernames }, status: 'active' })
       : Promise.resolve([] as UserDocument[]),
-    uploadImages(imageBuffers),
-    uploadVideo(videoBuffer),
+    uploadPostMedia(imageBuffers, videoBuffer),
   ]);
 
-  const post = await Post.create({
-    authorId: author._id,
-    text: input.text,
-    images,
-    video,
-    tagIds: tagDocs.map((t) => t._id),
-    mentionIds: mentionDocs.map((u) => u._id),
-    visibility: input.visibility,
-  });
+  let post: PostDocument;
+  try {
+    post = await Post.create({
+      authorId: author._id,
+      text: input.text,
+      images: media.images,
+      video: media.video,
+      tagIds: tagDocs.map((t) => t._id),
+      mentionIds: mentionDocs.map((u) => u._id),
+      visibility: input.visibility,
+    });
+  } catch (err) {
+    await cleanupUploadedMedia(media.urls);
+    throw err;
+  }
 
   await Promise.all([
     User.updateOne({ _id: author._id }, { $inc: { postCount: 1 } }),
@@ -109,7 +120,10 @@ export async function updatePost(
   if (!post || post.status !== 'active') throw AppError.notFound('Post not found');
   if (!post.authorId.equals(actor._id)) throw AppError.forbidden('Not your post');
 
+  let tagSync: { previous: string[]; next: string[] } | null = null;
+
   if (patch.text !== undefined && patch.text !== post.text) {
+    const previousTagIds = post.tagIds.map((id) => id.toString());
     post.text = patch.text;
     const tags = extractTags(patch.text);
     const mentionUsernames = extractMentionUsernames(patch.text);
@@ -119,12 +133,15 @@ export async function updatePost(
         ? User.find({ username: { $in: mentionUsernames }, status: 'active' })
         : Promise.resolve([] as UserDocument[]),
     ]);
-    post.tagIds = tagDocs.map((t) => t._id);
+    const nextTagIds = tagDocs.map((t) => t._id);
+    post.tagIds = nextTagIds;
     post.mentionIds = mentionDocs.map((u) => u._id);
+    tagSync = { previous: previousTagIds, next: nextTagIds.map((id) => id.toString()) };
   }
   if (patch.visibility !== undefined) post.visibility = patch.visibility;
   post.editedAt = new Date();
   await post.save();
+  if (tagSync) await syncTagCounts(tagSync.previous, tagSync.next);
 
   return getPostForViewer(post._id.toString(), actor);
 }
@@ -185,22 +202,64 @@ async function upsertTagsForPost(
   return Tag.find({ slug: { $in: tags.map((t) => t.slug) } });
 }
 
-async function uploadImages(buffers: Buffer[]): Promise<PostImage[]> {
-  if (buffers.length === 0) return [];
-  const uploads = await Promise.all(
-    buffers.map((b) => uploadBufferToS3(b, 'posts')),
-  );
-  return uploads.map((u) => ({ url: u.url, width: u.width, height: u.height }));
+async function syncTagCounts(previousTagIds: string[], nextTagIds: string[]): Promise<void> {
+  const previous = new Set(previousTagIds);
+  const next = new Set(nextTagIds);
+
+  const added = nextTagIds.filter((id) => !previous.has(id));
+  const removed = previousTagIds.filter((id) => !next.has(id));
+
+  await Promise.all([
+    added.length
+      ? Tag.updateMany(
+          { _id: { $in: added.map((id) => new Types.ObjectId(id)) } },
+          { $inc: { postCount: 1 }, $set: { lastUsedAt: new Date() } },
+        )
+      : Promise.resolve(null),
+    removed.length
+      ? Tag.updateMany(
+          { _id: { $in: removed.map((id) => new Types.ObjectId(id)) } },
+          { $inc: { postCount: -1 } },
+        )
+      : Promise.resolve(null),
+  ]);
 }
 
-async function uploadVideo(buffer: Buffer | null): Promise<PostVideo | null> {
-  if (!buffer) return null;
-  const result = await uploadVideoBufferToS3(buffer, 'posts');
-  return {
-    url: result.url,
-    width: result.width,
-    height: result.height,
-  };
+async function uploadPostMedia(
+  imageBuffers: Buffer[],
+  videoBuffer: Buffer | null,
+): Promise<UploadedMedia> {
+  const images: PostImage[] = [];
+  const urls: string[] = [];
+
+  try {
+    for (const buffer of imageBuffers) {
+      const uploaded = await uploadBufferToS3(buffer, 'posts');
+      images.push({ url: uploaded.url, width: uploaded.width, height: uploaded.height });
+      urls.push(uploaded.url);
+    }
+
+    let video: PostVideo | null = null;
+    if (videoBuffer) {
+      const uploaded = await uploadVideoBufferToS3(videoBuffer, 'posts');
+      video = {
+        url: uploaded.url,
+        width: uploaded.width,
+        height: uploaded.height,
+      };
+      urls.push(uploaded.url);
+    }
+
+    return { images, video, urls };
+  } catch (err) {
+    await cleanupUploadedMedia(urls);
+    throw err;
+  }
+}
+
+async function cleanupUploadedMedia(urls: string[]): Promise<void> {
+  if (urls.length === 0) return;
+  await Promise.all(urls.map((url) => deleteFromS3(url)));
 }
 
 /**

@@ -18,6 +18,7 @@ export interface UserDTO {
   location: string | null;
   website: string | null;
   profileTags: string[];
+  isAgent: boolean;
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -90,6 +91,7 @@ export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): Us
     location: user.location,
     website: user.website,
     profileTags: [...(user.profileTags ?? [])],
+    isAgent: user.isAgent ?? false,
     followerCount: user.followerCount,
     followingCount: user.followingCount,
     postCount: user.postCount,
@@ -168,11 +170,16 @@ export function toCommentDTO(comment: CommentDocument, ctx: CommentDTOContext): 
     postId: comment.postId.toString(),
     parentId: comment.parentId ? comment.parentId.toString() : null,
     author: toUserLiteDTO(ctx.author),
-    text: comment.text,
+    text: comment.status === 'deleted' ? '[deleted]' : comment.text,
     likeCount: comment.likeCount,
     likedByMe: Boolean(ctx.likedByMe),
     createdAt: comment.createdAt.toISOString(),
-    editedAt: comment.editedAt ? comment.editedAt.toISOString() : null,
+    editedAt:
+      comment.status === 'deleted'
+        ? null
+        : comment.editedAt
+          ? comment.editedAt.toISOString()
+          : null,
   };
 }
 

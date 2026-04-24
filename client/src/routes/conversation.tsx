@@ -31,7 +31,7 @@ export default function ConversationRoute() {
   const [text, setText] = useState('');
   const bodyRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const decUnreadC = useRealtime((s) => s.incUnreadConversations); // called with -1
+  const setUnreadC = useRealtime((s) => s.setUnreadConversations);
 
   // Join/leave conversation room
   useEffect(() => {
@@ -44,9 +44,10 @@ export default function ConversationRoute() {
   useEffect(() => {
     if (!id) return;
     messagesApi.markRead(id)
-      .then(() => decUnreadC(-1))
+      .then(() => messagesApi.unreadCount())
+      .then(setUnreadC)
       .catch(() => undefined);
-  }, [id, decUnreadC]);
+  }, [id, setUnreadC]);
 
   // Fetch conversation metadata (participants) — fixes blank header on new convos
   const convo = useQuery({
@@ -73,9 +74,13 @@ export default function ConversationRoute() {
       const msg = payload as MessageDTO;
       if (msg.conversationId !== id) return;
       if (msg.sender.id === me?.id) return;
-      messagesApi.markRead(id).catch(() => undefined);
+      messagesApi
+        .markRead(id)
+        .then(() => messagesApi.unreadCount())
+        .then(setUnreadC)
+        .catch(() => undefined);
     });
-  }, [id, me?.id]);
+  }, [id, me?.id, setUnreadC]);
 
   const send = useMutation({
     mutationFn: () => messagesApi.send(id, text.trim()),

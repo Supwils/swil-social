@@ -48,30 +48,6 @@
   min-height: var(--space-2);
 }
 
-/* Thin wabi-sabi scrollbar */
-.formContainer::-webkit-scrollbar {
-  width: 3px;
-}
-
-.formContainer::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.formContainer::-webkit-scrollbar-thumb {
-  background: var(--color-border-strong);
-  border-radius: var(--radius-full);
-}
-
-.formContainer::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-subtle);
-}
-
-/* Firefox */
-.formContainer {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border-strong) transparent;
-}
-
 /* Sign-in panel: starts on the left, visible */
 .signIn {
   left: 0;
@@ -254,46 +230,62 @@
   border: 1px solid transparent;
 }
 
-.divider {
+/* ─── Anti-bot: honeypot ─────────────────────────────────────────────────────── */
+
+.honeypot {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ─── Anti-bot: math challenge ───────────────────────────────────────────────── */
+
+.challenge {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  color: var(--color-text-subtle);
-  font-size: var(--text-caption);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
-.divider::before,
-.divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--color-border);
+.challengeLabel {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
-.googleLink {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  min-height: 40px;
-  padding: var(--space-2) var(--space-4);
+.challengeInput {
+  width: 64px;
+  height: 36px;
+  padding: 0 var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-text);
   font-size: var(--text-small);
-  font-weight: 500;
-  transition:
-    border-color var(--dur-fast) var(--ease),
-    background var(--dur-fast) var(--ease);
+  font-family: var(--font-mono);
+  text-align: center;
+  transition: border-color var(--dur-fast) var(--ease);
+  appearance: textfield;
 }
 
-.googleLink:hover {
-  border-color: var(--color-border-strong);
-  background: var(--color-surface-muted);
-  color: var(--color-text);
+.challengeInput::-webkit-outer-spin-button,
+.challengeInput::-webkit-inner-spin-button {
+  appearance: none;
+}
+
+.challengeInput:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.challengeError {
+  width: 100%;
+  margin: 0;
+  font-size: var(--text-caption);
+  color: var(--color-danger);
 }
 
 /* ─── Mobile tab switcher (hidden on desktop) ───────────────────────────────── */

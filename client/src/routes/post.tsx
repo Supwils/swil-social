@@ -104,9 +104,9 @@ export default function PostRoute() {
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
               placeholder={t('post.commentPlaceholder')}
-              rows={3}
               maxLength={2000}
               showCounter
+              autoResize
               aria-label="Your comment"
             />
             <div className={s.composeActions}>

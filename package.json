@@ -11,7 +11,8 @@
     "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
     "build": "npm --prefix server run build && npm --prefix client run build",
     "seed": "npm --prefix server run seed",
-    "seed:reset": "npm --prefix server run seed:reset"
+    "seed:reset": "npm --prefix server run seed:reset",
+    "ci:check": "bash scripts/ci-check.sh"
   },
   "devDependencies": {
     "concurrently": "^9.0.1"

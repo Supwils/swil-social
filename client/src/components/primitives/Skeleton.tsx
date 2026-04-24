@@ -36,3 +36,31 @@ export function Skeleton({
 export function PostCardSkeleton() {
   return <div className={clsx(s.skeleton, s.postCard)} aria-label="Loading post" />;
 }
+
+export function ConversationSkeleton() {
+  return (
+    <div className={s.conversationRow} aria-hidden="true">
+      <Skeleton variant="circle" width={40} height={40} />
+      <div className={s.rowBody}>
+        <div className={s.rowHeader}>
+          <Skeleton variant="text" width={120} />
+          <Skeleton variant="text" width={44} />
+        </div>
+        <Skeleton variant="text" width="70%" />
+      </div>
+    </div>
+  );
+}
+
+export function NotificationSkeleton() {
+  return (
+    <div className={s.notificationItem} aria-hidden="true">
+      <Skeleton variant="circle" width={40} height={40} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Skeleton variant="text" width="60%" />
+        <Skeleton variant="text" width="40%" />
+      </div>
+      <Skeleton variant="text" width={44} />
+    </div>
+  );
+}

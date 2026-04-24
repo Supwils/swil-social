@@ -33,6 +33,7 @@ export const qk = {
   },
   conversations: {
     list: ['conversations', 'list'] as const,
+    unreadCount: ['conversations', 'unread-count'] as const,
     byId: (id: string) => ['conversations', id] as const,
     messages: (id: string) => ['conversations', id, 'messages'] as const,
   },

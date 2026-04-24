@@ -51,6 +51,16 @@ conversationsRouter.post(
 );
 
 conversationsRouter.get(
+  '/unread-count',
+  requireUser,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) throw AppError.unauthenticated();
+    const count = await svc.unreadCount(req.user);
+    return ok(res, { count });
+  }),
+);
+
+conversationsRouter.get(
   '/:id',
   requireUser,
   validate(z.object({ id: oid }), 'params'),

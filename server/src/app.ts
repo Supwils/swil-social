@@ -17,7 +17,6 @@ import { tagsRouter } from './modules/tags/tags.routes';
 import { feedRouter, userPostsRouter } from './modules/feed/feed.routes';
 import { notificationsRouter } from './modules/notifications/notifications.routes';
 import { conversationsRouter } from './modules/messages/messages.routes';
-import { mountGoogleOAuth } from './modules/auth/google';
 import { isDbHealthy } from './config/db';
 import { mountStaticClient } from './middlewares/staticClient';
 
@@ -131,8 +130,6 @@ export function createApp(opts: AppOptions = {}): Express {
       version: process.env.npm_package_version ?? 'unknown',
     });
   });
-
-  mountGoogleOAuth(app);
 
   // v1 API
   app.use('/api/v1/auth', authRouter);

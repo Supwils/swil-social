@@ -88,6 +88,7 @@
 
   /* Layout */
   --layout-feed-max: 680px;
+  --layout-feed-max-grid: 1100px;
   --layout-sidebar: 240px;
   --layout-sidebar-collapsed: 64px;
   --layout-right-rail: 280px;

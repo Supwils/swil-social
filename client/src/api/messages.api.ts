@@ -25,6 +25,11 @@ export async function findOrCreate(recipientUsername: string): Promise<Conversat
   return out.conversation;
 }
 
+export async function unreadCount(): Promise<number> {
+  const out = await unwrap<{ count: number }>(http.get('/conversations/unread-count'));
+  return out.count;
+}
+
 export async function listMessages(
   conversationId: string,
   params: { cursor?: string | null; limit?: number } = {},

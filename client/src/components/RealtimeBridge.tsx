@@ -14,7 +14,6 @@ import {
 import type {
   NotificationDTO,
   MessageDTO,
-  ConversationDTO,
   Paginated,
 } from '@/api/types';
 
@@ -26,9 +25,7 @@ export function RealtimeBridge() {
   const user = useSession((s) => s.user);
   const setConnected = useRealtime((s) => s.setConnected);
   const setUnreadN = useRealtime((s) => s.setUnreadNotifications);
-  const incUnreadN = useRealtime((s) => s.incUnreadNotifications);
   const setUnreadC = useRealtime((s) => s.setUnreadConversations);
-  const incUnreadC = useRealtime((s) => s.incUnreadConversations);
   const qc = useQueryClient();
 
   useEffect(() => {
@@ -47,13 +44,16 @@ export function RealtimeBridge() {
 
     const onNotification = (raw: unknown) => {
       const payload = raw as NotificationDTO;
-      incUnreadN(1);
-      // Prepend into cached list if present
+      // Upsert into the cached list if present.
       qc.setQueryData<{ pages: Paginated<NotificationDTO>[]; pageParams: unknown[] }>(
         qk.notifications.list,
         (old) => {
           if (!old) return old;
-          const [first, ...rest] = old.pages;
+          const dedupedPages = old.pages.map((page) => ({
+            ...page,
+            items: page.items.filter((item) => item.id !== payload.id),
+          }));
+          const [first, ...rest] = dedupedPages;
           if (!first) return old;
           return {
             ...old,
@@ -61,6 +61,7 @@ export function RealtimeBridge() {
           };
         },
       );
+      notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
       toast(summarizeNotification(payload));
     };
 
@@ -100,7 +101,7 @@ export function RealtimeBridge() {
 
     const onConversationUpdate = () => {
       qc.invalidateQueries({ queryKey: qk.conversations.list });
-      incUnreadC(1);
+      messagesApi.unreadCount().then(setUnreadC).catch(() => undefined);
     };
 
     const onMessageRead = (raw: unknown) => {
@@ -135,8 +136,8 @@ export function RealtimeBridge() {
     // Seed unread counts once on mount
     notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
     messagesApi
-      .listConversations({ limit: 50 })
-      .then((page) => setUnreadC(page.items.filter((c: ConversationDTO) => c.unread).length))
+      .unreadCount()
+      .then(setUnreadC)
       .catch(() => undefined);
 
     return () => {
@@ -149,7 +150,7 @@ export function RealtimeBridge() {
       s?.off('message:read', onMessageRead);
       s?.off('conversation:update', onConversationUpdate);
     };
-  }, [user, qc, setConnected, setUnreadN, incUnreadN, setUnreadC, incUnreadC]);
+  }, [user, qc, setConnected, setUnreadN, setUnreadC]);
 
   return null;
 }

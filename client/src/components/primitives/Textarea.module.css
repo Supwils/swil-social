@@ -26,6 +26,12 @@
   transition: border-color var(--dur-fast) var(--ease);
 }
 
+.autoResize {
+  resize: none;
+  overflow-y: hidden;
+  min-height: 0;
+}
+
 .textarea::placeholder {
   color: var(--color-text-subtle);
 }

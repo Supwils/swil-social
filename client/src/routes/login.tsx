@@ -1,8 +1,11 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import * as authApi from '@/api/auth.api';
 import { useSession } from '@/stores/session.store';
 import { qk } from '@/api/queryKeys';
@@ -67,24 +70,30 @@ export default function AuthPage() {
   );
 }
 
+/* ─── Login ─── */
+
+const loginSchema = z.object({
+  usernameOrEmail: z.string().min(1),
+  password: z.string().min(1),
+});
+type LoginFields = z.infer<typeof loginSchema>;
+
 function LoginPanel() {
   const { t } = useTranslation();
-  const [usernameOrEmail, setUE] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
+  const [globalError, setGlobalError] = useState<string | null>(null);
   const setUser = useSession((st) => st.setUser);
   const nav = useNavigate();
   const qc = useQueryClient();
   const loc = useLocation();
 
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<LoginFields>({
+    resolver: zodResolver(loginSchema),
+  });
+
+  const onSubmit = async (data: LoginFields) => {
+    setGlobalError(null);
     try {
-      const user = await authApi.login({ usernameOrEmail, password });
+      const user = await authApi.login({ usernameOrEmail: data.usernameOrEmail, password: data.password });
       setUser(user);
       qc.setQueryData(qk.auth.me, user);
       toast.success(`Welcome back, ${user.usernameDisplay}`);
@@ -92,9 +101,7 @@ function LoginPanel() {
       nav(dest);
     } catch (err) {
       const e = err as unknown as ApiError;
-      setError(e.message ?? 'Login failed');
-    } finally {
-      setBusy(false);
+      setGlobalError(e.message ?? 'Login failed');
     }
   };
 
@@ -103,65 +110,105 @@ function LoginPanel() {
       <div className={s.brand}>swil</div>
       <h1 className={s.title}>{t('auth.signIn')}</h1>
 
-      <form onSubmit={onSubmit} className={s.form} noValidate>
+      <form onSubmit={handleSubmit(onSubmit)} className={s.form} noValidate>
         <Input
           label={t('auth.usernameOrEmail')}
           autoComplete="username"
-          value={usernameOrEmail}
-          onChange={(e) => setUE(e.target.value)}
-          required
+          error={errors.usernameOrEmail ? t('auth.fieldRequired') : undefined}
+          {...register('usernameOrEmail')}
         />
         <Input
           label={t('auth.password')}
           type="password"
           autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
+          error={errors.password ? t('auth.fieldRequired') : undefined}
+          {...register('password')}
         />
-        {error && <div className={s.errorBanner} role="alert">{error}</div>}
-        <Button variant="primary" type="submit" disabled={busy} fullWidth>
-          {busy ? t('auth.signingIn') : t('auth.signIn')}
+        {globalError && <div className={s.errorBanner} role="alert">{globalError}</div>}
+        <Button variant="primary" type="submit" disabled={isSubmitting} fullWidth>
+          {isSubmitting ? t('auth.signingIn') : t('auth.signIn')}
         </Button>
       </form>
 
-      <div className={s.divider}>or</div>
-      <a href="/auth/google" className={s.googleLink}>{t('auth.continueWithGoogle')}</a>
     </div>
   );
 }
 
+/* ─── Register ─── */
+
+const registerSchema = z.object({
+  username: z
+    .string()
+    .min(3, 'auth.usernameMin')
+    .max(24, 'auth.usernameMax')
+    .regex(/^[a-zA-Z0-9_]+$/, 'auth.usernamePattern'),
+  displayName: z.string().max(50).optional(),
+  email: z.string().email('auth.emailInvalid'),
+  password: z.string().min(8, 'auth.passwordMin'),
+});
+type RegisterFields = z.infer<typeof registerSchema>;
+
 function RegisterPanel() {
   const { t } = useTranslation();
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [fields, setFields] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
+  const [globalError, setGlobalError] = useState<string | null>(null);
   const setUser = useSession((st) => st.setUser);
   const nav = useNavigate();
   const qc = useQueryClient();
 
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setFields({});
-    setBusy(true);
+  // Anti-bot: track when the form was first rendered
+  const formMountedAt = useRef(Date.now());
+
+  // Anti-bot: honeypot field (hidden from real users, bots fill it in)
+  const [honeypot, setHoneypot] = useState('');
+
+  // Anti-bot: simple arithmetic challenge
+  const [challengeA] = useState(() => Math.floor(Math.random() * 9) + 1);
+  const [challengeB] = useState(() => Math.floor(Math.random() * 9) + 1);
+  const [challengeAnswer, setChallengeAnswer] = useState('');
+  const [challengeError, setChallengeError] = useState<string | null>(null);
+
+  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<RegisterFields>({
+    resolver: zodResolver(registerSchema),
+  });
+
+  const onSubmit = async (data: RegisterFields) => {
+    setGlobalError(null);
+    setChallengeError(null);
+
+    // Silently drop if honeypot was filled (bot behavior)
+    if (honeypot.trim() !== '') return;
+
+    // Reject submissions faster than a human can fill the form
+    if (Date.now() - formMountedAt.current < 3000) {
+      setGlobalError(t('auth.tooFast'));
+      return;
+    }
+
+    // Simple math challenge
+    if (parseInt(challengeAnswer, 10) !== challengeA + challengeB) {
+      setChallengeError(t('auth.challengeFailed'));
+      return;
+    }
+
     try {
-      const user = await authApi.register({ username, email, password, displayName });
+      const user = await authApi.register({
+        username: data.username,
+        email: data.email,
+        password: data.password,
+        displayName: data.displayName ?? '',
+      });
       setUser(user);
       qc.setQueryData(qk.auth.me, user);
       toast.success(`Welcome, ${user.usernameDisplay}`);
       nav('/feed');
     } catch (err) {
       const e = err as unknown as ApiError;
-      setError(e.message ?? 'Registration failed');
-      if (e.fields) setFields(e.fields);
-    } finally {
-      setBusy(false);
+      setGlobalError(e.message ?? 'Registration failed');
+      if (e.fields) {
+        Object.entries(e.fields).forEach(([field, message]) => {
+          setError(field as keyof RegisterFields, { message: message as string });
+        });
+      }
     }
   };
 
@@ -170,43 +217,65 @@ function RegisterPanel() {
       <div className={s.brand}>swil</div>
       <h1 className={s.title}>{t('auth.createAccount')}</h1>
 
-      <form onSubmit={onSubmit} className={s.form} noValidate>
+      <form onSubmit={handleSubmit(onSubmit)} className={s.form} noValidate>
+        {/* Honeypot: positioned off-screen, invisible to real users */}
+        <input
+          type="text"
+          name="website"
+          value={honeypot}
+          onChange={(e) => setHoneypot(e.target.value)}
+          className={s.honeypot}
+          tabIndex={-1}
+          aria-hidden="true"
+          autoComplete="off"
+        />
         <Input
           label={t('auth.username')}
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          pattern="[a-zA-Z0-9_]{3,24}"
           hint={t('auth.usernameHint')}
-          error={fields.username}
-          required
+          error={errors.username ? t(errors.username.message ?? 'auth.usernameHint') : undefined}
+          autoComplete="username"
+          {...register('username')}
         />
         <Input
           label={t('auth.displayName')}
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
           hint={t('auth.displayNameHint')}
+          error={errors.displayName?.message}
+          autoComplete="name"
+          {...register('displayName')}
         />
         <Input
           label={t('auth.email')}
           type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          error={fields.email}
-          required
+          error={errors.email ? t(errors.email.message ?? 'auth.emailInvalid') : undefined}
+          autoComplete="email"
+          {...register('email')}
         />
         <Input
           label={t('auth.password')}
           type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          minLength={8}
           hint={t('auth.passwordHint')}
-          error={fields.password}
-          required
+          error={errors.password ? t(errors.password.message ?? 'auth.passwordMin') : undefined}
+          autoComplete="new-password"
+          {...register('password')}
         />
-        {error && <div className={s.errorBanner} role="alert">{error}</div>}
-        <Button variant="primary" type="submit" disabled={busy} fullWidth>
-          {busy ? t('auth.creating') : t('auth.createAccount')}
+        <div className={s.challenge}>
+          <label className={s.challengeLabel}>
+            {t('auth.challenge', { a: challengeA, b: challengeB })}
+          </label>
+          <input
+            type="number"
+            inputMode="numeric"
+            value={challengeAnswer}
+            onChange={(e) => setChallengeAnswer(e.target.value)}
+            placeholder={t('auth.challengePlaceholder')}
+            className={s.challengeInput}
+            autoComplete="off"
+          />
+          {challengeError && <p className={s.challengeError}>{challengeError}</p>}
+        </div>
+        {globalError && <div className={s.errorBanner} role="alert">{globalError}</div>}
+        <Button variant="primary" type="submit" disabled={isSubmitting} fullWidth>
+          {isSubmitting ? t('auth.creating') : t('auth.createAccount')}
         </Button>
       </form>
     </div>

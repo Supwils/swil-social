@@ -64,3 +64,13 @@ notificationsRouter.post(
     return noContent(res);
   }),
 );
+
+notificationsRouter.delete(
+  '/',
+  requireUser,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) throw AppError.unauthenticated();
+    await svc.clearAll(req.user);
+    return noContent(res);
+  }),
+);

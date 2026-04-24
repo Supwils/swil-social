@@ -10,7 +10,7 @@ import { Comment } from '../../models/comment.model';
 import {
   type Cursor,
   cursorFilterDesc,
-  buildNextCursor,
+  encodeCursor,
 } from '../../lib/pagination';
 import { emitToUser } from '../../realtime/io';
 import { logger } from '../../lib/logger';
@@ -89,16 +89,16 @@ export async function list(
 ): Promise<{ items: NotificationDTO[]; nextCursor: string | null }> {
   const filter: Record<string, unknown> = {
     recipientId: viewer._id,
-    ...cursorFilterDesc(cursor),
+    ...cursorFilterDesc(cursor, 'updatedAt'),
   };
   if (unreadOnly) filter.read = false;
 
   const docs = (await Notification.find(filter)
-    .sort({ createdAt: -1, _id: -1 })
+    .sort({ updatedAt: -1, _id: -1 })
     .limit(limit + 1)
     .lean()) as unknown as NotificationDocument[];
 
-  const { items, nextCursor } = buildNextCursor(docs, limit);
+  const { items, nextCursor } = buildUpdatedCursorPage(docs, limit);
   const hydrated = await hydrateMany(items);
   return { items: hydrated, nextCursor };
 }
@@ -107,11 +107,17 @@ export async function unreadCount(viewer: UserDocument): Promise<number> {
   return Notification.countDocuments({ recipientId: viewer._id, read: false });
 }
 
+export async function clearAll(viewer: UserDocument): Promise<void> {
+  await Notification.deleteMany({ recipientId: viewer._id });
+  emitToUser(viewer._id, 'notification:read', { ids: 'all' });
+}
+
 export async function markRead(viewer: UserDocument, ids: string[] | 'all'): Promise<void> {
   if (ids === 'all') {
     await Notification.updateMany(
       { recipientId: viewer._id, read: false },
       { $set: { read: true, readAt: new Date() } },
+      { timestamps: false },
     );
   } else if (ids.length) {
     await Notification.updateMany(
@@ -121,6 +127,7 @@ export async function markRead(viewer: UserDocument, ids: string[] | 'all'): Pro
         read: false,
       },
       { $set: { read: true, readAt: new Date() } },
+      { timestamps: false },
     );
   }
   emitToUser(viewer._id, 'notification:read', { ids });
@@ -201,11 +208,26 @@ function toNotificationDTO(
       ? { id: doc.messageId.toString(), conversationId: doc.conversationId.toString() }
       : undefined,
     read: doc.read,
-    createdAt: doc.createdAt.toISOString(),
+    createdAt: doc.updatedAt.toISOString(),
   };
 }
 
 function preview(text: string | undefined): string {
   if (!text) return '';
   return text.length > 80 ? `${text.slice(0, 80).trimEnd()}…` : text;
+}
+
+export function buildUpdatedCursorPage(
+  docs: NotificationDocument[],
+  limit: number,
+): { items: NotificationDocument[]; nextCursor: string | null } {
+  if (docs.length <= limit) {
+    return { items: docs, nextCursor: null };
+  }
+  const page = docs.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    items: page,
+    nextCursor: encodeCursor({ t: last.updatedAt.toISOString(), id: last._id.toString() }),
+  };
 }

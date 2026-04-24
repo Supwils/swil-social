@@ -8,7 +8,7 @@ import * as messagesApi from '@/api/messages.api';
 import * as usersApi from '@/api/users.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
-import { Avatar, EmptyState } from '@/components/primitives';
+import { Avatar, EmptyState, ConversationSkeleton } from '@/components/primitives';
 import { formatRelative } from '@/lib/formatDate';
 import type { ApiError, ConversationDTO, UserLiteDTO } from '@/api/types';
 import s from './messages.module.css';
@@ -45,6 +45,15 @@ export default function MessagesRoute() {
       </header>
 
       <UserSearchCompose onSelect={(username) => start.mutate(username)} loading={start.isPending} />
+
+      {q.isLoading && (
+        <>
+          <ConversationSkeleton />
+          <ConversationSkeleton />
+          <ConversationSkeleton />
+          <ConversationSkeleton />
+        </>
+      )}
 
       {q.isSuccess && items.length === 0 && (
         <EmptyState

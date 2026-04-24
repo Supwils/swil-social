@@ -6,10 +6,11 @@ export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: ReactNode;
   hint?: ReactNode;
   error?: string;
+  trailing?: ReactNode;
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  { label, hint, error, id, className, ...rest },
+  { label, hint, error, id, className, trailing, ...rest },
   ref,
 ) {
   const autoId = useId();
@@ -24,14 +25,17 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           {label}
         </label>
       )}
-      <input
-        ref={ref}
-        id={inputId}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={[errorId, hintId].filter(Boolean).join(' ') || undefined}
-        className={clsx(s.input, error && s.invalid, className)}
-        {...rest}
-      />
+      <div className={s.inputWrap}>
+        <input
+          ref={ref}
+          id={inputId}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={[errorId, hintId].filter(Boolean).join(' ') || undefined}
+          className={clsx(s.input, error && s.invalid, trailing && s.inputWithTrailing, className)}
+          {...rest}
+        />
+        {trailing && <div className={s.trailing}>{trailing}</div>}
+      </div>
       {hint && !error && (
         <small id={hintId} className={s.hint}>
           {hint}

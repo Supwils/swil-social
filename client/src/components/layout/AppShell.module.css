@@ -17,6 +17,10 @@
   max-width: var(--layout-feed-max);
 }
 
+.columnWide {
+  max-width: var(--layout-feed-max-grid);
+}
+
 .topBar {
   display: none;
 }

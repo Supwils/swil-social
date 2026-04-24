@@ -34,7 +34,7 @@ import { MarkdownBody } from './MarkdownBody';
 import { InlineComments } from './InlineComments';
 import s from './PostCard.module.css';
 
-export function PostCard({ post }: { post: PostDTO }) {
+export function PostCard({ post, compact = false }: { post: PostDTO; compact?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const me = useSession((st) => st.user);
@@ -43,6 +43,7 @@ export function PostCard({ post }: { post: PostDTO }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [draftText, setDraftText] = useState(post.text);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
@@ -140,7 +141,7 @@ export function PostCard({ post }: { post: PostDTO }) {
   const galleryClass = (s as Record<string, string>)[`images${post.images.length}`] ?? s.images1;
 
   return (
-    <article className={s.card}>
+    <article className={clsx(s.card, compact && s.cardCompact)}>
       <Link to={`/u/${post.author.username}`} aria-label={`${post.author.displayName} profile`}>
         <Avatar
           src={post.author.avatarUrl}
@@ -201,10 +202,10 @@ export function PostCard({ post }: { post: PostDTO }) {
             <Textarea
               value={draftText}
               onChange={(e) => setDraftText(e.target.value)}
-              rows={4}
               maxLength={5000}
               showCounter
               serif
+              autoResize
               aria-label="Edit post text"
               autoFocus
             />
@@ -228,26 +229,54 @@ export function PostCard({ post }: { post: PostDTO }) {
             </div>
           </form>
         ) : (
-          <Link to={`/p/${post.id}`} className={s.textLink} aria-label="Open post" draggable={false}>
-            <MarkdownBody source={post.text} />
-            {post.editedAt && <span className={s.editedMark}>· {t('common.edited')}</span>}
-          </Link>
+          <>
+            <Link
+              to={`/p/${post.id}`}
+              className={clsx(s.textLink, compact && !expanded && s.textClamp)}
+              aria-label="Open post"
+              draggable={false}
+            >
+              <MarkdownBody source={post.text} />
+              {post.editedAt && <span className={s.editedMark}>· {t('common.edited')}</span>}
+            </Link>
+            {compact && !expanded && (
+              <button type="button" className={s.expandBtn} onClick={() => setExpanded(true)}>
+                {t('post.readMore')}
+              </button>
+            )}
+          </>
         )}
 
         {post.images.length > 0 && (
-          <div className={clsx(s.images, galleryClass)}>
-            {post.images.map((img, idx) => (
+          compact ? (
+            <div className={s.imageCompact}>
               <button
-                key={img.url}
                 type="button"
                 className={s.imgWrap}
-                onClick={() => setLightboxIndex(idx)}
-                aria-label={`View image ${idx + 1} of ${post.images.length}`}
+                onClick={() => setLightboxIndex(0)}
+                aria-label={`View image 1 of ${post.images.length}`}
               >
-                <img src={img.url} alt="" loading="lazy" className={s.img} />
+                <img src={post.images[0].url} alt="" loading="lazy" className={s.img} />
               </button>
-            ))}
-          </div>
+              {post.images.length > 1 && !expanded && (
+                <span className={s.imageCountOverlay}>+{post.images.length - 1}</span>
+              )}
+            </div>
+          ) : (
+            <div className={clsx(s.images, galleryClass)}>
+              {post.images.map((img, idx) => (
+                <button
+                  key={img.url}
+                  type="button"
+                  className={s.imgWrap}
+                  onClick={() => setLightboxIndex(idx)}
+                  aria-label={`View image ${idx + 1} of ${post.images.length}`}
+                >
+                  <img src={img.url} alt="" loading="lazy" className={s.img} />
+                </button>
+              ))}
+            </div>
+          )
         )}
 
         {post.video && (
@@ -296,7 +325,7 @@ export function PostCard({ post }: { post: PostDTO }) {
           </button>
         </footer>
 
-        <InlineComments postId={post.id} open={commentsOpen} />
+        {(!compact || expanded) && <InlineComments postId={post.id} open={commentsOpen} />}
       </div>
 
       {lightboxIndex !== null && (

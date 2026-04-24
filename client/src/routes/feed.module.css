@@ -54,3 +54,58 @@
   justify-content: center;
   padding: var(--space-5) 0;
 }
+
+/* Post list / grid containers */
+.postList {
+  display: flex;
+  flex-direction: column;
+}
+
+.postGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (min-width: 960px) {
+  .postGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .postGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* View toggle — button group matching settings theme toggle pattern */
+.viewToggle {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.viewToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  color: var(--color-text-subtle);
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.viewToggleBtn:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.viewToggleBtnActive {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}

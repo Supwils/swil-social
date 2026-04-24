@@ -26,11 +26,6 @@ const EnvSchema = z.object({
 
   CORS_ORIGINS: csvList.default('http://localhost:5173,http://localhost:3000'),
 
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  GOOGLE_CALLBACK_URL: z.string().default('/auth/google/callback'),
-  OAUTH_SUCCESS_REDIRECT: z.string().default('http://localhost:5173/'),
-
   AWS_REGION: z.string().default('us-east-2'),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
@@ -65,10 +60,6 @@ export type Env = typeof env;
 export const isProd = env.NODE_ENV === 'production';
 export const isDev = env.NODE_ENV === 'development';
 export const isTest = env.NODE_ENV === 'test';
-
-export const googleOAuthEnabled = Boolean(
-  env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET,
-);
 
 export const s3Enabled = Boolean(
   env.AWS_ACCESS_KEY_ID &&

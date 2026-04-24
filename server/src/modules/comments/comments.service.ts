@@ -30,7 +30,7 @@ export async function listForPost(
 
   const filter = {
     postId: post._id,
-    status: 'active' as const,
+    status: { $in: ['active', 'deleted'] },
     ...cursorFilterAsc(cursor),
   };
   const docs = (await Comment.find(filter)

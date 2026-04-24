@@ -20,11 +20,6 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
-      '/auth/google': {
-        target: API_TARGET,
-        changeOrigin: true,
-        secure: false,
-      },
     },
   },
   build: {

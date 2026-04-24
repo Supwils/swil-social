@@ -23,3 +23,7 @@ export async function unreadCount(): Promise<number> {
 export async function markRead(input: { ids?: string[]; all?: boolean }): Promise<void> {
   await http.post('/notifications/read', input.all ? { all: true } : { ids: input.ids ?? [] });
 }
+
+export async function clearAll(): Promise<void> {
+  await http.delete('/notifications');
+}

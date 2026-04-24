@@ -1,10 +1,14 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from 'react';
+import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState, useCallback } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { X } from '@phosphor-icons/react';
+import { X, Eye, EyeSlash } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import * as usersApi from '@/api/users.api';
 import * as authApi from '@/api/auth.api';
+import { PRESET_TAGS } from '@/lib/tagPresets';
 import { useSession } from '@/stores/session.store';
 import { useUI, type ThemePreference, type LanguagePreference } from '@/stores/ui.store';
 import type { ApiError } from '@/api/types';
@@ -17,28 +21,7 @@ import {
 } from '@/components/primitives';
 import s from './settings.module.css';
 
-const SUGGESTED_TAGS_BY_CATEGORY: Record<string, string[]> = {
-  '身份 · Identity': [
-    'developer', 'designer', 'engineer', 'writer', 'artist',
-    'photographer', 'musician', 'filmmaker', 'researcher', 'student',
-    'teacher', 'creator', 'entrepreneur', 'scientist', 'journalist',
-    'architect', 'translator', 'therapist', 'coach', 'illustrator',
-  ],
-  '性格 · Personality': [
-    'introvert', 'thinker', 'dreamer', 'maker', 'minimalist',
-    'optimist', 'night-owl', 'wanderer', 'observer', 'empath',
-    'curious', 'quiet', 'reflective', 'gentle', 'playful',
-    'explorer', 'perfectionist', 'spontaneous', 'independent',
-  ],
-  '兴趣 · Interests': [
-    'gamer', 'chef', 'athlete', 'reader', 'traveler',
-    'cyclist', 'climber', 'gardener', 'coder', 'builder',
-    'painter', 'dancer', 'singer', 'poet', 'philosopher',
-    'cinephile', 'bookworm', 'tea-lover', 'cat-person', 'runner',
-  ],
-};
-
-const ALL_SUGGESTED_TAGS = Object.values(SUGGESTED_TAGS_BY_CATEGORY).flat();
+const TAGS_PER_CATEGORY_DEFAULT = 8;
 
 export default function SettingsRoute() {
   const { t } = useTranslation();
@@ -50,6 +33,16 @@ export default function SettingsRoute() {
   const [headline, setHeadline] = useState('');
   const [profileTags, setProfileTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
+  const toggleCategoryExpand = useCallback((cat: string) => {
+    setExpandedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -94,14 +87,32 @@ export default function SettingsRoute() {
     onError: (err) => toast.error((err as unknown as ApiError).message),
   });
 
-  const [currentPwd, setCurrentPwd] = useState('');
-  const [newPwd, setNewPwd] = useState('');
+  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
+  const [showConfirmPwd, setShowConfirmPwd] = useState(false);
+
+  const pwdSchema = z
+    .object({
+      currentPassword: z.string().min(1, t('auth.fieldRequired')),
+      newPassword: z.string().min(8, t('auth.passwordMin')),
+      confirmPassword: z.string().min(1, t('auth.fieldRequired')),
+    })
+    .refine((d) => d.newPassword === d.confirmPassword, {
+      message: t('settings.password.mismatch'),
+      path: ['confirmPassword'],
+    });
+  type PwdFields = z.infer<typeof pwdSchema>;
+
+  const pwdForm = useForm<PwdFields>({ resolver: zodResolver(pwdSchema) });
+
   const changePwd = useMutation({
-    mutationFn: () =>
-      authApi.changePassword({ currentPassword: currentPwd, newPassword: newPwd }),
+    mutationFn: (data: PwdFields) =>
+      authApi.changePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword }),
     onSuccess: () => {
-      setCurrentPwd('');
-      setNewPwd('');
+      pwdForm.reset();
+      setShowCurrentPwd(false);
+      setShowNewPwd(false);
+      setShowConfirmPwd(false);
       toast.success(t('settings.password.changed'));
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
@@ -156,11 +167,11 @@ export default function SettingsRoute() {
           />
           <Textarea
             label={t('settings.profile.bio')}
-            rows={4}
             value={bio}
             onChange={(e) => setBio(e.target.value)}
             maxLength={280}
             showCounter
+            autoResize
           />
 
           <div className={s.tagsSection}>
@@ -170,7 +181,7 @@ export default function SettingsRoute() {
               <div className={s.tagsList}>
                 {profileTags.map((tag) => (
                   <span key={tag} className={s.tagChip}>
-                    {tag}
+                    {t(`tags.labels.${tag}`, tag)}
                     <button
                       type="button"
                       className={s.tagRemove}
@@ -194,32 +205,41 @@ export default function SettingsRoute() {
               onKeyDown={handleTagKeyDown}
               onBlur={() => addTag(tagInput)}
             />
-            {ALL_SUGGESTED_TAGS.some((tag) => !profileTags.includes(tag)) && (
-              <div className={s.tagCategories}>
-                {Object.entries(SUGGESTED_TAGS_BY_CATEGORY).map(([category, tags]) => {
-                  const available = tags.filter((tag) => !profileTags.includes(tag));
-                  if (available.length === 0) return null;
-                  return (
-                    <div key={category} className={s.tagCategory}>
-                      <span className={s.tagCategoryLabel}>{category}</span>
-                      <div className={s.tagSuggestions}>
-                        {available.slice(0, 7).map((tag) => (
-                          <button
-                            key={tag}
-                            type="button"
-                            className={s.tagSuggestion}
-                            onClick={() => addTag(tag)}
-                            disabled={profileTags.length >= 10}
-                          >
-                            {tag}
-                          </button>
-                        ))}
-                      </div>
+            <div className={s.tagCategories}>
+              {Object.entries(PRESET_TAGS).map(([catKey, slugs]) => {
+                const available = slugs.filter((slug) => !profileTags.includes(slug));
+                if (available.length === 0) return null;
+                const isExpanded = expandedCategories.has(catKey);
+                const shown = isExpanded ? available : available.slice(0, TAGS_PER_CATEGORY_DEFAULT);
+                return (
+                  <div key={catKey} className={s.tagCategory}>
+                    <span className={s.tagCategoryLabel}>{t(`tags.categories.${catKey}`)}</span>
+                    <div className={s.tagSuggestions}>
+                      {shown.map((slug) => (
+                        <button
+                          key={slug}
+                          type="button"
+                          className={s.tagSuggestion}
+                          onClick={() => addTag(slug)}
+                          disabled={profileTags.length >= 10}
+                        >
+                          {t(`tags.labels.${slug}`, slug)}
+                        </button>
+                      ))}
+                      {available.length > TAGS_PER_CATEGORY_DEFAULT && (
+                        <button
+                          type="button"
+                          className={s.tagSuggestionMore}
+                          onClick={() => toggleCategoryExpand(catKey)}
+                        >
+                          {isExpanded ? t('tags.showLess') : `+${available.length - TAGS_PER_CATEGORY_DEFAULT} ${t('tags.showMore')}`}
+                        </button>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <div className={s.formActions}>
@@ -270,31 +290,72 @@ export default function SettingsRoute() {
         </header>
         <form
           className={s.form}
-          onSubmit={(e: FormEvent) => {
-            e.preventDefault();
-            changePwd.mutate();
-          }}
+          onSubmit={pwdForm.handleSubmit((data) => changePwd.mutate(data))}
         >
           <Input
             label={t('settings.password.current')}
-            type="password"
+            type={showCurrentPwd ? 'text' : 'password'}
             autoComplete="current-password"
-            value={currentPwd}
-            onChange={(e) => setCurrentPwd(e.target.value)}
-            required
+            error={pwdForm.formState.errors.currentPassword?.message}
+            trailing={
+              <button
+                type="button"
+                className={s.eyeBtn}
+                onClick={() => setShowCurrentPwd((v) => !v)}
+                aria-label={showCurrentPwd ? t('settings.password.hide') : t('settings.password.show')}
+              >
+                {showCurrentPwd
+                  ? <EyeSlash size={16} weight="regular" aria-hidden />
+                  : <Eye size={16} weight="regular" aria-hidden />}
+              </button>
+            }
+            {...pwdForm.register('currentPassword')}
           />
           <Input
             label={t('settings.password.new')}
-            type="password"
+            type={showNewPwd ? 'text' : 'password'}
             autoComplete="new-password"
-            value={newPwd}
-            onChange={(e) => setNewPwd(e.target.value)}
-            minLength={8}
             hint={t('settings.password.newHint')}
-            required
+            error={pwdForm.formState.errors.newPassword?.message}
+            trailing={
+              <button
+                type="button"
+                className={s.eyeBtn}
+                onClick={() => setShowNewPwd((v) => !v)}
+                aria-label={showNewPwd ? t('settings.password.hide') : t('settings.password.show')}
+              >
+                {showNewPwd
+                  ? <EyeSlash size={16} weight="regular" aria-hidden />
+                  : <Eye size={16} weight="regular" aria-hidden />}
+              </button>
+            }
+            {...pwdForm.register('newPassword')}
+          />
+          <Input
+            label={t('settings.password.confirm')}
+            type={showConfirmPwd ? 'text' : 'password'}
+            autoComplete="new-password"
+            error={pwdForm.formState.errors.confirmPassword?.message}
+            trailing={
+              <button
+                type="button"
+                className={s.eyeBtn}
+                onClick={() => setShowConfirmPwd((v) => !v)}
+                aria-label={showConfirmPwd ? t('settings.password.hide') : t('settings.password.show')}
+              >
+                {showConfirmPwd
+                  ? <EyeSlash size={16} weight="regular" aria-hidden />
+                  : <Eye size={16} weight="regular" aria-hidden />}
+              </button>
+            }
+            {...pwdForm.register('confirmPassword')}
           />
           <div className={s.formActions}>
-            <Button variant="primary" type="submit" disabled={changePwd.isPending}>
+            <Button
+              variant="primary"
+              type="submit"
+              disabled={changePwd.isPending || pwdForm.formState.isSubmitting}
+            >
               {changePwd.isPending ? t('settings.password.changing') : t('settings.password.change')}
             </Button>
           </div>

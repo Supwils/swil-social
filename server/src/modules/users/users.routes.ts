@@ -52,6 +52,11 @@ usersRouter.get(
 );
 
 usersRouter.get(
+  '/profile-tags/presets',
+  asyncHandler(ctrl.getProfileTagPresets),
+);
+
+usersRouter.get(
   '/:username',
   optionalUser,
   validate(usernameParamSchema, 'params'),

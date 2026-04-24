@@ -20,6 +20,12 @@
   line-height: var(--lh-tight);
 }
 
+.headerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .item {
   display: flex;
   gap: var(--space-3);
