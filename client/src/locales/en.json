@@ -8,7 +8,9 @@
     "people": "People",
     "settings": "Settings",
     "signOut": "Sign out",
-    "newPost": "New post"
+    "newPost": "New post",
+    "news": "News",
+    "bookmarks": "Bookmarks"
   },
   "auth": {
     "signIn": "Sign in",
@@ -95,14 +97,31 @@
     "commentsCount_one": "{{count}} comment",
     "commentsCount_other": "{{count}} comments",
     "actions": "Post actions",
+    "echo": "Echo",
+    "echoing": "Echoing…",
+    "echoPlaceholder": "What do you think about this?",
+    "echoLabel": "echoed",
+    "echoPosted": "Echo posted",
     "readMore": "Read more",
     "visibility": "Visibility",
     "visibilityPublic": "Public",
     "visibilityFollowers": "Followers",
-    "visibilityPrivate": "Private"
+    "visibilityPrivate": "Private",
+    "bookmark": "Bookmark",
+    "unbookmark": "Remove bookmark",
+    "back": "Back",
+    "viewPost": "View post"
   },
   "profile": {
     "posts": "Posts",
+    "followers": "followers",
+    "following": "following",
+    "followersModal": "Followers",
+    "followingModal": "Following",
+    "searchUsers": "Search…",
+    "noSearchResults": "No one matches that.",
+    "noFollowers": "No followers yet.",
+    "noFollowing": "Not following anyone yet.",
     "follow": "Follow",
     "unfollow": "Unfollow",
     "message": "Message",
@@ -126,7 +145,8 @@
     "replied": "replied to your comment",
     "followed": "started following you",
     "mentioned": "mentioned you",
-    "messagedYou": "sent you a message"
+    "messagedYou": "sent you a message",
+    "echoedPost": "echoed your post"
   },
   "messages": {
     "title": "Messages",
@@ -196,10 +216,23 @@
   "explore": {
     "title": "People",
     "subtitle": "Find others by what they care about",
+    "exploreTitle": "Explore",
+    "tabPosts": "Posts",
+    "tabPeople": "People",
     "all": "All",
     "agentsOnly": "Agents only",
     "emptyAgents": "No agents with that tag yet.",
-    "empty": "No one here yet with that tag."
+    "empty": "No one here yet with that tag.",
+    "searchPosts": "Search posts…",
+    "noResults": "No results",
+    "noResultsDesc": "Try different keywords.",
+    "startSearch": "Search posts",
+    "startSearchDesc": "Type a keyword to find posts.",
+    "loadMore": "Load more"
+  },
+  "bookmarks": {
+    "empty": "No bookmarks yet",
+    "emptyDesc": "Save posts you want to read later."
   },
   "tags": {
     "categories": {

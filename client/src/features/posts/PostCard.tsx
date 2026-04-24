@@ -4,6 +4,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Heart,
   ChatCircle,
+  ArrowsClockwise,
+  BookmarkSimple,
   DotsThree,
   PencilSimple,
   Trash,
@@ -17,6 +19,8 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import * as likesApi from '@/api/likes.api';
 import * as postsApi from '@/api/posts.api';
+import * as bookmarksApi from '@/api/bookmarks.api';
+import { qk } from '@/api/queryKeys';
 import type { PostDTO, Paginated, ApiError } from '@/api/types';
 import {
   Avatar,
@@ -32,7 +36,22 @@ import { useSession } from '@/stores/session.store';
 import { formatRelative, formatAbsolute } from '@/lib/formatDate';
 import { MarkdownBody } from './MarkdownBody';
 import { InlineComments } from './InlineComments';
+import { EchoComposer } from './EchoComposer';
 import s from './PostCard.module.css';
+
+function EchoFrame({ post }: { post: PostDTO }) {
+  return (
+    <Link to={`/p/${post.id}`} className={s.echoFrame} onClick={(e) => e.stopPropagation()}>
+      <div className={s.echoFrameAuthor}>
+        <Avatar src={post.author.avatarUrl} name={post.author.displayName || post.author.username} size="sm" alt="" />
+        <span className={s.echoFrameName}>{post.author.displayName || post.author.username}</span>
+        <span className={s.echoFrameHandle}>@{post.author.username}</span>
+      </div>
+      {post.text && <p className={s.echoFrameText}>{post.text}</p>}
+      {post.images[0] && <img src={post.images[0].url} alt="" className={s.echoFrameImg} />}
+    </Link>
+  );
+}
 
 export function PostCard({ post, compact = false }: { post: PostDTO; compact?: boolean }) {
   const { t } = useTranslation();
@@ -42,10 +61,40 @@ export function PostCard({ post, compact = false }: { post: PostDTO; compact?: b
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [echoOpen, setEchoOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [draftText, setDraftText] = useState(post.text);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  const bookmark = useMutation({
+    mutationFn: async () =>
+      post.bookmarkedByMe ? bookmarksApi.unbookmarkPost(post.id) : bookmarksApi.bookmarkPost(post.id),
+    onSuccess: () => {
+      const next = !post.bookmarkedByMe;
+      const applyToInfinite = (
+        old: { pages: Paginated<PostDTO>[]; pageParams: unknown[] } | undefined,
+      ) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map((pg) => ({
+            ...pg,
+            items: pg.items.map((p) => p.id === post.id ? { ...p, bookmarkedByMe: next } : p),
+          })),
+        };
+      };
+      qc.setQueriesData({ queryKey: ['feed'] }, applyToInfinite);
+      qc.setQueryData<{ pages: Paginated<PostDTO>[]; pageParams: unknown[] }>(
+        ['users', post.author.username, 'posts'],
+        applyToInfinite,
+      );
+      qc.setQueryData<PostDTO>(['posts', post.id], (old) =>
+        old ? { ...old, bookmarkedByMe: next } : old,
+      );
+      qc.invalidateQueries({ queryKey: qk.bookmarks.list });
+    },
+  });
 
   const like = useMutation({
     mutationFn: async () =>
@@ -140,17 +189,55 @@ export function PostCard({ post, compact = false }: { post: PostDTO; compact?: b
 
   const galleryClass = (s as Record<string, string>)[`images${post.images.length}`] ?? s.images1;
 
-  return (
-    <article className={clsx(s.card, compact && s.cardCompact)}>
-      <Link to={`/u/${post.author.username}`} aria-label={`${post.author.displayName} profile`}>
-        <Avatar
-          src={post.author.avatarUrl}
-          name={post.author.displayName || post.author.username}
-          size="md"
-          alt=""
-        />
-      </Link>
-      <div className={s.body}>
+  // Normalize agent formatting artifacts: character/word-per-line and hashtag-per-line patterns.
+  const displayText = (() => {
+    const lines = post.text.split('\n');
+    const nonEmpty = lines.filter(l => l.trim().length > 0);
+    if (nonEmpty.length < 5) return post.text;
+
+    // Case 1: entire post is fragmented (>65% of non-empty lines ≤6 chars)
+    const micro = nonEmpty.filter(l => l.trim().length <= 6);
+    if (micro.length / nonEmpty.length > 0.65) {
+      return nonEmpty.map(l => l.trim()).join('');
+    }
+
+    // Case 2: trailing / embedded runs of ≥4 consecutive short lines
+    // e.g. "#\nmTOR\n#\n分子营养学" → "#mTOR#分子营养学"
+    const out: string[] = [];
+    let run: string[] = [];
+    const flush = () => {
+      if (run.length >= 4) out.push(run.join(''));
+      else out.push(...run);
+      run = [];
+    };
+    for (const line of lines) {
+      const t = line.trim();
+      if (t.length > 0 && t.length <= 6) {
+        run.push(t);
+      } else {
+        flush();
+        out.push(line);
+      }
+    }
+    flush();
+    return out.join('\n');
+  })();
+
+  // ── Avatar link (shared between compact and list) ──
+  const avatarEl = (
+    <Link to={`/u/${post.author.username}`} aria-label={`${post.author.displayName} profile`}>
+      <Avatar
+        src={post.author.avatarUrl}
+        name={post.author.displayName || post.author.username}
+        size="md"
+        alt=""
+      />
+    </Link>
+  );
+
+  // ── Body inner content — used inside .body in both branches ──
+  const bodyContent = (
+    <>
         <header className={s.header}>
           <Link to={`/u/${post.author.username}`} className={s.authorLink}>
             <span className={s.authorName}>
@@ -236,7 +323,7 @@ export function PostCard({ post, compact = false }: { post: PostDTO; compact?: b
               aria-label="Open post"
               draggable={false}
             >
-              <MarkdownBody source={post.text} />
+              <MarkdownBody source={displayText} />
               {post.editedAt && <span className={s.editedMark}>· {t('common.edited')}</span>}
             </Link>
             {compact && !expanded && (
@@ -301,6 +388,8 @@ export function PostCard({ post, compact = false }: { post: PostDTO; compact?: b
           </div>
         )}
 
+        {post.echoOf && <EchoFrame post={post.echoOf} />}
+
         <footer className={s.actions}>
           <button
             type="button"
@@ -323,10 +412,74 @@ export function PostCard({ post, compact = false }: { post: PostDTO; compact?: b
             <ChatCircle size={16} weight={commentsOpen ? 'fill' : 'regular'} aria-hidden />
             <span>{post.commentCount}</span>
           </button>
+          {me && !post.echoOf && (
+            <button
+              type="button"
+              className={s.actionBtn}
+              onClick={() => setEchoOpen(true)}
+              aria-label={t('post.echo')}
+            >
+              <ArrowsClockwise size={16} weight="regular" aria-hidden />
+              {post.echoCount > 0 && <span>{post.echoCount}</span>}
+            </button>
+          )}
+          {me && (
+            <button
+              type="button"
+              className={clsx(s.actionBtn, post.bookmarkedByMe && s.bookmarkedBtn)}
+              onClick={() => bookmark.mutate()}
+              disabled={bookmark.isPending}
+              aria-pressed={post.bookmarkedByMe}
+              aria-label={post.bookmarkedByMe ? t('post.unbookmark') : t('post.bookmark')}
+            >
+              <BookmarkSimple size={16} weight={post.bookmarkedByMe ? 'fill' : 'regular'} aria-hidden />
+            </button>
+          )}
         </footer>
+    </>
+  );
 
-        {(!compact || expanded) && <InlineComments postId={post.id} open={commentsOpen} />}
-      </div>
+  return (
+    <article className={clsx(s.card, compact && s.cardCompact)}>
+
+      {compact ? (
+        // ── GRID MODE: 3D flip ──
+        <div className={clsx(s.flipInner, commentsOpen && s.flipped)}>
+          {/* Front face */}
+          <div className={s.flipFront}>
+            {avatarEl}
+            <div className={s.body}>{bodyContent}</div>
+          </div>
+
+          {/* Back face — always in DOM so flip animates in smoothly */}
+          <div className={s.flipBack}>
+            <div className={s.flipBackNav}>
+              <button
+                type="button"
+                className={s.flipBackClose}
+                onClick={() => setCommentsOpen(false)}
+                aria-label="Close comments"
+              >
+                <ArrowLeft size={13} weight="bold" aria-hidden />
+                <span>{t('post.back')}</span>
+              </button>
+              <Link to={`/p/${post.id}`} className={s.flipBackViewPost}>
+                {t('post.viewPost')} →
+              </Link>
+            </div>
+            <InlineComments postId={post.id} open={commentsOpen} indented={false} />
+          </div>
+        </div>
+      ) : (
+        // ── LIST MODE: comments expand vertically inside .body, never squeezes text ──
+        <>
+          {avatarEl}
+          <div className={s.body}>
+            {bodyContent}
+            <InlineComments postId={post.id} open={commentsOpen} indented={false} />
+          </div>
+        </>
+      )}
 
       {lightboxIndex !== null && (
         <Dialog
@@ -366,6 +519,14 @@ export function PostCard({ post, compact = false }: { post: PostDTO; compact?: b
             )}
           </div>
         </Dialog>
+      )}
+
+      {echoOpen && (
+        <EchoComposer
+          post={post}
+          open={echoOpen}
+          onClose={() => setEchoOpen(false)}
+        />
       )}
 
       <Dialog

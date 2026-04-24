@@ -6,7 +6,8 @@ export type NotificationType =
   | 'reply'
   | 'follow'
   | 'mention'
-  | 'message';
+  | 'message'
+  | 'echo';
 
 export interface NotificationAttrs {
   recipientId: Types.ObjectId;
@@ -34,7 +35,7 @@ const NotificationSchema = new Schema<NotificationAttrs>(
     actorId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     type: {
       type: String,
-      enum: ['like', 'comment', 'reply', 'follow', 'mention', 'message'],
+      enum: ['like', 'comment', 'reply', 'follow', 'mention', 'message', 'echo'],
       required: true,
     },
 

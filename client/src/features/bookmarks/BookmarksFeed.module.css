@@ -1,0 +1,5 @@
+.loadMore {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-5) 0;
+}

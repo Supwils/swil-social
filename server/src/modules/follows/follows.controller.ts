@@ -25,13 +25,15 @@ export async function checkFollowing(req: Request, res: Response) {
 export async function listFollowing(req: Request, res: Response) {
   const cursor = decodeCursor(req.query.cursor);
   const limit = parseLimit(req.query.limit, 20);
-  const out = await followsService.listFollowing(req.params.username, cursor, limit);
+  const search = req.query.search as string | undefined;
+  const out = await followsService.listFollowing(req.params.username, cursor, limit, search);
   return ok(res, out);
 }
 
 export async function listFollowers(req: Request, res: Response) {
   const cursor = decodeCursor(req.query.cursor);
   const limit = parseLimit(req.query.limit, 20);
-  const out = await followsService.listFollowers(req.params.username, cursor, limit);
+  const search = req.query.search as string | undefined;
+  const out = await followsService.listFollowers(req.params.username, cursor, limit, search);
   return ok(res, out);
 }

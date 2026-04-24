@@ -22,6 +22,13 @@
   align-items: center;
   text-align: center;
   gap: var(--space-3);
+  /* The div fills the full header width and would block sticker clicks without this */
+  pointer-events: none;
+}
+
+/* Re-enable pointer events on every direct child so buttons/links still work */
+.headerContent > * {
+  pointer-events: auto;
 }
 
 /* ── Sticker wallpaper ── */
@@ -42,11 +49,19 @@
   letter-spacing: 0.03em;
   white-space: nowrap;
   color: var(--color-text-muted);
-  opacity: 0.85;
+  opacity: 0.82;
   user-select: none;
-  /* Subtle shadow for paper-sticker feel */
+  text-decoration: none;
+  pointer-events: auto;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  transition: opacity 200ms;
+  transition: opacity 180ms, box-shadow 180ms, color 180ms;
+}
+
+.stickerTag:hover {
+  opacity: 1;
+  color: var(--color-text);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14);
+  z-index: 2;
 }
 
 /* Hide stickers on narrow screens — not enough room */
@@ -97,6 +112,24 @@
   font-weight: 500;
 }
 
+.metaBtn {
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.metaBtn:hover {
+  color: var(--color-text);
+}
+
+.metaBtn:hover strong {
+  color: var(--color-accent);
+}
+
 .actions {
   display: flex;
   gap: var(--space-3);
@@ -112,34 +145,45 @@
   letter-spacing: 0.02em;
 }
 
+.sectionTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-surface) 84%, transparent);
+}
+
+.sectionTab {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-small);
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.sectionTab:hover {
+  color: var(--color-text);
+}
+
+.sectionTabActive {
+  color: var(--color-text);
+  background: var(--color-surface);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 8px 18px rgba(0, 0, 0, 0.08);
+}
+
 .loadMore {
   display: flex;
   justify-content: center;
   padding: var(--space-5) 0;
-}
-
-/* ── Profile tag pills (below bio, clickable) ── */
-.profileTagsRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-}
-
-.profileTag {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: var(--text-caption);
-  background: var(--color-surface-muted);
-  color: var(--color-text-muted);
-  border: 1px solid var(--color-border);
-  transition: background 120ms, color 120ms;
-  text-decoration: none;
-}
-.profileTag:hover {
-  background: var(--color-accent-muted);
-  color: var(--color-accent);
-  border-color: transparent;
 }

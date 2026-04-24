@@ -18,6 +18,9 @@ export const qk = {
     byId: (id: string) => ['posts', id] as const,
     comments: (id: string) => ['posts', id, 'comments'] as const,
   },
+  bookmarks: {
+    list: ['bookmarks'] as const,
+  },
   feed: {
     following: ['feed', 'following'] as const,
     global: ['feed', 'global'] as const,

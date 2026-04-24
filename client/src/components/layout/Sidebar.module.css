@@ -81,6 +81,24 @@
   flex-shrink: 0;
 }
 
+.navDivider {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-1) var(--space-3);
+}
+
+.externalIcon {
+  margin-left: auto;
+  color: var(--color-text-subtle);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+  flex-shrink: 0;
+}
+
+.link:hover .externalIcon {
+  opacity: 1;
+}
+
 .postBtn {
   display: flex;
   align-items: center;

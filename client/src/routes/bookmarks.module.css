@@ -1,0 +1,18 @@
+.page {
+  display: flex;
+  flex-direction: column;
+}
+
+.pageHeader {
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-size: var(--text-h1);
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: var(--lh-tight);
+}

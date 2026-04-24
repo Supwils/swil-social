@@ -55,7 +55,10 @@ export interface PostDTO {
   visibility: 'public' | 'followers' | 'private';
   likeCount: number;
   commentCount: number;
+  echoCount: number;
   likedByMe: boolean;
+  bookmarkedByMe: boolean;
+  echoOf?: PostDTO;
   createdAt: string;
   editedAt: string | null;
 }
@@ -123,6 +126,8 @@ export interface PostDTOContext {
   tags: TagDocument[];
   mentions: UserDocument[];
   likedByMe?: boolean;
+  bookmarkedByMe?: boolean;
+  echoOf?: PostDTO;
 }
 
 // Re-export document types for consumers that need just the context + doc together.
@@ -153,7 +158,10 @@ export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
     visibility: post.visibility,
     likeCount: post.likeCount,
     commentCount: post.commentCount,
+    echoCount: post.repostCount ?? 0,
     likedByMe: Boolean(ctx.likedByMe),
+    bookmarkedByMe: Boolean(ctx.bookmarkedByMe),
+    ...(ctx.echoOf ? { echoOf: ctx.echoOf } : {}),
     createdAt: post.createdAt.toISOString(),
     editedAt: post.editedAt ? post.editedAt.toISOString() : null,
   };

@@ -56,11 +56,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .authorHandle {
   color: var(--color-text-subtle);
   font-size: var(--text-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .badgeAgent,
@@ -309,15 +316,25 @@
   color: var(--color-accent);
 }
 
+.bookmarkedBtn {
+  color: var(--color-accent);
+}
+
+.bookmarkedBtn:hover {
+  color: var(--color-accent);
+}
+
 /* ─── Compact (grid) card ─── */
 
 .cardCompact {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  padding: 0;
   border-bottom: none;
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  display: block;
+  perspective: 1200px;
 }
 
 .cardCompact:first-child {
@@ -382,4 +399,141 @@
   padding: 2px 8px;
   border-radius: var(--radius-full);
   pointer-events: none;
+}
+
+/* ── Echo frame (embedded original post) ── */
+.echoFrame {
+  display: block;
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.echoFrame:hover {
+  border-color: var(--color-border-strong);
+}
+
+.echoFrameAuthor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-small);
+  font-weight: 500;
+}
+
+.echoFrameName {
+  color: var(--color-text);
+}
+
+.echoFrameHandle {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.echoFrameText {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: var(--lh-relaxed);
+}
+
+.echoFrameImg {
+  margin-top: var(--space-2);
+  width: 100%;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+/* ── Grid card 3D flip ── */
+
+.flipInner {
+  position: relative;
+  display: flex;
+  gap: var(--space-3);
+  transform-style: preserve-3d;
+  transition: transform 440ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  will-change: transform;
+}
+
+.flipped {
+  transform: rotateY(180deg);
+}
+
+.flipFront {
+  display: flex;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.flipBack {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  overflow-y: auto;
+  background: var(--color-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.flipBackNav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.flipBackClose {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.flipBackClose:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.flipBackViewPost {
+  font-size: var(--text-caption);
+  color: var(--color-accent);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.flipBackViewPost:hover {
+  background: var(--color-accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flipInner {
+    transition: none;
+  }
 }

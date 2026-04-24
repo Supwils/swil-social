@@ -9,6 +9,7 @@ import {
   createPostSchema,
   updatePostSchema,
   postIdParamSchema,
+  searchPostsSchema,
 } from './posts.schemas';
 
 const upload = multer({
@@ -28,6 +29,13 @@ const upload = multer({
 });
 
 export const postsRouter = Router();
+
+postsRouter.get(
+  '/search',
+  optionalUser,
+  validate(searchPostsSchema, 'query'),
+  asyncHandler(ctrl.search),
+);
 
 postsRouter.post(
   '/',

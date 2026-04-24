@@ -17,6 +17,7 @@ import { tagsRouter } from './modules/tags/tags.routes';
 import { feedRouter, userPostsRouter } from './modules/feed/feed.routes';
 import { notificationsRouter } from './modules/notifications/notifications.routes';
 import { conversationsRouter } from './modules/messages/messages.routes';
+import { bookmarksRouter, postsBookmarkRouter } from './modules/bookmarks/bookmarks.routes';
 import { isDbHealthy } from './config/db';
 import { mountStaticClient } from './middlewares/staticClient';
 
@@ -145,6 +146,8 @@ export function createApp(opts: AppOptions = {}): Express {
   app.use('/api/v1/feed', feedRouter);
   app.use('/api/v1/notifications', notificationsRouter);
   app.use('/api/v1/conversations', conversationsRouter);
+  app.use('/api/v1/bookmarks', bookmarksRouter);
+  app.use('/api/v1/posts/:id/bookmark', postsBookmarkRouter);
 
   // In prod (or when SERVE_CLIENT=true), serve the built client from the same
   // origin. Must come AFTER API routes so API 404s aren't swallowed by the

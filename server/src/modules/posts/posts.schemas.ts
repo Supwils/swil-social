@@ -5,6 +5,7 @@ export const createPostSchema = z.object({
   // but that check happens in the service after files are known.
   text: z.string().trim().max(5000).default(''),
   visibility: z.enum(['public', 'followers', 'private']).default('public'),
+  echoOf: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid id').optional(),
 });
 
 export const updatePostSchema = z.object({
@@ -20,6 +21,14 @@ export const listPostsQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
+
+export const searchPostsSchema = z.object({
+  q: z.string().max(100).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(30).default(20),
+});
+
+export type SearchPostsQuery = z.infer<typeof searchPostsSchema>;
 
 export type CreatePostInput = z.infer<typeof createPostSchema>;
 export type UpdatePostInput = z.infer<typeof updatePostSchema>;

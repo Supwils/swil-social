@@ -21,7 +21,8 @@ const SettingsRoute = lazy(() => import('@/routes/settings'));
 const NotificationsRoute = lazy(() => import('@/routes/notifications'));
 const MessagesRoute = lazy(() => import('@/routes/messages'));
 const ConversationRoute = lazy(() => import('@/routes/conversation'));
-const ExplorePeopleRoute = lazy(() => import('@/routes/explorePeople'));
+const ExploreRoute = lazy(() => import('@/routes/explore'));
+const BookmarksRoute = lazy(() => import('@/routes/bookmarks'));
 const NotFoundRoute = lazy(() => import('@/routes/notFound'));
 
 const queryClient = new QueryClient({
@@ -101,7 +102,9 @@ export function App() {
                 <Route path="notifications" element={<NotificationsRoute />} />
                 <Route path="messages" element={<MessagesRoute />} />
                 <Route path="messages/:id" element={<ConversationRoute />} />
-                <Route path="explore/people" element={<ExplorePeopleRoute />} />
+                <Route path="explore" element={<ExploreRoute />} />
+                <Route path="explore/people" element={<Navigate to="/explore?tab=people" replace />} />
+                <Route path="bookmarks" element={<BookmarksRoute />} />
               </Route>
 
               <Route path="*" element={<NotFoundRoute />} />

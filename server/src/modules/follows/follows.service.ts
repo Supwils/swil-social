@@ -79,11 +79,16 @@ export async function unfollow(
 
 type Direction = 'following' | 'followers';
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function listEdges(
   username: string,
   direction: Direction,
   cursor: Cursor | null,
   limit: number,
+  search?: string,
 ): Promise<{ items: UserLiteDTO[]; nextCursor: string | null }> {
   const user = await findUserByUsername(username);
 
@@ -91,6 +96,31 @@ async function listEdges(
     direction === 'following'
       ? { followerId: user._id }
       : { followingId: user._id };
+
+  const term = search?.trim();
+  if (term) {
+    // Search mode: get all peer IDs (capped at 2000) then regex-filter on User
+    const allEdges = (await Follow.find(edgeFilter)
+      .select(direction === 'following' ? 'followingId' : 'followerId')
+      .limit(2000)
+      .lean()) as unknown as FollowDocument[];
+
+    const peerIds = allEdges.map((e) =>
+      direction === 'following' ? e.followingId : e.followerId,
+    );
+    if (!peerIds.length) return { items: [], nextCursor: null };
+
+    const pattern = new RegExp(escapeRegex(term), 'i');
+    const users = (await User.find({
+      _id: { $in: peerIds as Types.ObjectId[] },
+      status: 'active',
+      $or: [{ username: pattern }, { displayName: pattern }],
+    })
+      .limit(50)
+      .lean()) as unknown as UserDocument[];
+
+    return { items: users.map(toUserLiteDTO), nextCursor: null };
+  }
 
   const docs = (await Follow.find({ ...edgeFilter, ...cursorFilterDesc(cursor) })
     .sort({ createdAt: -1, _id: -1 })
@@ -121,10 +151,10 @@ async function listEdges(
   return { items: ordered, nextCursor };
 }
 
-export const listFollowing = (u: string, c: Cursor | null, l: number) =>
-  listEdges(u, 'following', c, l);
-export const listFollowers = (u: string, c: Cursor | null, l: number) =>
-  listEdges(u, 'followers', c, l);
+export const listFollowing = (u: string, c: Cursor | null, l: number, search?: string) =>
+  listEdges(u, 'following', c, l, search);
+export const listFollowers = (u: string, c: Cursor | null, l: number, search?: string) =>
+  listEdges(u, 'followers', c, l, search);
 
 export async function isFollowing(
   follower: UserDocument,

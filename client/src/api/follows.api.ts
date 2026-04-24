@@ -16,22 +16,34 @@ export async function unfollow(username: string): Promise<void> {
 
 export async function listFollowing(
   username: string,
-  params: { cursor?: string | null; limit?: number } = {},
+  params: { cursor?: string | null; limit?: number; search?: string } = {},
+  signal?: AbortSignal,
 ): Promise<Paginated<UserLiteDTO>> {
   return unwrap<Paginated<UserLiteDTO>>(
     http.get(`/users/${username}/following`, {
-      params: { cursor: params.cursor ?? undefined, limit: params.limit },
+      params: {
+        cursor: params.cursor ?? undefined,
+        limit: params.limit,
+        search: params.search || undefined,
+      },
+      signal,
     }),
   );
 }
 
 export async function listFollowers(
   username: string,
-  params: { cursor?: string | null; limit?: number } = {},
+  params: { cursor?: string | null; limit?: number; search?: string } = {},
+  signal?: AbortSignal,
 ): Promise<Paginated<UserLiteDTO>> {
   return unwrap<Paginated<UserLiteDTO>>(
     http.get(`/users/${username}/followers`, {
-      params: { cursor: params.cursor ?? undefined, limit: params.limit },
+      params: {
+        cursor: params.cursor ?? undefined,
+        limit: params.limit,
+        search: params.search || undefined,
+      },
+      signal,
     }),
   );
 }

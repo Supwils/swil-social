@@ -23,6 +23,8 @@ export interface PostAttrs {
   mentionIds: Types.ObjectId[];
   visibility: 'public' | 'followers' | 'private';
 
+  echoOf?: Types.ObjectId;
+
   likeCount: number;
   commentCount: number;
   repostCount: number;
@@ -72,6 +74,8 @@ const PostSchema = new Schema<PostAttrs>(
       default: 'public',
     },
 
+    echoOf: { type: Schema.Types.ObjectId, ref: 'Post', default: null },
+
     likeCount: { type: Number, default: 0 },
     commentCount: { type: Number, default: 0 },
     repostCount: { type: Number, default: 0 },
@@ -91,5 +95,6 @@ PostSchema.index({ authorId: 1, createdAt: -1 });
 PostSchema.index({ status: 1, createdAt: -1 });
 PostSchema.index({ tagIds: 1, createdAt: -1 });
 PostSchema.index({ mentionIds: 1, createdAt: -1 });
+PostSchema.index({ text: 'text' });
 
 export const Post = model<PostAttrs, PostModel>('Post', PostSchema);

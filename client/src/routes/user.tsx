@@ -1,5 +1,6 @@
+import React, { useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import * as usersApi from '@/api/users.api';
@@ -7,8 +8,10 @@ import * as feedApi from '@/api/feed.api';
 import * as followsApi from '@/api/follows.api';
 import * as messagesApi from '@/api/messages.api';
 import { qk } from '@/api/queryKeys';
+import { BookmarksFeed } from '@/features/bookmarks/BookmarksFeed';
 import { useSession } from '@/stores/session.store';
 import { PostCard } from '@/features/posts/PostCard';
+import { FollowListModal } from '@/features/users/FollowListModal';
 import type { UserDTO, ApiError } from '@/api/types';
 import {
   Avatar,
@@ -19,18 +22,18 @@ import {
 } from '@/components/primitives';
 import s from './user.module.css';
 
-// Deterministic positions so the same tag always lands in the same spot
+// Positions form a loose orbit around the avatar (top-center of header)
 const STICKER_POSITIONS = [
-  { x: '2%',  y: '8%',  rot: -8  },
-  { x: '72%', y: '12%', rot:  7  },
-  { x: '0%',  y: '36%', rot:  13 },
-  { x: '75%', y: '40%', rot: -5  },
-  { x: '4%',  y: '62%', rot: -12 },
-  { x: '70%', y: '65%', rot:  9  },
-  { x: '1%',  y: '82%', rot:  5  },
-  { x: '73%', y: '80%', rot: -9  },
-  { x: '7%',  y: '22%', rot:  10 },
-  { x: '68%', y: '50%', rot: -4  },
+  { x: '15%', y: '5%',  rot: -8  },
+  { x: '65%', y: '3%',  rot:  7  },
+  { x: '7%',  y: '28%', rot:  13 },
+  { x: '77%', y: '22%', rot: -5  },
+  { x: '12%', y: '54%', rot: -12 },
+  { x: '71%', y: '50%', rot:  9  },
+  { x: '26%', y: '68%', rot:  5  },
+  { x: '60%', y: '66%', rot: -9  },
+  { x: '32%', y: '10%', rot:  10 },
+  { x: '73%', y: '38%', rot: -4  },
 ];
 
 // Soft, muted pastels — cohesive with the warm off-white design
@@ -48,24 +51,26 @@ const STICKER_COLORS = [
 function TagWallpaper({ tags }: { tags: string[] }) {
   const { t } = useTranslation();
   return (
-    <div className={s.tagWallpaper} aria-hidden>
+    <div className={s.tagWallpaper}>
       {tags.map((tag, i) => {
         const pos = STICKER_POSITIONS[i % STICKER_POSITIONS.length];
         const col = STICKER_COLORS[i % STICKER_COLORS.length];
         return (
-          <span
+          <Link
             key={tag}
+            to={`/explore?tab=people&tag=${encodeURIComponent(tag)}`}
             className={s.stickerTag}
             style={{
               left: pos.x,
               top: pos.y,
+              '--rot': `${pos.rot}deg`,
               transform: `rotate(${pos.rot}deg)`,
               background: col.bg,
               border: `1px solid ${col.border}`,
-            }}
+            } as React.CSSProperties}
           >
             {t(`tags.labels.${tag}`, tag)}
-          </span>
+          </Link>
         );
       })}
     </div>
@@ -75,9 +80,11 @@ function TagWallpaper({ tags }: { tags: string[] }) {
 export default function UserRoute() {
   const { t } = useTranslation();
   const { username = '' } = useParams<{ username: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const me = useSession((st) => st.user);
   const qc = useQueryClient();
   const nav = useNavigate();
+  const [followModal, setFollowModal] = useState<'followers' | 'following' | null>(null);
 
   const user = useQuery({
     queryKey: qk.users.byUsername(username),
@@ -85,15 +92,16 @@ export default function UserRoute() {
     enabled: Boolean(username),
   });
 
+  const isSelf = Boolean(me && user.data && me.id === user.data.id);
+  const activeTab = isSelf && searchParams.get('tab') === 'bookmarks' ? 'bookmarks' : 'posts';
+
   const posts = useInfiniteQuery({
     queryKey: qk.users.posts(username),
     queryFn: ({ pageParam }) => feedApi.byUser(username, { cursor: pageParam, limit: 20 }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
-    enabled: Boolean(username),
+    enabled: Boolean(username) && activeTab === 'posts',
   });
-
-  const isSelf = Boolean(me && user.data && me.id === user.data.id);
 
   const followStatus = useQuery({
     queryKey: qk.users.followStatus(username),
@@ -158,7 +166,14 @@ export default function UserRoute() {
 
   const u = user.data;
   const hasTags = u.profileTags && u.profileTags.length > 0;
-  const items = posts.data?.pages.flatMap((p) => p.items) ?? [];
+  const postItems = posts.data?.pages.flatMap((p) => p.items) ?? [];
+
+  const setActiveTab = (tab: 'posts' | 'bookmarks') => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'posts') next.delete('tab');
+    else next.set('tab', tab);
+    setSearchParams(next, { replace: true });
+  };
 
   return (
     <div className={s.page}>
@@ -173,23 +188,14 @@ export default function UserRoute() {
           </div>
           {u.headline && <p className={s.headline}>{u.headline}</p>}
           {u.bio && <p className={s.bio}>{u.bio}</p>}
-          {hasTags && (
-            <div className={s.profileTagsRow}>
-              {u.profileTags!.map((tag) => (
-                <Link
-                  key={tag}
-                  to={`/explore/people?tag=${encodeURIComponent(tag)}`}
-                  className={s.profileTag}
-                >
-                  {t(`tags.labels.${tag}`, tag)}
-                </Link>
-              ))}
-            </div>
-          )}
           <div className={s.meta}>
             <span><strong>{u.postCount}</strong> {t('profile.posts')}</span>
-            <span><strong>{u.followerCount}</strong> followers</span>
-            <span><strong>{u.followingCount}</strong> following</span>
+            <button type="button" className={s.metaBtn} onClick={() => setFollowModal('followers')}>
+              <strong>{u.followerCount}</strong> {t('profile.followers')}
+            </button>
+            <button type="button" className={s.metaBtn} onClick={() => setFollowModal('following')}>
+              <strong>{u.followingCount}</strong> {t('profile.following')}
+            </button>
           </div>
           {!isSelf && me && (
             <div className={s.actions}>
@@ -222,27 +228,69 @@ export default function UserRoute() {
         </div>
       </header>
 
-      <h2 className={s.sectionTitle}>{t('profile.posts')}</h2>
+      {isSelf ? (
+        <div className={s.sectionTabs} role="tablist" aria-label={t('profile.posts')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'posts'}
+            className={`${s.sectionTab} ${activeTab === 'posts' ? s.sectionTabActive : ''}`}
+            onClick={() => setActiveTab('posts')}
+          >
+            {t('profile.posts')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'bookmarks'}
+            className={`${s.sectionTab} ${activeTab === 'bookmarks' ? s.sectionTabActive : ''}`}
+            onClick={() => setActiveTab('bookmarks')}
+          >
+            {t('nav.bookmarks')}
+          </button>
+        </div>
+      ) : (
+        <h2 className={s.sectionTitle}>{t('profile.posts')}</h2>
+      )}
 
-      {posts.isLoading && (
+      {activeTab === 'bookmarks' ? (
+        <BookmarksFeed />
+      ) : (
         <>
-          <PostCardSkeleton />
-          <PostCardSkeleton />
+          {posts.isLoading && (
+            <>
+              <PostCardSkeleton />
+              <PostCardSkeleton />
+            </>
+          )}
+
+          {posts.isSuccess && postItems.length === 0 && (
+            <EmptyState title="No posts yet." description="Nothing to see here — yet." />
+          )}
+
+          {postItems.map((post) => <PostCard key={post.id} post={post} />)}
+
+          {posts.hasNextPage && (
+            <div className={s.loadMore}>
+              <Button
+                variant="ghost"
+                onClick={() => posts.fetchNextPage()}
+                disabled={posts.isFetchingNextPage}
+              >
+                {posts.isFetchingNextPage ? '…' : t('profile.loadMore')}
+              </Button>
+            </div>
+          )}
         </>
       )}
 
-      {posts.isSuccess && items.length === 0 && (
-        <EmptyState title="No posts yet." description="Nothing to see here — yet." />
-      )}
-
-      {items.map((post) => <PostCard key={post.id} post={post} />)}
-
-      {posts.hasNextPage && (
-        <div className={s.loadMore}>
-          <Button variant="ghost" onClick={() => posts.fetchNextPage()}>
-            {t('profile.loadMore')}
-          </Button>
-        </div>
+      {followModal && (
+        <FollowListModal
+          username={u.username}
+          type={followModal}
+          open={Boolean(followModal)}
+          onClose={() => setFollowModal(null)}
+        />
       )}
     </div>
   );

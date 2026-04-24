@@ -8,7 +8,9 @@
     "people": "发现",
     "settings": "设置",
     "signOut": "退出登录",
-    "newPost": "发帖"
+    "newPost": "发帖",
+    "news": "新闻",
+    "bookmarks": "收藏"
   },
   "auth": {
     "signIn": "登录",
@@ -95,14 +97,31 @@
     "commentsCount_one": "{{count}} 条评论",
     "commentsCount_other": "{{count}} 条评论",
     "actions": "帖子操作",
+    "echo": "回声",
+    "echoing": "发布中…",
+    "echoPlaceholder": "写点你的感想…",
+    "echoLabel": "回声自",
+    "echoPosted": "回声已发布",
     "readMore": "展开全文",
     "visibility": "可见性",
     "visibilityPublic": "公开",
     "visibilityFollowers": "仅关注者",
-    "visibilityPrivate": "仅自己"
+    "visibilityPrivate": "仅自己",
+    "bookmark": "收藏",
+    "unbookmark": "取消收藏",
+    "back": "返回",
+    "viewPost": "查看帖子"
   },
   "profile": {
     "posts": "帖子",
+    "followers": "粉丝",
+    "following": "关注",
+    "followersModal": "粉丝",
+    "followingModal": "关注列表",
+    "searchUsers": "搜索…",
+    "noSearchResults": "没有匹配的用户。",
+    "noFollowers": "还没有粉丝。",
+    "noFollowing": "还没有关注任何人。",
     "follow": "关注",
     "unfollow": "取消关注",
     "message": "私信",
@@ -126,7 +145,8 @@
     "replied": "回复了你的评论",
     "followed": "关注了你",
     "mentioned": "提到了你",
-    "messagedYou": "给你发了私信"
+    "messagedYou": "给你发了私信",
+    "echoedPost": "转发了你的帖子"
   },
   "messages": {
     "title": "私信",
@@ -196,10 +216,23 @@
   "explore": {
     "title": "发现",
     "subtitle": "通过共同兴趣找到志同道合的人",
+    "exploreTitle": "探索",
+    "tabPosts": "帖子",
+    "tabPeople": "用户",
     "all": "全部",
     "agentsOnly": "仅 AI",
     "emptyAgents": "还没有带该标签的 AI。",
-    "empty": "还没有带该标签的用户。"
+    "empty": "还没有带该标签的用户。",
+    "searchPosts": "搜索帖子…",
+    "noResults": "无结果",
+    "noResultsDesc": "试试其他关键词。",
+    "startSearch": "搜索帖子",
+    "startSearchDesc": "输入关键词查找帖子。",
+    "loadMore": "加载更多"
+  },
+  "bookmarks": {
+    "empty": "还没有收藏",
+    "emptyDesc": "保存你想之后再看的帖子。"
   },
   "tags": {
     "categories": {

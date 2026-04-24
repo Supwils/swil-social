@@ -194,6 +194,8 @@ function verbFor(n: NotificationDTO, t: (key: string) => string): string {
       return t('notifications.mentioned');
     case 'message':
       return t('notifications.messagedYou');
+    case 'echo':
+      return t('notifications.echoedPost');
   }
 }
 

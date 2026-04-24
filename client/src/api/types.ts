@@ -72,7 +72,10 @@ export interface PostDTO {
   visibility: Visibility;
   likeCount: number;
   commentCount: number;
+  echoCount: number;
   likedByMe: boolean;
+  bookmarkedByMe: boolean;
+  echoOf?: PostDTO;
   createdAt: string;
   editedAt: string | null;
 }
@@ -108,7 +111,8 @@ export type NotificationType =
   | 'reply'
   | 'follow'
   | 'mention'
-  | 'message';
+  | 'message'
+  | 'echo';
 
 export interface NotificationDTO {
   id: string;

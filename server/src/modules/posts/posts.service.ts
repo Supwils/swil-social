@@ -4,11 +4,14 @@ import { User, type UserDocument } from '../../models/user.model';
 import { Tag, type TagDocument } from '../../models/tag.model';
 import { Follow } from '../../models/follow.model';
 import { Like } from '../../models/like.model';
+import { Bookmark } from '../../models/bookmark.model';
 import { AppError } from '../../lib/errors';
 import { extractTags, extractMentionUsernames } from '../../lib/extract';
 import { uploadBufferToS3, uploadVideoBufferToS3, deleteFromS3 } from '../../config/s3';
-import type { PostDTOContext } from '../../lib/dto';
-import type { CreatePostInput, UpdatePostInput } from './posts.schemas';
+import type { PostDTOContext, PostDTO } from '../../lib/dto';
+import { toPostDTO } from '../../lib/dto';
+import { decodeCursor, buildNextCursor } from '../../lib/pagination';
+import type { CreatePostInput, UpdatePostInput, SearchPostsQuery } from './posts.schemas';
 import { createNotification } from '../notifications/notifications.service';
 
 interface UploadedMedia {
@@ -23,6 +26,11 @@ export async function createPost(
   imageBuffers: Buffer[] = [],
   videoBuffer: Buffer | null = null,
 ): Promise<{ post: PostDocument; ctx: PostDTOContext }> {
+  // Echo requires text (the user's own commentary)
+  if (input.echoOf && !input.text.trim()) {
+    throw AppError.validation('An echo must include your commentary');
+  }
+
   const hasText = input.text.trim().length > 0;
   if (!hasText && imageBuffers.length === 0 && videoBuffer === null) {
     throw AppError.validation('A post must have text, at least one image, or a video');
@@ -48,6 +56,18 @@ export async function createPost(
     uploadPostMedia(imageBuffers, videoBuffer),
   ]);
 
+  // Resolve echo target (prevent chain echo: A echoes B echoes C → A echoes C)
+  let echoOfId: Types.ObjectId | null = null;
+  let echoOriginal: PostDocument | null = null;
+  if (input.echoOf) {
+    const original = await Post.findById(input.echoOf);
+    if (!original || original.status !== 'active') {
+      throw AppError.notFound('Post not found');
+    }
+    echoOfId = (original.echoOf ?? original._id) as Types.ObjectId;
+    echoOriginal = original;
+  }
+
   let post: PostDocument;
   try {
     post = await Post.create({
@@ -58,6 +78,7 @@ export async function createPost(
       tagIds: tagDocs.map((t) => t._id),
       mentionIds: mentionDocs.map((u) => u._id),
       visibility: input.visibility,
+      ...(echoOfId ? { echoOf: echoOfId } : {}),
     });
   } catch (err) {
     await cleanupUploadedMedia(media.urls);
@@ -72,7 +93,21 @@ export async function createPost(
           { $inc: { postCount: 1 }, $set: { lastUsedAt: new Date() } },
         )
       : Promise.resolve(null),
+    // Increment echo (repost) counter on the original post
+    echoOfId
+      ? Post.updateOne({ _id: echoOfId }, { $inc: { repostCount: 1 } })
+      : Promise.resolve(null),
   ]);
+
+  // Echo notification — notify original post's author
+  if (echoOriginal && !echoOriginal.authorId.equals(author._id)) {
+    await createNotification({
+      recipientId: echoOriginal.authorId,
+      actorId: author._id,
+      type: 'echo',
+      postId: echoOfId!,
+    });
+  }
 
   // Mention notifications — skip self
   for (const mentioned of mentionDocs) {
@@ -108,7 +143,18 @@ export async function getPostForViewer(
   ]);
   if (!author) throw AppError.notFound('Author missing');
 
-  return { post, ctx: { author, tags, mentions, likedByMe } };
+  let echoOfDto: import('../../lib/dto').PostDTO | undefined;
+  if (post.echoOf) {
+    const origPost = (await Post.findById(post.echoOf).lean()) as unknown as PostDocument | null;
+    if (origPost) {
+      const origAuthor = (await User.findById(origPost.authorId).lean()) as unknown as UserDocument | null;
+      if (origAuthor) {
+        echoOfDto = toPostDTO(origPost, { author: origAuthor, tags: [], mentions: [], likedByMe: false });
+      }
+    }
+  }
+
+  return { post, ctx: { author, tags, mentions, likedByMe, echoOf: echoOfDto } };
 }
 
 export async function updatePost(
@@ -279,7 +325,7 @@ export async function hydratePosts(
     p.mentionIds.forEach((m) => mentionIds.add(m.toString()));
   }
 
-  const [authors, tags, mentions, likes] = (await Promise.all([
+  const [authors, tags, mentions, likes, bookmarks] = (await Promise.all([
     User.find({ _id: { $in: Array.from(authorIds).map((id) => new Types.ObjectId(id)) } }).lean(),
     tagIds.size
       ? Tag.find({ _id: { $in: Array.from(tagIds).map((id) => new Types.ObjectId(id)) } }).lean()
@@ -294,12 +340,48 @@ export async function hydratePosts(
           targetId: { $in: posts.map((p) => p._id) },
         }).select('targetId').lean()
       : Promise.resolve([] as Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>),
-  ])) as unknown as [UserDocument[], TagDocument[], UserDocument[], Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>];
+    viewer && posts.length
+      ? Bookmark.find({
+          userId: viewer._id,
+          postId: { $in: posts.map((p) => p._id) },
+        }).select('postId').lean()
+      : Promise.resolve([] as Array<{ _id: Types.ObjectId; postId: Types.ObjectId }>),
+  ])) as unknown as [UserDocument[], TagDocument[], UserDocument[], Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>, Array<{ _id: Types.ObjectId; postId: Types.ObjectId }>];
 
   const authorById = new Map(authors.map((u) => [u._id.toString(), u]));
   const tagById = new Map(tags.map((t) => [t._id.toString(), t]));
   const mentionById = new Map(mentions.map((u) => [u._id.toString(), u]));
   const likedSet = new Set(likes.map((l) => l.targetId.toString()));
+  const bookmarkedSet = new Set(bookmarks.map((b) => b.postId.toString()));
+
+  // Batch-load echoOf original posts (1 extra round-trip covers all echoes in this page)
+  const echoOfIds = posts
+    .filter((p) => p.echoOf)
+    .map((p) => p.echoOf as Types.ObjectId);
+
+  const echoOfDtoById = new Map<string, import('../../lib/dto').PostDTO>();
+
+  if (echoOfIds.length) {
+    const origPosts = (await Post.find({
+      _id: { $in: echoOfIds },
+      status: { $in: ['active', 'deleted'] },
+    }).lean()) as unknown as PostDocument[];
+
+    const origAuthorIdSet = new Set(origPosts.map((p) => p.authorId.toString()));
+    const origAuthors = (await User.find({
+      _id: { $in: Array.from(origAuthorIdSet).map((id) => new Types.ObjectId(id)) },
+    }).lean()) as unknown as UserDocument[];
+    const origAuthorById = new Map(origAuthors.map((u) => [u._id.toString(), u]));
+
+    for (const orig of origPosts) {
+      const origAuthor = origAuthorById.get(orig.authorId.toString());
+      if (!origAuthor) continue;
+      echoOfDtoById.set(
+        orig._id.toString(),
+        toPostDTO(orig, { author: origAuthor, tags: [], mentions: [], likedByMe: false }),
+      );
+    }
+  }
 
   const out = new Map<string, PostDTOContext>();
   for (const p of posts) {
@@ -312,7 +394,47 @@ export async function hydratePosts(
         .map((m) => mentionById.get(m.toString()))
         .filter((x): x is UserDocument => !!x),
       likedByMe: likedSet.has(p._id.toString()),
+      bookmarkedByMe: bookmarkedSet.has(p._id.toString()),
+      echoOf: p.echoOf ? echoOfDtoById.get(p.echoOf.toString()) : undefined,
     });
   }
   return out;
+}
+
+export async function searchPosts(
+  query: SearchPostsQuery,
+  viewer: UserDocument | null,
+): Promise<{ items: PostDTO[]; nextCursor: string | null }> {
+  const cursor = decodeCursor(query.cursor);
+  const limit = query.limit ?? 20;
+
+  const filter: Record<string, unknown> = { status: 'active' };
+  if (query.q && query.q.trim()) {
+    filter.$text = { $search: query.q.trim() };
+  }
+  if (cursor) {
+    const t = new Date(cursor.t);
+    const id = new Types.ObjectId(cursor.id);
+    filter.$or = [
+      { createdAt: { $lt: t } },
+      { createdAt: t, _id: { $lt: id } },
+    ];
+  }
+
+  const rawPosts = (await Post.find(filter)
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(limit + 1)
+    .lean()) as unknown as PostDocument[];
+
+  const { items: pagePosts, nextCursor } = buildNextCursor(rawPosts, limit);
+  const ctxMap = await hydratePosts(pagePosts, viewer);
+
+  const items = pagePosts
+    .map((p) => {
+      const ctx = ctxMap.get(p._id.toString());
+      return ctx ? toPostDTO(p, ctx) : null;
+    })
+    .filter((x): x is PostDTO => x !== null);
+
+  return { items, nextCursor };
 }

@@ -1,0 +1,108 @@
+.inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ── Original post preview ── */
+.preview {
+  display: block;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.preview:hover {
+  border-color: var(--color-border-strong);
+}
+
+.previewAuthor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-small);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.previewHandle {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.previewName {
+  color: var(--color-text);
+}
+
+.previewText {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: var(--lh-relaxed);
+}
+
+.previewImg {
+  margin-top: var(--space-2);
+  width: 100%;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+/* ── Textarea ── */
+.textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-serif);
+  font-size: var(--text-body);
+  line-height: var(--lh-relaxed);
+  resize: vertical;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.textarea::placeholder {
+  color: var(--color-text-subtle);
+}
+
+/* ── Footer ── */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.visibilitySelect {
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.visibilitySelect:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}

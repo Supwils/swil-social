@@ -1,4 +1,5 @@
 import { type FormEvent, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { Link } from 'react-router-dom';
 import { type InfiniteData, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -15,9 +16,10 @@ import s from './InlineComments.module.css';
 interface Props {
   postId: string;
   open: boolean;
+  indented?: boolean;
 }
 
-export function InlineComments({ postId, open }: Props) {
+export function InlineComments({ postId, open, indented = true }: Props) {
   const { t } = useTranslation();
   const me = useSession((st) => st.user);
   const qc = useQueryClient();
@@ -73,7 +75,7 @@ export function InlineComments({ postId, open }: Props) {
   const items = comments.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
-    <div className={`${s.panel} ${open ? s.open : ''}`} aria-hidden={!open}>
+    <div className={clsx(s.panel, indented && s.panelIndented, open && s.open)} aria-hidden={!open}>
       <div className={s.inner}>
         <div className={s.content}>
           {me ? (

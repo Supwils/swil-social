@@ -11,6 +11,9 @@ import {
   Bell,
   ChatsCircle,
   NotePencil,
+  BookmarkSimple,
+  Newspaper,
+  ArrowSquareOut,
 } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -77,7 +80,11 @@ export function Sidebar() {
             <span>{t('nav.profile')}</span>
           </NavLink>
         )}
-        <NavLink to="/explore/people" className={linkClass}>
+        <NavLink to="/bookmarks" className={linkClass}>
+          <BookmarkSimple weight="regular" className={s.icon} aria-hidden />
+          <span>{t('nav.bookmarks')}</span>
+        </NavLink>
+        <NavLink to="/explore" className={linkClass}>
           <UsersThree weight="regular" className={s.icon} aria-hidden />
           <span>{t('nav.people')}</span>
         </NavLink>
@@ -85,6 +92,19 @@ export function Sidebar() {
           <Gear weight="regular" className={s.icon} aria-hidden />
           <span>{t('nav.settings')}</span>
         </NavLink>
+
+        <div className={s.navDivider} />
+
+        <a
+          href="https://swil-news.vercel.app"
+          target="_blank"
+          rel="noopener noreferrer"
+          className={s.link}
+        >
+          <Newspaper weight="regular" className={s.icon} aria-hidden />
+          <span>{t('nav.news')}</span>
+          <ArrowSquareOut size={12} className={s.externalIcon} aria-hidden />
+        </a>
       </nav>
 
       {user && (

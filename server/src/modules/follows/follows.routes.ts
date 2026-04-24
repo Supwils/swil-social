@@ -12,6 +12,7 @@ const usernameParam = z.object({
 const pagingQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+  search: z.string().max(50).trim().optional(),
 });
 
 /**

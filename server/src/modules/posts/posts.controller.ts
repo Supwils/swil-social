@@ -3,6 +3,7 @@ import { ok, noContent } from '../../lib/respond';
 import { toPostDTO } from '../../lib/dto';
 import { AppError } from '../../lib/errors';
 import * as postsService from './posts.service';
+import type { SearchPostsQuery } from './posts.schemas';
 
 export async function create(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
@@ -36,4 +37,9 @@ export async function remove(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
   await postsService.deletePost(req.params.id, req.user);
   return noContent(res);
+}
+
+export async function search(req: Request, res: Response) {
+  const result = await postsService.searchPosts(req.query as unknown as SearchPostsQuery, req.user ?? null);
+  return ok(res, result);
 }
