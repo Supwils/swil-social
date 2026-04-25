@@ -48,6 +48,7 @@ export interface PostDTO {
   id: string;
   author: UserLiteDTO;
   text: string;
+  originalText?: string;
   images: Array<{ url: string; width: number; height: number; blurhash?: string }>;
   video: { url: string; width: number; height: number; durationSec?: number } | null;
   tags: Array<{ slug: string; display: string }>;
@@ -69,6 +70,7 @@ export interface CommentDTO {
   parentId: string | null;
   author: UserLiteDTO;
   text: string;
+  originalText?: string;
   likeCount: number;
   likedByMe: boolean;
   createdAt: string;
@@ -128,6 +130,8 @@ export interface PostDTOContext {
   likedByMe?: boolean;
   bookmarkedByMe?: boolean;
   echoOf?: PostDTO;
+  translatedText?: string;
+  lang?: string;
 }
 
 // Re-export document types for consumers that need just the context + doc together.
@@ -135,10 +139,12 @@ export type { PostDocument } from '../models/post.model';
 export type { CommentDocument } from '../models/comment.model';
 
 export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
+  const translated = ctx.translatedText;
   return {
     id: post._id.toString(),
     author: toUserLiteDTO(ctx.author),
-    text: post.text,
+    text: translated ?? post.text,
+    ...(translated ? { originalText: post.text } : {}),
     images: post.images.map((i) => ({
       url: i.url,
       width: i.width,
@@ -153,7 +159,10 @@ export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
           ...(post.video.durationSec != null ? { durationSec: post.video.durationSec } : {}),
         }
       : null,
-    tags: ctx.tags.map((t) => ({ slug: t.slug, display: t.display })),
+    tags: ctx.tags.map((t) => ({
+      slug: t.slug,
+      display: (ctx.lang && t.translations?.[ctx.lang]) || t.display,
+    })),
     mentions: ctx.mentions.map((u) => ({ username: u.username, displayName: u.displayName })),
     visibility: post.visibility,
     likeCount: post.likeCount,
@@ -170,15 +179,19 @@ export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
 export interface CommentDTOContext {
   author: UserDocument;
   likedByMe?: boolean;
+  translatedText?: string;
 }
 
 export function toCommentDTO(comment: CommentDocument, ctx: CommentDTOContext): CommentDTO {
+  const translated = ctx.translatedText;
+  const isDeleted = comment.status === 'deleted';
   return {
     id: comment._id.toString(),
     postId: comment.postId.toString(),
     parentId: comment.parentId ? comment.parentId.toString() : null,
     author: toUserLiteDTO(ctx.author),
-    text: comment.status === 'deleted' ? '[deleted]' : comment.text,
+    text: isDeleted ? '[deleted]' : (translated ?? comment.text),
+    ...(translated && !isDeleted ? { originalText: comment.text } : {}),
     likeCount: comment.likeCount,
     likedByMe: Boolean(ctx.likedByMe),
     createdAt: comment.createdAt.toISOString(),
@@ -191,8 +204,12 @@ export function toCommentDTO(comment: CommentDocument, ctx: CommentDTOContext): 
   };
 }
 
-export function toTagDTO(tag: TagDocument): TagDTO {
-  return { slug: tag.slug, display: tag.display, postCount: tag.postCount };
+export function toTagDTO(tag: TagDocument, lang?: string): TagDTO {
+  return {
+    slug: tag.slug,
+    display: (lang && tag.translations?.[lang]) || tag.display,
+    postCount: tag.postCount,
+  };
 }
 
 /* ---------- notifications + messages ---------- */

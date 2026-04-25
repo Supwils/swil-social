@@ -3,6 +3,7 @@ import { ok, noContent } from '../../lib/respond';
 import { toCommentDTO } from '../../lib/dto';
 import { AppError } from '../../lib/errors';
 import { decodeCursor, parseLimit } from '../../lib/pagination';
+import { translateComments } from '../../lib/translate';
 import * as commentsService from './comments.service';
 
 export async function listForPost(req: Request, res: Response) {
@@ -14,6 +15,8 @@ export async function listForPost(req: Request, res: Response) {
     cursor,
     limit,
   );
+  const lang = req.user?.preferences?.language ?? 'en';
+  await translateComments(items, ctxByCommentId, lang);
   const out = items
     .map((c) => {
       const ctx = ctxByCommentId.get(c._id.toString());

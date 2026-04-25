@@ -115,6 +115,7 @@
 .text {
   font-family: var(--font-serif);
   font-size: 1.0625rem;
+  font-weight: 500;
   line-height: var(--lh-relaxed);
   color: var(--color-text);
   white-space: pre-wrap;

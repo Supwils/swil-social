@@ -5,6 +5,7 @@ import { Comment } from '../../models/comment.model';
 import { AppError } from '../../lib/errors';
 import type { UserDocument } from '../../models/user.model';
 import { createNotification } from '../notifications/notifications.service';
+import { refreshFeedScore } from '../../lib/feedScorer';
 
 /**
  * Idempotent like/unlike.
@@ -64,6 +65,7 @@ export async function like(
     throw err;
   }
   const likeCount = await incTargetCount(targetType, target, 1);
+  if (targetType === 'post') refreshFeedScore(target);
 
   // Notify author — best-effort, never throws
   if (targetType === 'post') {
@@ -109,6 +111,7 @@ export async function unlike(
     return { likeCount: current, liked: false };
   }
   const likeCount = await incTargetCount(targetType, target, -1);
+  if (targetType === 'post') refreshFeedScore(target);
   return { likeCount: Math.max(0, likeCount), liked: false };
 }
 

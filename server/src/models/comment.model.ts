@@ -9,6 +9,8 @@ export interface CommentAttrs {
 
   likeCount: number;
 
+  translations: Record<string, string>;
+
   status: 'active' | 'hidden' | 'deleted';
   editedAt: Date | null;
   deletedAt: Date | null;
@@ -29,6 +31,8 @@ const CommentSchema = new Schema<CommentAttrs>(
     mentionIds: { type: [Schema.Types.ObjectId], default: [], ref: 'User' },
 
     likeCount: { type: Number, default: 0 },
+
+    translations: { type: Schema.Types.Mixed, default: {} },
 
     status: {
       type: String,

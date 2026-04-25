@@ -28,6 +28,9 @@ export interface PostAttrs {
   likeCount: number;
   commentCount: number;
   repostCount: number;
+  feedScore: number;
+
+  translations: Record<string, string>;
 
   status: 'active' | 'hidden' | 'deleted';
   editedAt: Date | null;
@@ -79,6 +82,9 @@ const PostSchema = new Schema<PostAttrs>(
     likeCount: { type: Number, default: 0 },
     commentCount: { type: Number, default: 0 },
     repostCount: { type: Number, default: 0 },
+    feedScore: { type: Number, default: 0 },
+
+    translations: { type: Schema.Types.Mixed, default: {} },
 
     status: {
       type: String,
@@ -93,6 +99,8 @@ const PostSchema = new Schema<PostAttrs>(
 
 PostSchema.index({ authorId: 1, createdAt: -1 });
 PostSchema.index({ status: 1, createdAt: -1 });
+PostSchema.index({ status: 1, visibility: 1, feedScore: -1 });
+PostSchema.index({ tagIds: 1, feedScore: -1 });
 PostSchema.index({ tagIds: 1, createdAt: -1 });
 PostSchema.index({ mentionIds: 1, createdAt: -1 });
 PostSchema.index({ text: 'text' });

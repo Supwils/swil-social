@@ -40,6 +40,8 @@ const EnvSchema = z.object({
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),
 
+  GOOGLE_TRANSLATE_API_KEY: z.string().optional(),
+
   SENTRY_DSN: z.string().optional(),
   SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 });
@@ -75,3 +77,5 @@ export const cloudinaryEnabled = Boolean(
   env.CLOUDINARY_API_KEY &&
   env.CLOUDINARY_API_SECRET,
 );
+
+export const translateEnabled = Boolean(env.GOOGLE_TRANSLATE_API_KEY);

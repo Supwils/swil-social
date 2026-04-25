@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { ok, noContent } from '../../lib/respond';
 import { toPostDTO } from '../../lib/dto';
 import { AppError } from '../../lib/errors';
+import { translatePosts } from '../../lib/translate';
 import * as postsService from './posts.service';
 import type { SearchPostsQuery } from './posts.schemas';
 
@@ -24,6 +25,9 @@ export async function getById(req: Request, res: Response) {
     req.params.id,
     req.user ?? null,
   );
+  const lang = req.user?.preferences?.language ?? 'en';
+  const ctxById = new Map([[post._id.toString(), ctx]]);
+  await translatePosts([post], ctxById, lang);
   return ok(res, { post: toPostDTO(post, ctx) });
 }
 

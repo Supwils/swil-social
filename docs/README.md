@@ -25,6 +25,7 @@ Authoritative documentation for Swil Social. **Every agent or contributor pickin
 | [`09-contributing.md`](./09-contributing.md) | Branch, commit, PR conventions. |
 | [`11-decisions/`](./11-decisions/) | Architecture Decision Records (ADRs). |
 | [`13-feature-spec.md`](./13-feature-spec.md) | 全功能规格清单（中文）——每个功能的 UX 边界、字段、状态速查表。 |
+| [`14-bugs/`](./14-bugs/) | Bug Case Library — 真实 Bug 的发现、根因、修复与经验教训（含面试话术）。 |
 
 ## Conventions
 

@@ -6,8 +6,11 @@ import { User, type UserDocument } from '../../models/user.model';
 import { AppError } from '../../lib/errors';
 import {
   type Cursor,
+  type ScoreCursor,
   cursorFilterDesc,
   buildNextCursor,
+  scoreCursorFilter,
+  buildNextScoreCursor,
 } from '../../lib/pagination';
 import { hydratePosts } from '../posts/posts.service';
 import type { PostDTOContext } from '../../lib/dto';
@@ -18,7 +21,24 @@ interface FeedPage {
   ctxById: Map<string, PostDTOContext>;
 }
 
-async function paginate(
+/** Ranked feed — sorted by feedScore descending. Used for global / following / tag feeds. */
+async function paginateByScore(
+  filter: Record<string, unknown>,
+  viewer: UserDocument | null,
+  cursor: ScoreCursor | null,
+  limit: number,
+): Promise<FeedPage> {
+  const docs = (await Post.find({ ...filter, ...scoreCursorFilter(cursor) })
+    .sort({ feedScore: -1, _id: -1 })
+    .limit(limit + 1)
+    .lean()) as unknown as PostDocument[];
+  const { items, nextCursor } = buildNextScoreCursor(docs, limit);
+  const ctxById = await hydratePosts(items, viewer);
+  return { items, nextCursor, ctxById };
+}
+
+/** Chronological feed — sorted by createdAt descending. Used for author profile pages. */
+async function paginateByTime(
   filter: Record<string, unknown>,
   viewer: UserDocument | null,
   cursor: Cursor | null,
@@ -34,11 +54,11 @@ async function paginate(
 }
 
 /**
- * Following feed: posts from people the viewer follows + viewer's own posts.
+ * Following feed: ranked posts from people the viewer follows + viewer's own posts.
  */
 export async function following(
   viewer: UserDocument,
-  cursor: Cursor | null,
+  cursor: ScoreCursor | null,
   limit: number,
 ): Promise<FeedPage> {
   const followingEdges = await Follow.find({ followerId: viewer._id }).select('followingId').lean();
@@ -46,7 +66,7 @@ export async function following(
     viewer._id,
     ...followingEdges.map((e) => e.followingId),
   ];
-  return paginate(
+  return paginateByScore(
     {
       authorId: { $in: authorIds },
       status: 'active',
@@ -59,14 +79,14 @@ export async function following(
 }
 
 /**
- * Global discovery feed: all public active posts reverse-chron.
+ * Global discovery feed: all public active posts ranked by score.
  */
 export async function global(
   viewer: UserDocument | null,
-  cursor: Cursor | null,
+  cursor: ScoreCursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  return paginate(
+  return paginateByScore(
     { status: 'active', visibility: 'public' },
     viewer,
     cursor,
@@ -75,17 +95,17 @@ export async function global(
 }
 
 /**
- * Posts bearing a tag.
+ * Posts bearing a tag, ranked by score.
  */
 export async function byTag(
   slug: string,
   viewer: UserDocument | null,
-  cursor: Cursor | null,
+  cursor: ScoreCursor | null,
   limit: number,
 ): Promise<FeedPage> {
   const tag = await Tag.findOne({ slug: slug.toLowerCase() });
   if (!tag) throw AppError.notFound('Tag not found');
-  return paginate(
+  return paginateByScore(
     { status: 'active', visibility: 'public', tagIds: tag._id },
     viewer,
     cursor,
@@ -94,7 +114,8 @@ export async function byTag(
 }
 
 /**
- * Posts authored by a specific user, respecting visibility from the viewer's angle.
+ * Posts authored by a specific user — stays chronological (newest first).
+ * Respects visibility from the viewer's perspective.
  */
 export async function byAuthor(
   username: string,
@@ -118,7 +139,7 @@ export async function byAuthor(
     }
   }
 
-  return paginate(
+  return paginateByTime(
     {
       authorId: author._id,
       status: 'active',

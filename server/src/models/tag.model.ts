@@ -3,6 +3,7 @@ import { Schema, model, type HydratedDocument, type Model } from 'mongoose';
 export interface TagAttrs {
   slug: string;
   display: string;
+  translations: Record<string, string>;
   postCount: number;
   lastUsedAt: Date;
   createdAt: Date;
@@ -15,6 +16,7 @@ const TagSchema = new Schema<TagAttrs>(
   {
     slug: { type: String, required: true, lowercase: true, trim: true, maxlength: 64 },
     display: { type: String, required: true, trim: true, maxlength: 64 },
+    translations: { type: Schema.Types.Mixed, default: {} },
     postCount: { type: Number, default: 0 },
     lastUsedAt: { type: Date, default: () => new Date() },
   },

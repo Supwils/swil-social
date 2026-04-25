@@ -1,8 +1,8 @@
 ---
 title: Data Model
 status: stable
-last-updated: 2026-04-21
-owner: round-1
+last-updated: 2026-04-24
+owner: round-9
 ---
 
 # Data Model
@@ -99,10 +99,17 @@ Merges the legacy `User` + `Profile` into one document. Login fields and profile
   mentionIds: ObjectId[],      // ref: users — resolved at write time
   visibility: 'public' | 'followers' | 'private',
 
-  // Counts (denormalized)
+  echoOf: ObjectId | null,      // ref: posts — always points at the root (no chain echoes)
+
+  // Counts (denormalized, maintained by services via $inc)
   likeCount: number,
   commentCount: number,
-  repostCount: number,         // placeholder; feature TBD
+  repostCount: number,          // incremented when another post echoes this one
+
+  // Feed ranking — HackerNews gravity score (Round 9)
+  // score = (likes + comments×2 + echos×3 + 1) / (age_hours + 2)^1.5
+  // Recomputed fire-and-forget after every like / comment / echo event.
+  feedScore: number,
 
   // Moderation / lifecycle
   status: 'active' | 'hidden' | 'deleted',
@@ -115,9 +122,11 @@ Merges the legacy `User` + `Profile` into one document. Login fields and profile
 ```
 
 **Indexes**
-- `{ authorId: 1, createdAt: -1 }` — user profile feed
-- `{ status: 1, createdAt: -1 }` — global reverse-chron
-- `{ tagIds: 1, createdAt: -1 }` — tag pages
+- `{ authorId: 1, createdAt: -1 }` — user profile page (chronological)
+- `{ status: 1, createdAt: -1 }` — chronological fallback queries
+- `{ status: 1, visibility: 1, feedScore: -1 }` — global / following ranked feed
+- `{ tagIds: 1, feedScore: -1 }` — tag feed ranked
+- `{ tagIds: 1, createdAt: -1 }` — tag feed chronological fallback
 - `{ mentionIds: 1, createdAt: -1 }` — "posts that mention me"
 - Text index on `text` for naive search (Round 7+)
 

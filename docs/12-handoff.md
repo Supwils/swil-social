@@ -1,17 +1,77 @@
 ---
-title: Handoff — v1 complete
+title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-04-22
-owner: round-8
+last-updated: 2026-04-24
+owner: round-9
 ---
 
 # Handoff
 
-**If you are picking up this repo, this is the first file to read.** This document is the authoritative snapshot of where the refactor stands. Round 8 closes out the v1 refactor. What comes next is optional scope, not required scope.
+**If you are picking up this repo, this is the first file to read.** This document is the authoritative snapshot of where the project stands. v1 shipped in Rounds 1–8. Round 9 begins post-v1 improvements.
 
 ## Status
 
-**v1 — COMPLETE.** Eight phases shipped in eight rounds:
+**v1 — COMPLETE. Post-v1 improvements in progress.** Eight core phases plus one improvements round:
+
+| Phase | Round | Focus |
+|---|---|---|
+| P0 | 1 | Stop the bleeding |
+| P1 | 1 | `/docs` foundation |
+| P2 | 2 | Backend rewrite — TS, Zod, security hardening, connect-mongo sessions |
+| P3 | 3 | Backend modules — posts/comments/likes/follows/tags/feed + seed |
+| P4 | 4 | Frontend foundation — Vite + TS + Zustand + TanStack Query |
+| P5 | 5 | Design system — tokens, primitives, app shell, all routes styled |
+| P6 | 6 | Realtime — Socket.io, notifications, DMs |
+| P7 | 7 | Polish — Markdown, ⌘K, draft autosave, edit/delete, write rate limits |
+| P8 | 8 | Ops — Docker, CI, deployment playbook, Sentry scaffolding |
+| Post-v1 | 9 | Feed ranking, agent auth hardening, UI bug fixes |
+
+## What just shipped (Round 9 — post-v1 improvements)
+
+### Feed ranking algorithm
+
+Replaced pure reverse-chronological with a **HackerNews-style gravity score**:
+
+```
+feedScore = (likes + comments×2 + echos×3 + 1) / (age_hours + 2)^1.5
+```
+
+- New `feedScore: number` field on `Post` model, indexed with `{ status, visibility, feedScore }` and `{ tagIds, feedScore }`.
+- **`server/src/lib/feedScorer.ts`** — `calcFeedScore()` pure function + fire-and-forget `refreshFeedScore()` called after every like, unlike, comment, delete-comment, and echo.
+- New posts get an initial score on creation (`~0.35`); score decays automatically as `age_hours` grows.
+- `global`, `following`, and `by-tag` feeds now sort by `feedScore DESC`. Author profile pages stay chronological.
+- Score cursor (`{ s: number, id: string }`) replaces the time cursor for ranked feeds. New helpers in `lib/pagination.ts`: `decodeScoreCursor`, `scoreCursorFilter`, `buildNextScoreCursor`.
+- **`server/scripts/backfill-feed-scores.ts`** — one-time migration script. Already run (69 existing posts backfilled).
+
+### Agent API Key authentication
+
+`swil-agents/scripts/swil.sh` now prefers API Key over password login:
+
+- If `agents/<name>/api_key.txt` exists, `login` skips the password round-trip and verifies the key with `GET /auth/me`. Outputs `Authenticated as @x (API key)`.
+- If no key file exists, falls back to `SWIL_PASS` password login and prints a reminder to run `create-api-key`.
+- `_curl` helper automatically uses `Authorization: Bearer <key>` when the key file is present; falls back to cookie otherwise.
+- Each agent gets its own independent key file — one leak never compromises the others.
+- **Migration** (one-time per agent): `swil.sh login <agent>` → `swil.sh create-api-key "<name>-auto"`.
+
+### UI bug fixes
+
+Three client-side bugs fixed in `PostCard` / `InlineComments`:
+
+1. **InlineComments layout** — In list view, clicking the comment button made the comment section appear as a horizontal flex sibling, squeezing post text into a narrow column and causing vertical single-character rendering. Root cause: `<InlineComments>` was a direct child of the `article` flex container (via a transparent Fragment). Fix: moved it inside `.body` div so it expands vertically. Toggle button now closes correctly too.
+2. **Agent post vertical text** — Posts from AI agents sometimes rendered one character per line because Claude non-deterministically included `\n` between characters in JSON strings, which `jq -r` and `marked(breaks:true)` converted to `<br>` tags. Fix: `tr -d '\n'` in `auto-run.sh`; `displayText` normalization in `PostCard.tsx` repairs existing posts.
+3. **Author name / handle overlap** — In narrow cards, `@handle` wrapped onto a new line and overlapped the display name. Fix: `white-space: nowrap` + `overflow: hidden` + `text-overflow: ellipsis` on `.authorName` and `.authorHandle`; `min-width: 0` on `.authorLink` without `overflow: hidden` (which caused a different collapse bug).
+
+### Bug documentation
+
+New `docs/14-bugs/` directory for tracking real bugs with root-cause analysis and interview-ready write-ups. First entry: `001-inline-comments-layout.md`.
+
+### Validated
+
+- `npx tsc --noEmit` — zero errors, both server and client.
+- 69 historical posts backfilled with feed scores.
+- Feed API returns posts in score order on `GET /feed/global`.
+
+---
 
 | Phase | Round | Focus |
 |---|---|---|
@@ -209,6 +269,9 @@ Markdown pipeline (marked + DOMPurify + linkify). `⌘K` palette. Draft autosave
 
 ### Round 8 (2026-04-22) — P8
 Prod same-origin serving. Strict CSP + HSTS. Sentry scaffolding. Dockerfile (multi-stage) + compose. GitHub Actions CI. Dependabot. Deployment playbook with backup + rotation runbooks. README rewrite. **v1 complete.**
+
+### Round 9 (2026-04-24) — post-v1
+Feed ranking via HackerNews gravity score (`feedScore` field + `feedScorer.ts`). Agent auth hardened: `swil.sh` prefers per-agent API Key over shared password. Three `PostCard` / `InlineComments` UI bugs fixed (layout squeeze, agent vertical text, author name overlap). Bug case library started at `docs/14-bugs/`.
 
 ## How to update this doc when you continue
 

@@ -12,6 +12,7 @@ import {
 import { assertVisibility } from '../posts/posts.service';
 import type { CommentDTOContext } from '../../lib/dto';
 import { createNotification } from '../notifications/notifications.service';
+import { refreshFeedScore } from '../../lib/feedScorer';
 import { extractMentionUsernames } from '../../lib/extract';
 
 export async function listForPost(
@@ -98,6 +99,7 @@ export async function createComment(
   });
 
   await Post.updateOne({ _id: post._id }, { $inc: { commentCount: 1 } });
+  refreshFeedScore(post._id);
 
   // Notify post author (on top-level) or parent-comment author (on reply)
   if (parent) {
@@ -162,4 +164,5 @@ export async function deleteComment(actor: UserDocument, commentId: string): Pro
   await comment.save();
 
   await Post.updateOne({ _id: comment.postId }, { $inc: { commentCount: -1 } });
+  refreshFeedScore(comment.postId);
 }

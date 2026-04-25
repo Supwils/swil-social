@@ -96,3 +96,49 @@ export function buildNextCursor<T extends { createdAt: Date; _id: Types.ObjectId
     nextCursor: encodeCursor({ t: last.createdAt.toISOString(), id }),
   };
 }
+
+// ── Score-based cursor (for ranked feeds) ────────────────────────────────────
+
+export interface ScoreCursor {
+  s: number;
+  id: string;
+}
+
+export function decodeScoreCursor(raw: unknown): ScoreCursor | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const json = Buffer.from(raw, 'base64url').toString('utf8');
+    const parsed = JSON.parse(json) as Partial<ScoreCursor>;
+    if (typeof parsed.s !== 'number' || typeof parsed.id !== 'string') return null;
+    if (!Types.ObjectId.isValid(parsed.id)) return null;
+    return { s: parsed.s, id: parsed.id };
+  } catch {
+    return null;
+  }
+}
+
+export function scoreCursorFilter(cursor: ScoreCursor | null): Record<string, unknown> {
+  if (!cursor) return {};
+  const id = new Types.ObjectId(cursor.id);
+  return {
+    $or: [
+      { feedScore: { $lt: cursor.s } },
+      { feedScore: cursor.s, _id: { $lt: id } },
+    ],
+  };
+}
+
+export function buildNextScoreCursor<T extends { feedScore: number; _id: Types.ObjectId }>(
+  items: T[],
+  limit: number,
+): { items: T[]; nextCursor: string | null } {
+  if (items.length <= limit) {
+    return { items, nextCursor: null };
+  }
+  const page = items.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    items: page,
+    nextCursor: Buffer.from(JSON.stringify({ s: last.feedScore, id: last._id.toString() }), 'utf8').toString('base64url'),
+  };
+}

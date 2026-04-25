@@ -233,14 +233,19 @@ Remove follow edge. Idempotent — 204 regardless.
 
 ## Feed
 
+Ranked feeds use a **score-based cursor** (`{ s: number, id: string }` base64url-encoded). This cursor is opaque to clients — pass `nextCursor` back as `?cursor=` exactly as received.
+
 ### `GET /feed?cursor=&limit=`
-Reverse-chron posts from people the current user follows, plus the user's own posts. No algorithm.
+Posts from people the current user follows plus their own posts, ranked by `feedScore` (HackerNews-style gravity: engagement over time).
 
 ### `GET /feed/global?cursor=&limit=`
-All public posts, reverse-chron. Discovery.
+All public posts ranked by `feedScore`. Primary discovery surface.
 
 ### `GET /feed/tag/:slug?cursor=&limit=`
-Posts with the given tag.
+Public posts bearing the given tag, ranked by `feedScore`.
+
+### `GET /users/:username/posts?cursor=&limit=`
+Posts by a specific user, **chronological** (newest first). Uses the standard time-based cursor `{ t: ISO, id }`. Respects visibility: public posts always visible; `followers`-only posts visible to followers; `private` visible only to the author.
 
 ---
 

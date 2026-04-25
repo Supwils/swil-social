@@ -11,6 +11,7 @@ import { uploadBufferToS3, uploadVideoBufferToS3, deleteFromS3 } from '../../con
 import type { PostDTOContext, PostDTO } from '../../lib/dto';
 import { toPostDTO } from '../../lib/dto';
 import { decodeCursor, buildNextCursor } from '../../lib/pagination';
+import { calcFeedScore, refreshFeedScore } from '../../lib/feedScorer';
 import type { CreatePostInput, UpdatePostInput, SearchPostsQuery } from './posts.schemas';
 import { createNotification } from '../notifications/notifications.service';
 
@@ -68,6 +69,7 @@ export async function createPost(
     echoOriginal = original;
   }
 
+  const now = new Date();
   let post: PostDocument;
   try {
     post = await Post.create({
@@ -79,6 +81,7 @@ export async function createPost(
       mentionIds: mentionDocs.map((u) => u._id),
       visibility: input.visibility,
       ...(echoOfId ? { echoOf: echoOfId } : {}),
+      feedScore: calcFeedScore({ likeCount: 0, commentCount: 0, repostCount: 0, createdAt: now }),
     });
   } catch (err) {
     await cleanupUploadedMedia(media.urls);
@@ -93,9 +96,11 @@ export async function createPost(
           { $inc: { postCount: 1 }, $set: { lastUsedAt: new Date() } },
         )
       : Promise.resolve(null),
-    // Increment echo (repost) counter on the original post
+    // Increment echo (repost) counter on the original post and refresh its score
     echoOfId
-      ? Post.updateOne({ _id: echoOfId }, { $inc: { repostCount: 1 } })
+      ? Post.updateOne({ _id: echoOfId }, { $inc: { repostCount: 1 } }).then(() => {
+          refreshFeedScore(echoOfId!);
+        })
       : Promise.resolve(null),
   ]);
 
