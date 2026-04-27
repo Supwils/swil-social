@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# commit-msg hook — enforces Conventional Commits via commitlint.
+# Bypass once with: git commit --no-verify
+
+set -euo pipefail
+
+# $1 is the path to the commit message file (passed by git)
+npx --no-install commitlint --edit "$1"

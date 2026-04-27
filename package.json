@@ -18,9 +18,15 @@
     "seed": "npm --prefix server run seed",
     "seed:reset": "npm --prefix server run seed:reset",
     "ci:check": "bash scripts/ci-check.sh",
-    "install-hooks": "bash scripts/install-hooks.sh"
+    "install-hooks": "bash scripts/install-hooks.sh",
+    "knip": "knip",
+    "knip:fix": "knip --fix --allow-remove-files",
+    "test:coverage": "npm --prefix server run test:coverage && npm --prefix client run test:coverage"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1"
+    "@commitlint/cli": "^20.5.2",
+    "@commitlint/config-conventional": "^20.5.0",
+    "concurrently": "^9.0.1",
+    "knip": "^6.7.0"
   }
 }

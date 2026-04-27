@@ -1,0 +1,27 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.sh"],
+      "ignore": ["agent/**"]
+    },
+    "server": {
+      "entry": ["src/server.ts", "scripts/seed.ts", "src/**/*.test.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "client": {
+      "entry": ["src/main.tsx", "vite.config.ts", "src/**/*.test.{ts,tsx}"],
+      "project": ["src/**/*.{ts,tsx}"]
+    }
+  },
+  "ignoreDependencies": [
+    "@vitest/coverage-v8",
+    "@testing-library/jest-dom",
+    "@testing-library/dom",
+    "concurrently",
+    "@commitlint/cli",
+    "@commitlint/config-conventional",
+    "supertest",
+    "@types/supertest"
+  ]
+}

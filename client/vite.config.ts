@@ -47,5 +47,29 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     css: false,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html', 'json-summary'],
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/main.tsx', // bootstrap
+        'src/i18n.ts',  // pure config
+        'src/locales/**',
+        'src/api/types.ts',     // type-only
+        'src/api/queryKeys.ts', // type-only
+      ],
+      // True baseline (2026-04-27, all files counted): ~4% lines / ~2% branches.
+      // The client side is mostly untested today — these floors prevent
+      // *regression* and are meant to be ratcheted up monthly. Targets:
+      // 30% by next month, 60% by EOY, 80% before public launch.
+      // Don't lower without a written reason in the commit message.
+      thresholds: {
+        lines: 4,
+        branches: 1,
+        functions: 2,
+        statements: 3,
+      },
+    },
   },
 });
