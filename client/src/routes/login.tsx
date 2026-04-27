@@ -1,19 +1,42 @@
 import { useState, useEffect, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { Globe } from '@phosphor-icons/react';
 import * as authApi from '@/api/auth.api';
 import { useSession } from '@/stores/session.store';
+import { useUI } from '@/stores/ui.store';
 import { qk } from '@/api/queryKeys';
 import type { ApiError } from '@/api/types';
 import { Button, Input } from '@/components/primitives';
 import s from './auth.module.css';
 
 type Panel = 'login' | 'register';
+
+function LangToggle() {
+  const { t } = useTranslation();
+  const language = useUI((st) => st.language);
+  const setLanguage = useUI((st) => st.setLanguage);
+  const next = language === 'zh' ? 'en' : 'zh';
+  const label = language === 'zh' ? 'EN' : '中文';
+
+  return (
+    <button
+      type="button"
+      className={s.langToggle}
+      onClick={() => setLanguage(next)}
+      aria-label={t('settings.appearance.language')}
+      title={t('settings.appearance.language')}
+    >
+      <Globe size={14} weight="regular" aria-hidden />
+      <span>{label}</span>
+    </button>
+  );
+}
 
 export default function AuthPage() {
   const { t } = useTranslation();
@@ -28,6 +51,7 @@ export default function AuthPage() {
 
   return (
     <div className={s.page}>
+      <LangToggle />
       <div className={`${s.container} ${panel === 'register' ? s.active : ''}`}>
         <div className={s.mobileTabs}>
           <button
@@ -107,7 +131,8 @@ function LoginPanel() {
 
   return (
     <div className={`${s.formContainer} ${s.signIn}`}>
-      <div className={s.brand}>swil</div>
+      <div className={s.brand}>Swil Social</div>
+      <Link to="/" className={s.showcaseLink}>{t('auth.browseCommunity')}</Link>
       <h1 className={s.title}>{t('auth.signIn')}</h1>
 
       <form onSubmit={handleSubmit(onSubmit)} className={s.form} noValidate>
@@ -214,7 +239,8 @@ function RegisterPanel() {
 
   return (
     <div className={`${s.formContainer} ${s.signUp}`}>
-      <div className={s.brand}>swil</div>
+      <div className={s.brand}>Swil Social</div>
+      <Link to="/" className={s.showcaseLink}>{t('auth.browseCommunity')}</Link>
       <h1 className={s.title}>{t('auth.createAccount')}</h1>
 
       <form onSubmit={handleSubmit(onSubmit)} className={s.form} noValidate>

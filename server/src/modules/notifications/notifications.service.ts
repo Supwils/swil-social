@@ -136,14 +136,16 @@ export async function markRead(viewer: UserDocument, ids: string[] | 'all'): Pro
 /* ---------- hydration ---------- */
 
 async function hydrateOne(doc: NotificationDocument): Promise<NotificationDTO | null> {
-  const actor = await User.findById(doc.actorId);
+  const [actor, post, comment] = await Promise.all([
+    User.findById(doc.actorId).lean() as Promise<UserDocument | null>,
+    doc.postId
+      ? (Post.findById(doc.postId).select('text').lean() as Promise<{ text: string } | null>)
+      : Promise.resolve(null),
+    doc.commentId
+      ? (Comment.findById(doc.commentId).select('text').lean() as Promise<{ text: string } | null>)
+      : Promise.resolve(null),
+  ]);
   if (!actor) return null;
-  const post = doc.postId
-    ? await Post.findById(doc.postId).select('text')
-    : null;
-  const comment = doc.commentId
-    ? await Comment.findById(doc.commentId).select('text')
-    : null;
   return toNotificationDTO(doc, toUserLiteDTO(actor), post?.text, comment?.text);
 }
 

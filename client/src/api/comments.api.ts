@@ -3,11 +3,11 @@ import type { CommentDTO, Paginated } from './types';
 
 export async function listForPost(
   postId: string,
-  params: { cursor?: string | null; limit?: number } = {},
+  params: { cursor?: string | null; limit?: number; lang?: string } = {},
 ): Promise<Paginated<CommentDTO>> {
   return unwrap<Paginated<CommentDTO>>(
     http.get(`/posts/${postId}/comments`, {
-      params: { cursor: params.cursor ?? undefined, limit: params.limit },
+      params: { cursor: params.cursor ?? undefined, limit: params.limit, lang: params.lang },
     }),
   );
 }

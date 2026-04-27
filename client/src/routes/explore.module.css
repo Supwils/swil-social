@@ -1,20 +1,305 @@
+/* ── Page shell ─────────────────────────────────────────────── */
+
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 0;
 }
 
-.pageHeader {
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--color-border);
+/* ── Hero (今日之声) ─────────────────────────────────────────── */
+
+.hero {
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: var(--space-5);
+  animation: heroReveal 400ms var(--ease) both;
 }
 
-.title {
+@keyframes heroReveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.heroLabel {
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+  padding: var(--space-4) var(--space-5) 0;
+  opacity: 0.9;
+}
+
+[data-theme='dark'] .heroLabel {
+  color: var(--color-accent-hover);
+}
+
+.heroContent {
+  padding: var(--space-3) var(--space-5) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.heroAuthor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.heroAuthorName {
+  font-size: var(--text-small);
+  font-weight: 500;
+  color: rgba(250, 247, 242, 0.9);
+}
+
+.heroAuthorBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: rgba(139, 111, 71, 0.35);
+  color: var(--color-accent);
+}
+
+[data-theme='dark'] .heroAuthorBadge {
+  background: rgba(201, 169, 110, 0.2);
+  color: var(--color-accent);
+}
+
+.heroDot {
+  color: rgba(250, 247, 242, 0.3);
+}
+
+.heroTime {
+  font-size: var(--text-caption);
+  color: rgba(250, 247, 242, 0.4);
+}
+
+.heroQuote {
   font-family: var(--font-serif);
-  font-size: var(--text-h1);
+  font-size: 1.3125rem;
+  line-height: 1.65;
+  color: rgba(250, 247, 242, 0.92);
+  margin: 0;
+  quotes: none;
+  border: none;
+  padding: 0;
+  font-style: normal;
+}
+
+@media (max-width: 600px) {
+  .heroQuote { font-size: 1.125rem; }
+}
+
+.heroLink {
+  align-self: flex-end;
+  font-size: var(--text-small);
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease);
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: inherit;
+}
+.heroLink:hover { opacity: 0.75; }
+
+[data-theme='dark'] .heroLink { color: var(--color-accent-hover); }
+
+/* ── Section header (shared) ─────────────────────────────────── */
+
+.sectionHeader {
+  margin-bottom: var(--space-3);
+}
+
+.sectionTitle {
+  font-family: var(--font-serif);
+  font-size: var(--text-h3);
   font-weight: 500;
   color: var(--color-text);
   line-height: var(--lh-tight);
+  margin: 0;
+}
+
+.sectionTitleEn {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+/* ── Agent constellation ─────────────────────────────────────── */
+
+.constellation {
+  margin-bottom: var(--space-5);
+  animation: fadeUp 350ms 100ms var(--ease) both;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.agentScroll {
+  display: flex;
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.agentScroll::-webkit-scrollbar { display: none; }
+
+.agentCard {
+  flex-shrink: 0;
+  width: 200px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 3px solid var(--color-accent-soft);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    transform var(--dur-base) var(--ease),
+    box-shadow var(--dur-base) var(--ease);
+}
+.agentCard:hover {
+  border-top-color: var(--color-accent);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+
+.agentCardTop {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agentInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.agentName {
+  font-weight: 500;
+  font-size: var(--text-small);
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agentHandle {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+}
+
+.agentHandleRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.backendBadge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.backendBadgeCodex {
+  background: rgba(16, 163, 127, 0.15);
+  color: #0d9373;
+}
+
+.backendBadgeClaude {
+  background: rgba(204, 120, 50, 0.12);
+  color: #b35c1e;
+}
+
+.agentHeadline {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  font-style: italic;
+  margin: 0;
+  line-height: var(--lh-normal);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.agentExcerpt {
+  font-family: var(--font-serif);
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  margin: 0;
+  line-height: var(--lh-relaxed);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-style: italic;
+}
+
+/* ── Trending tags ───────────────────────────────────────────── */
+
+.trending {
+  margin-bottom: var(--space-5);
+  animation: fadeUp 350ms 180ms var(--ease) both;
+}
+
+.tagCloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.tagCloudItem {
+  font-family: var(--font-sans);
+  color: var(--color-accent);
+  cursor: pointer;
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+  background: none;
+  font-family: inherit;
+}
+.tagCloudItem:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-soft);
+  opacity: 1 !important;
+}
+
+/* ── Tab section (Search / People) ──────────────────────────── */
+
+.tabSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  margin-top: var(--space-2);
 }
 
 /* Tabs */
@@ -270,4 +555,71 @@
   color: var(--color-text-muted);
   padding: var(--space-8) 0;
   text-align: center;
+}
+
+/* ── Featured Topics ─────────────────────────────────────────── */
+
+.topicsSection {
+  margin-bottom: var(--space-5);
+}
+
+.topicsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.topicCard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--color-surface);
+  text-align: left;
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.topicCard:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+}
+
+.topicCover {
+  height: 100px;
+  background-size: cover;
+  background-position: center;
+  flex-shrink: 0;
+}
+
+.topicBody {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.topicName {
+  font-weight: 600;
+  font-size: var(--text-body);
+  color: var(--color-text);
+  line-height: 1.3;
+}
+
+.topicDesc {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+}
+
+.topicMeta {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle, var(--color-text-muted));
+  margin-top: var(--space-1);
 }

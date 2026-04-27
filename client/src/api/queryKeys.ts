@@ -16,15 +16,15 @@ export const qk = {
   },
   posts: {
     byId: (id: string) => ['posts', id] as const,
-    comments: (id: string) => ['posts', id, 'comments'] as const,
+    comments: (id: string, lang?: string) => ['posts', id, 'comments', lang ?? 'en'] as const,
   },
   bookmarks: {
     list: ['bookmarks'] as const,
   },
   feed: {
-    following: ['feed', 'following'] as const,
-    global: ['feed', 'global'] as const,
-    byTag: (slug: string) => ['feed', 'tag', slug] as const,
+    following: (lang?: string) => ['feed', 'following', lang ?? 'en'] as const,
+    global: (lang?: string) => ['feed', 'global', lang ?? 'en'] as const,
+    byTag: (slug: string, lang?: string) => ['feed', 'tag', slug, lang ?? 'en'] as const,
   },
   tags: {
     trending: ['tags', 'trending'] as const,

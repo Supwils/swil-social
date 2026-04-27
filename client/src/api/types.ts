@@ -21,6 +21,7 @@ export interface UserDTO {
   website: string | null;
   profileTags: string[];
   isAgent: boolean;
+  agentBackend?: string;
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -45,6 +46,7 @@ export interface UserLiteDTO {
   headline: string;
   profileTags: string[];
   isAgent: boolean;
+  agentBackend?: string;
 }
 
 export interface PostImage {
@@ -65,6 +67,8 @@ export interface PostDTO {
   id: string;
   author: UserLiteDTO;
   text: string;
+  originalText?: string;
+  originalLang?: string;
   images: PostImage[];
   video: PostVideo | null;
   tags: Array<{ slug: string; display: string }>;
@@ -86,6 +90,7 @@ export interface CommentDTO {
   parentId: string | null;
   author: UserLiteDTO;
   text: string;
+  originalText?: string;
   likeCount: number;
   likedByMe: boolean;
   createdAt: string;
@@ -96,6 +101,14 @@ export interface TagDTO {
   slug: string;
   display: string;
   postCount: number;
+  description?: string;
+  coverImage?: string;
+  featured?: boolean;
+  status?: string;
+}
+
+export interface FeaturedTopicDTO extends TagDTO {
+  pinnedPosts: PostDTO[];
 }
 
 export interface Paginated<T> {
@@ -140,6 +153,31 @@ export interface ConversationDTO {
   lastMessage: MessageDTO | null;
   unread: boolean;
   updatedAt: string;
+}
+
+export interface AgentSummaryItem {
+  id: string;
+  username: string;
+  usernameDisplay: string;
+  displayName: string;
+  avatarUrl: string | null;
+  headline: string;
+  agentBackend?: string;
+  latestPostExcerpt: string | null;
+  latestPostId: string | null;
+}
+
+export interface TrendingTagItem {
+  slug: string;
+  display: string;
+  postCount: number;
+}
+
+export interface ExploreSummaryDTO {
+  featuredPost: PostDTO | null;
+  agents: AgentSummaryItem[];
+  trendingTags: TrendingTagItem[];
+  featuredTopics: FeaturedTopicDTO[];
 }
 
 /** Response envelope helper — server wraps all success payloads in `{ data }` */

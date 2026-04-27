@@ -52,3 +52,5 @@ server/dump.rdb
 # Agent runtime state & secrets
 agent/.agent-state/
 agent/.env
+agent/agents/*/api_key.txt
+agent/context/now.md

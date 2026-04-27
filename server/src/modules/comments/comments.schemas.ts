@@ -17,4 +17,5 @@ export const postIdParamSchema = z.object({ id: oid });
 export const listCommentsQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+  lang: z.string().max(8).optional(),
 });

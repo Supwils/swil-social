@@ -37,6 +37,8 @@ postsRouter.get(
   asyncHandler(ctrl.search),
 );
 
+postsRouter.get('/showcase', optionalUser, asyncHandler(ctrl.showcase));
+
 postsRouter.post(
   '/',
   requireUser,

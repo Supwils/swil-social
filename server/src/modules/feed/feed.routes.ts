@@ -14,6 +14,7 @@ import * as feed from './feed.service';
 const pagingQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+  lang: z.string().max(8).optional(),
 });
 
 function pageToDtos(items: PostDocument[], ctxById: Map<string, PostDTOContext>) {
@@ -49,7 +50,7 @@ feedRouter.get(
     const cursor = decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
     const page = await feed.global(req.user ?? null, cursor, limit);
-    const lang = req.user?.preferences?.language ?? 'en';
+    const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
     await translatePosts(page.items, page.ctxById, lang);
     return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });
   }),
@@ -64,9 +65,19 @@ feedRouter.get(
     const cursor = decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
     const page = await feed.byTag(req.params.slug, req.user ?? null, cursor, limit);
-    const lang = req.user?.preferences?.language ?? 'en';
+    const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
     await translatePosts(page.items, page.ctxById, lang);
     return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });
+  }),
+);
+
+feedRouter.get(
+  '/explore-summary',
+  requireUser,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) throw AppError.unauthenticated();
+    const summary = await feed.getExploreSummary(req.user);
+    return ok(res, summary);
   }),
 );
 
@@ -85,7 +96,7 @@ userPostsRouter.get(
     const cursor = decodeCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
     const page = await feed.byAuthor(req.params.username, req.user ?? null, cursor, limit);
-    const lang = req.user?.preferences?.language ?? 'en';
+    const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
     await translatePosts(page.items, page.ctxById, lang);
     return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });
   }),

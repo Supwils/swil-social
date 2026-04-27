@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -11,10 +11,11 @@ import {
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import * as postsApi from '@/api/posts.api';
-import { qk } from '@/api/queryKeys';
 import type { ApiError, Visibility } from '@/api/types';
 import { Button, Card, Select, Textarea } from '@/components/primitives';
 import { useDrafts } from '@/stores/draft.store';
+import { useAutocomplete, applySelection } from './useAutocomplete';
+import { AutocompleteDropdown } from './AutocompleteDropdown';
 import s from './PostComposer.module.css';
 
 const DRAFT_KEY = 'post.new';
@@ -77,10 +78,49 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
   const [visibility, setVisibility] = useState<Visibility>('public');
   const [files, setFiles] = useState<File[]>([]);
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [cursorPos, setCursorPos] = useState(0);
+  const [acActiveIndex, setAcActiveIndex] = useState(0);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const qc = useQueryClient();
+
+  const { trigger, results } = useAutocomplete(text, cursorPos);
+
+  const handleAcSelect = (item: (typeof results)[number]) => {
+    if (!trigger) return;
+    const replacement = 'username' in item ? item.username : item.slug;
+    const { newText, newCursor } = applySelection(
+      text, trigger.triggerIndex, trigger.query.length, trigger.prefix, replacement,
+    );
+    setText(newText);
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(newCursor, newCursor);
+      textareaRef.current?.focus();
+      setCursorPos(newCursor);
+      setAcActiveIndex(0);
+    });
+  };
+
+  const handleTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!trigger || results.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setAcActiveIndex((i) => Math.min(i + 1, results.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setAcActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      const selected = results[acActiveIndex];
+      if (selected) {
+        e.preventDefault();
+        handleAcSelect(selected);
+      }
+    } else if (e.key === 'Escape') {
+      // Reset cursor position to force re-detection to return null
+      setCursorPos(0);
+    }
+  };
 
   useEffect(() => {
     if (!text.trim()) {
@@ -121,8 +161,7 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
       setVideoFile(null);
       clearDraft(DRAFT_KEY);
       toast.success(t('post.post'));
-      qc.invalidateQueries({ queryKey: qk.feed.following });
-      qc.invalidateQueries({ queryKey: qk.feed.global });
+      qc.invalidateQueries({ queryKey: ['feed'] });
       onSuccess?.();
     },
     onError: (err) => {
@@ -199,17 +238,35 @@ export function PostComposer({ onSuccess, bare }: PostComposerProps = {}) {
           </button>
         </div>
 
-        <Textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={t('post.placeholder')}
-          maxLength={5000}
-          showCounter
-          serif
-          autoResize
-          aria-label="Post text"
-        />
+        <div className={s.textareaWrapper}>
+          <Textarea
+            ref={textareaRef}
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value);
+              setCursorPos(e.target.selectionStart ?? 0);
+              setAcActiveIndex(0);
+            }}
+            onClick={(e) => setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+            onKeyDown={handleTextareaKeyDown}
+            placeholder={t('post.placeholder')}
+            maxLength={5000}
+            showCounter
+            serif
+            autoResize
+            aria-label="Post text"
+            aria-autocomplete="list"
+            aria-expanded={trigger !== null && results.length > 0}
+          />
+          {trigger && results.length > 0 && (
+            <AutocompleteDropdown
+              prefix={trigger.prefix}
+              results={results}
+              activeIndex={acActiveIndex}
+              onSelect={handleAcSelect}
+            />
+          )}
+        </div>
 
         {previews.length > 0 && (
           <div className={s.previews}>

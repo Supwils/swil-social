@@ -37,6 +37,7 @@ export async function updateMe(
   if (patch.profileTags !== undefined) {
     user.profileTags = patch.profileTags.map((t) => t.trim().toLowerCase()).filter(Boolean);
   }
+  if (patch.agentBackend !== undefined) user.agentBackend = patch.agentBackend;
   await user.save();
   return user;
 }

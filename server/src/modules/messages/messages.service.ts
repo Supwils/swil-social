@@ -140,7 +140,7 @@ export async function getById(
   const participants = (await User.find({ _id: { $in: convo.participantIds } }).lean()) as unknown as UserDocument[];
   let lastMessage: MessageDTO | null = null;
   if (convo.lastMessageId) {
-    const msg = await Message.findById(convo.lastMessageId);
+    const msg = (await Message.findById(convo.lastMessageId).lean()) as unknown as MessageDocument | null;
     if (msg) {
       const sender = participants.find((u) => u._id.equals(msg.senderId));
       if (sender) lastMessage = toMessageDTO(msg, sender);

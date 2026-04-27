@@ -49,7 +49,10 @@ export async function translatePosts(
     const cached = post.translations?.[targetLang];
     if (cached) {
       const ctx = ctxById.get(id);
-      if (ctx) ctx.translatedText = cached;
+      if (ctx) {
+        ctx.translatedText = cached;
+        ctx.originalLang = hasChinese(post.text) ? 'zh' : 'en';
+      }
       continue;
     }
 
@@ -74,7 +77,10 @@ export async function translatePosts(
         const translatedText = translated[i];
         if (translatedText && translatedText !== post.text) {
           const ctx = ctxById.get(post._id.toString());
-          if (ctx) ctx.translatedText = translatedText;
+          if (ctx) {
+            ctx.translatedText = translatedText;
+            ctx.originalLang = hasChinese(post.text) ? 'zh' : 'en';
+          }
           bulkOps.push({
             updateOne: {
               filter: { _id: post._id },

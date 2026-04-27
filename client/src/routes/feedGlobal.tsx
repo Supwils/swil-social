@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Rows, SquaresFour } from '@phosphor-icons/react';
 import clsx from 'clsx';
@@ -14,9 +15,10 @@ export default function FeedGlobalRoute() {
   const { t } = useTranslation();
   const feedLayout = useUI((st) => st.feedLayout);
   const setFeedLayout = useUI((st) => st.setFeedLayout);
+  const language = useUI((st) => st.language);
   const q = useInfiniteQuery({
-    queryKey: qk.feed.global,
-    queryFn: ({ pageParam }) => feedApi.global({ cursor: pageParam, limit: 20 }),
+    queryKey: qk.feed.global(language),
+    queryFn: ({ pageParam }) => feedApi.global({ cursor: pageParam, limit: 20, lang: language }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
   });
@@ -26,7 +28,7 @@ export default function FeedGlobalRoute() {
     queryFn: () => tagsApi.trending(8),
   });
 
-  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const items = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
   const isGrid = feedLayout === 'grid';
 
   return (

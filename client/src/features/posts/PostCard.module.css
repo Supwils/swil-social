@@ -129,6 +129,34 @@
   margin-left: var(--space-1);
 }
 
+.translatedBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.translatedLabel {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
+
+.translatedToggle {
+  font-size: var(--text-caption);
+  color: var(--color-accent);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.translatedToggle:hover {
+  opacity: 0.75;
+}
+
 .images {
   margin-top: var(--space-3);
   display: grid;

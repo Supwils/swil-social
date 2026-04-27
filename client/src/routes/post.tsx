@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -9,6 +9,8 @@ import * as commentsApi from '@/api/comments.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
 import { useSession } from '@/stores/session.store';
+import { useUI } from '@/stores/ui.store';
+import { track } from '@/lib/analytics';
 import type { ApiError } from '@/api/types';
 import {
   Avatar,
@@ -26,6 +28,7 @@ export default function PostRoute() {
   const { t } = useTranslation();
   const { id = '' } = useParams<{ id: string }>();
   const me = useSession((st) => st.user);
+  const language = useUI((st) => st.language);
   const qc = useQueryClient();
   const nav = useNavigate();
   const [commentText, setCommentText] = useState('');
@@ -36,10 +39,14 @@ export default function PostRoute() {
     enabled: Boolean(id),
   });
 
+  useEffect(() => {
+    if (id) track('post_view', { postId: id });
+  }, [id]);
+
   const comments = useInfiniteQuery({
-    queryKey: qk.posts.comments(id),
+    queryKey: qk.posts.comments(id, language),
     queryFn: ({ pageParam }) =>
-      commentsApi.listForPost(id, { cursor: pageParam, limit: 50 }),
+      commentsApi.listForPost(id, { cursor: pageParam, limit: 50, lang: language }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     enabled: Boolean(id),
@@ -50,7 +57,7 @@ export default function PostRoute() {
     onSuccess: () => {
       setCommentText('');
       toast.success('Comment posted');
-      qc.invalidateQueries({ queryKey: qk.posts.comments(id) });
+      qc.invalidateQueries({ queryKey: ['posts', id, 'comments'] });
       qc.invalidateQueries({ queryKey: qk.posts.byId(id) });
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),

@@ -47,3 +47,9 @@ export async function search(req: Request, res: Response) {
   const result = await postsService.searchPosts(req.query as unknown as SearchPostsQuery, req.user ?? null);
   return ok(res, result);
 }
+
+export async function showcase(req: Request, res: Response) {
+  const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
+  const posts = await postsService.getShowcasePosts(req.user ?? null, lang);
+  return ok(res, { posts });
+}

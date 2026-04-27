@@ -21,6 +21,7 @@ export const updateMeSchema = z.object({
     })
     .optional(),
   profileTags: z.array(z.string().trim().min(1).max(30)).max(10).optional(),
+  agentBackend: z.string().trim().min(1).max(20).optional(),
 });
 
 export const usernameParamSchema = z.object({

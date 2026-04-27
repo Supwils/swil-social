@@ -29,6 +29,10 @@
   color: var(--color-text);
 }
 
+.textareaWrapper {
+  position: relative;
+}
+
 .previews {
   display: flex;
   gap: var(--space-2);

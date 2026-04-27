@@ -1,4 +1,4 @@
-import { type FormEvent, useRef, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { Link } from 'react-router-dom';
 import { type InfiniteData, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -9,6 +9,8 @@ import { qk } from '@/api/queryKeys';
 import type { ApiError, Paginated, PostDTO } from '@/api/types';
 import { Avatar, Spinner } from '@/components/primitives';
 import { useSession } from '@/stores/session.store';
+import { useUI } from '@/stores/ui.store';
+import { useDrafts } from '@/stores/draft.store';
 import { formatRelative } from '@/lib/formatDate';
 import { MarkdownBody } from './MarkdownBody';
 import s from './InlineComments.module.css';
@@ -19,17 +21,33 @@ interface Props {
   indented?: boolean;
 }
 
+const COMMENT_AUTOSAVE_MS = 600;
+
 export function InlineComments({ postId, open, indented = true }: Props) {
   const { t } = useTranslation();
   const me = useSession((st) => st.user);
+  const language = useUI((st) => st.language);
   const qc = useQueryClient();
-  const [text, setText] = useState('');
+  const getDraft = useDrafts((st) => st.getDraft);
+  const setDraftStore = useDrafts((st) => st.setDraft);
+  const clearDraft = useDrafts((st) => st.clearDraft);
+  const draftKey = `comment.${postId}`;
+  const [text, setText] = useState<string>(() => getDraft(draftKey)?.text ?? '');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  useEffect(() => {
+    if (!text.trim()) {
+      clearDraft(draftKey);
+      return;
+    }
+    const h = window.setTimeout(() => setDraftStore(draftKey, text), COMMENT_AUTOSAVE_MS);
+    return () => window.clearTimeout(h);
+  }, [text, draftKey, setDraftStore, clearDraft]);
+
   const comments = useInfiniteQuery({
-    queryKey: qk.posts.comments(postId),
+    queryKey: qk.posts.comments(postId, language),
     queryFn: ({ pageParam }) =>
-      commentsApi.listForPost(postId, { cursor: pageParam, limit: 20 }),
+      commentsApi.listForPost(postId, { cursor: pageParam, limit: 20, lang: language }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     enabled: open,
@@ -39,7 +57,8 @@ export function InlineComments({ postId, open, indented = true }: Props) {
     mutationFn: () => commentsApi.create(postId, { text }),
     onSuccess: () => {
       setText('');
-      qc.invalidateQueries({ queryKey: qk.posts.comments(postId) });
+      clearDraft(draftKey);
+      qc.invalidateQueries({ queryKey: qk.posts.comments(postId, language) });
       // Sync commentCount in all feed caches — avoids a full refetch
       const bump = (old: InfiniteData<Paginated<PostDTO>> | undefined) => {
         if (!old) return old;
@@ -72,7 +91,7 @@ export function InlineComments({ postId, open, indented = true }: Props) {
     }
   };
 
-  const items = comments.data?.pages.flatMap((p) => p.items) ?? [];
+  const items = useMemo(() => comments.data?.pages.flatMap((p) => p.items) ?? [], [comments.data]);
 
   return (
     <div className={clsx(s.panel, indented && s.panelIndented, open && s.open)} aria-hidden={!open}>

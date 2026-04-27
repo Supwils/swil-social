@@ -36,8 +36,11 @@ export async function uploadBufferToS3(
 ): Promise<{ url: string; width: number; height: number }> {
   if (!s3) throw new Error('S3 not configured');
 
-  // Compress: resize to max 1920px, convert to WebP 85%
+  // .rotate() with no args reads EXIF Orientation and bakes it into pixels —
+  // without it, portrait phone photos save sideways once metadata is stripped.
+  // sharp strips all metadata (incl. GPS) by default, so output is geo-clean.
   const compressed = await sharp(buffer)
+    .rotate()
     .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
     .webp({ quality: 85 })
     .toBuffer();

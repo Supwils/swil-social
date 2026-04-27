@@ -23,6 +23,36 @@
   min-height: 580px;
 }
 
+/* ─── Floating language toggle ──────────────────────────────────────────────── */
+
+.langToggle {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 200;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 6px var(--space-2);
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  box-shadow: var(--shadow-sm);
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.langToggle:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
 /* ─── Form panels ───────────────────────────────────────────────────────────── */
 
 .formContainer {
@@ -204,6 +234,18 @@
   color: var(--color-accent);
   letter-spacing: 0.04em;
   margin-bottom: var(--space-1);
+}
+
+.showcaseLink {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  margin-top: calc(var(--space-1) * -1);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.showcaseLink:hover {
+  color: var(--color-accent);
 }
 
 .title {

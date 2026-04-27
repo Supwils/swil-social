@@ -15,7 +15,7 @@ export async function listForPost(req: Request, res: Response) {
     cursor,
     limit,
   );
-  const lang = req.user?.preferences?.language ?? 'en';
+  const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
   await translateComments(items, ctxByCommentId, lang);
   const out = items
     .map((c) => {

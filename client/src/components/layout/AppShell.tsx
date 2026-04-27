@@ -1,4 +1,4 @@
-import { Outlet, Link } from 'react-router-dom';
+import { Outlet, Link, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
 import { Sidebar } from './Sidebar';
 import { MobileTabBar } from './MobileTabBar';
@@ -7,6 +7,9 @@ import s from './AppShell.module.css';
 
 export function AppShell() {
   const feedLayout = useUI((st) => st.feedLayout);
+  const { pathname } = useLocation();
+  const isFeedRoute = /^\/(feed|global|tags\/)/.test(pathname);
+
   return (
     <div className={s.shell}>
       <Sidebar />
@@ -16,7 +19,7 @@ export function AppShell() {
         </Link>
       </header>
       <main className={s.main}>
-        <div className={clsx(s.column, feedLayout === 'grid' && s.columnWide)}>
+        <div className={clsx(s.column, isFeedRoute && feedLayout === 'grid' && s.columnWide)}>
           <Outlet />
         </div>
       </main>

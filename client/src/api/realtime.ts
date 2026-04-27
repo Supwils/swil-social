@@ -46,7 +46,8 @@ export type RealtimeEvent =
   | 'notification:read'
   | 'message'
   | 'message:read'
-  | 'conversation:update';
+  | 'conversation:update'
+  | 'post:new';
 
 export function on(event: RealtimeEvent, listener: (payload: unknown) => void): () => void {
   const s = socket;

@@ -1,44 +1,76 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import * as feedApi from '@/api/feed.api';
+import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
 import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
-import s from './feed.module.css';
+import { useUI } from '@/stores/ui.store';
+import s from './feedTag.module.css';
 
 export default function FeedTagRoute() {
   const { slug = '' } = useParams<{ slug: string }>();
-  const q = useInfiniteQuery({
-    queryKey: qk.feed.byTag(slug),
-    queryFn: ({ pageParam }) => feedApi.byTag(slug, { cursor: pageParam, limit: 20 }),
+  const language = useUI((st) => st.language);
+  const { t } = useTranslation();
+
+  const feedQ = useInfiniteQuery({
+    queryKey: qk.feed.byTag(slug, language),
+    queryFn: ({ pageParam }) => feedApi.byTag(slug, { cursor: pageParam, limit: 20, lang: language }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     enabled: Boolean(slug),
   });
 
-  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const tagQ = useQuery({
+    queryKey: qk.tags.bySlug(slug),
+    queryFn: () => tagsApi.getBySlug(slug),
+    enabled: Boolean(slug),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const items = feedQ.data?.pages.flatMap((p) => p.items) ?? [];
+  const tag = tagQ.data;
+  const hasMeta = Boolean(tag?.description || tag?.coverImage);
+  const isArchived = tag?.status === 'archived';
 
   return (
     <div className={s.page}>
-      <header className={s.pageHeader}>
-        <h1 className={s.subtitle}>#{slug}</h1>
-      </header>
+      {hasMeta ? (
+        <header className={s.richHeader}>
+          {tag?.coverImage && <div className={s.cover} style={{ backgroundImage: `url(${tag.coverImage})` }} />}
+          <div className={s.headerBody}>
+            <h1>#{tag?.display ?? slug}</h1>
+            {tag?.description && <p className={s.description}>{tag.description}</p>}
+            {tag?.postCount != null && (
+              <span className={s.postCount}>
+                {tag.postCount.toLocaleString()} {t('explore.topicsPostCount')}
+              </span>
+            )}
+            {isArchived && <span className={s.archivedBadge}>{t('explore.topicArchived')}</span>}
+          </div>
+        </header>
+      ) : (
+        <header className={s.simpleHeader}>
+          <h1>#{tag?.display ?? slug}</h1>
+        </header>
+      )}
 
-      {q.isLoading && (
+      {feedQ.isLoading && (
         <>
           <PostCardSkeleton />
           <PostCardSkeleton />
         </>
       )}
 
-      {q.isError && (
+      {feedQ.isError && (
         <EmptyState
           title="Tag not found"
           description="This tag doesn't exist or nobody has used it yet."
         />
       )}
 
-      {q.isSuccess && items.length === 0 && (
+      {feedQ.isSuccess && items.length === 0 && (
         <EmptyState
           title="Quiet here."
           description={`No recent posts on #${slug}.`}
@@ -47,14 +79,14 @@ export default function FeedTagRoute() {
 
       {items.map((post) => <PostCard key={post.id} post={post} />)}
 
-      {q.hasNextPage && (
+      {feedQ.hasNextPage && (
         <div className={s.loadMore}>
           <Button
             variant="ghost"
-            onClick={() => q.fetchNextPage()}
-            disabled={q.isFetchingNextPage}
+            onClick={() => feedQ.fetchNextPage()}
+            disabled={feedQ.isFetchingNextPage}
           >
-            {q.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            {feedQ.isFetchingNextPage ? 'Loading…' : 'Load more'}
           </Button>
         </div>
       )}

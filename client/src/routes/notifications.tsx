@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { type InfiniteData, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
@@ -9,7 +9,7 @@ import { qk } from '@/api/queryKeys';
 import { useRealtime } from '@/stores/realtime.store';
 import { formatRelative } from '@/lib/formatDate';
 import { Avatar, Button, Dialog, DialogActions, EmptyState, NotificationSkeleton } from '@/components/primitives';
-import type { NotificationDTO } from '@/api/types';
+import type { NotificationDTO, Paginated } from '@/api/types';
 import s from './notifications.module.css';
 
 export default function NotificationsRoute() {
@@ -28,12 +28,27 @@ export default function NotificationsRoute() {
 
   const [confirmingClear, setConfirmingClear] = useState(false);
 
+  const _markAllRead = () => {
+    setUnread(0);
+    qc.setQueriesData<InfiniteData<Paginated<NotificationDTO>>>(
+      { queryKey: qk.notifications.list },
+      (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map((pg) => ({
+            ...pg,
+            items: pg.items.map((n) => ({ ...n, read: true })),
+          })),
+        };
+      },
+    );
+  };
+
   const markAll = useMutation({
     mutationFn: () => notificationsApi.markRead({ all: true }),
-    onSuccess: () => {
-      setUnread(0);
-      qc.invalidateQueries({ queryKey: qk.notifications.list });
-    },
+    onMutate: _markAllRead,
+    onError: () => qc.invalidateQueries({ queryKey: qk.notifications.list }),
   });
 
   const clearAll = useMutation({
@@ -51,16 +66,13 @@ export default function NotificationsRoute() {
   useEffect(() => {
     if (!q.isSuccess || autoMarked.current || !items.some((n) => !n.read)) return;
     autoMarked.current = true;
-    notificationsApi
-      .markRead({ all: true })
-      .then(() => {
-        setUnread(0);
-        qc.invalidateQueries({ queryKey: qk.notifications.list });
-      })
-      .catch(() => {
-        autoMarked.current = false;
-      });
-  }, [items, q.isSuccess, qc, setUnread]);
+    _markAllRead();
+    notificationsApi.markRead({ all: true }).catch(() => {
+      autoMarked.current = false;
+      qc.invalidateQueries({ queryKey: qk.notifications.list });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q.isSuccess, items]);
 
   return (
     <div className={s.page}>

@@ -6,7 +6,7 @@ title: API 端点速查
 
 所有端点前缀：`http://localhost:8888/api/v1`
 
-需要认证的端点用 🔒 标记（需携带 session cookie）。
+需要认证的端点用 🔒 标记（需携带 session cookie 或 Bearer API Key）。
 
 ---
 
@@ -18,6 +18,8 @@ title: API 端点速查
 | POST | `/auth/logout` | 登出 🔒 |
 | GET | `/auth/me` | 当前登录用户 🔒 |
 | POST | `/auth/register` | 注册新账号 |
+| POST | `/auth/api-keys` | 创建 API Key 🔒 |
+| GET | `/auth/api-keys` | 列出 API Key 🔒 |
 
 ---
 
@@ -42,17 +44,27 @@ title: API 端点速查
 | PATCH | `/posts/:id` | 编辑帖子 🔒（仅作者）|
 | DELETE | `/posts/:id` | 删除帖子 🔒（仅作者）|
 
-发帖请求体：
+### 发帖（纯文字）
+
 ```json
-{
-  "body": "帖子内容，支持 Markdown，可以用 #tag 和 @username",
-  "image": "https://图片URL（可选）"
-}
+{ "text": "帖子内容，支持 #tag 和 @username" }
+```
+
+### 发帖（附带图片）
+
+使用 `multipart/form-data`，支持多张图片：
+
+```bash
+curl -X POST http://localhost:8888/api/v1/posts \
+  -H "Authorization: Bearer <key>" \
+  -F "text=帖子内容" \
+  -F "images=@photo1.jpg;type=image/jpeg" \
+  -F "images=@photo2.jpg;type=image/jpeg"
 ```
 
 ---
 
-## 评论 `/comments`
+## 评论
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -61,14 +73,14 @@ title: API 端点速查
 | PATCH | `/comments/:id` | 编辑评论 🔒 |
 | DELETE | `/comments/:id` | 删除评论 🔒 |
 
-评论请求体：
+请求体：
 ```json
-{ "body": "评论内容" }
+{ "text": "评论内容" }
 ```
 
 ---
 
-## 点赞 `/likes`
+## 点赞
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -77,12 +89,12 @@ title: API 端点速查
 
 ---
 
-## 关注 `/follows`
+## 关注
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/users/:id/follow` | 关注用户 🔒 |
-| DELETE | `/users/:id/follow` | 取消关注 🔒 |
+| POST | `/users/:username/follow` | 关注用户 🔒 |
+| DELETE | `/users/:username/follow` | 取消关注 🔒 |
 | GET | `/users/:id/followers` | 某用户的粉丝列表 |
 | GET | `/users/:id/following` | 某用户的关注列表 |
 
@@ -95,13 +107,15 @@ title: API 端点速查
 | GET | `/users/:username` | 查看用户主页 |
 | PATCH | `/users/me` | 更新自己的资料 🔒 |
 | GET | `/users?search=关键词` | 搜索用户 |
+| GET | `/users/profile-tags/presets` | 获取可用的个人标签预设 |
 
 更新资料请求体（字段都是可选的）：
 ```json
 {
   "displayName": "新显示名",
   "headline": "个人简介",
-  "email": "new@email.com"
+  "bio": "详细介绍",
+  "profileTags": ["developer", "thinker", "curious"]
 }
 ```
 
@@ -115,7 +129,7 @@ title: API 端点速查
 | GET | `/messages/:conversationId` | 某个会话的消息 🔒 |
 | POST | `/messages/:userId` | 给某用户发私信 🔒 |
 
-发私信请求体：
+请求体：
 ```json
 { "body": "私信内容" }
 ```
@@ -143,14 +157,12 @@ title: API 端点速查
 { "message": "错误描述", "fields": { "email": "已被使用" } }
 ```
 
-**常见状态码：**
-
 | 状态码 | 含义 |
 |---|---|
 | 200 | 成功 |
 | 201 | 创建成功 |
 | 400 | 请求参数有误 |
-| 401 | 未登录 |
+| 401 | 未登录或 API Key 无效 |
 | 403 | 无权限 |
 | 404 | 资源不存在 |
 | 429 | 请求过于频繁 |

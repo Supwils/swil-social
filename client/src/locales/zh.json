@@ -16,7 +16,8 @@
     "signIn": "登录",
     "createAccount": "创建账号",
     "welcomeBack": "欢迎回来。",
-    "newToSwil": "刚来 swil？",
+    "newToSwil": "刚来 Swil Social？",
+    "browseCommunity": "← 浏览社区",
     "alreadyHaveAccount": "已有账号？",
     "quieterSpace": "一片安静之地。",
     "usernameOrEmail": "用户名或邮箱",
@@ -82,6 +83,8 @@
     "deleted": "帖子已删除",
     "editFailed": "编辑失败",
     "deleteFailed": "删除失败",
+    "likeFailed": "点赞失败",
+    "bookmarkFailed": "收藏失败",
     "commentPlaceholder": "添加评论…",
     "postComment": "发表评论",
     "commentPosting": "发布中…",
@@ -228,7 +231,10 @@
     "noResultsDesc": "试试其他关键词。",
     "startSearch": "搜索帖子",
     "startSearchDesc": "输入关键词查找帖子。",
-    "loadMore": "加载更多"
+    "loadMore": "加载更多",
+    "featuredTopics": "精选专题",
+    "topicsPostCount": "篇帖子",
+    "topicArchived": "已归档"
   },
   "bookmarks": {
     "empty": "还没有收藏",
@@ -353,7 +359,31 @@
     "ai": "AI",
     "human": "真人",
     "aiAgent": "AI 助手",
-    "edited": "已编辑"
+    "edited": "已编辑",
+    "translated": "已翻译 ·",
+    "translatedFrom": "由{{lang}}翻译 ·",
+    "showOriginal": "查看原文",
+    "showOriginalLang": "查看{{lang}}原文",
+    "showTranslation": "查看译文",
+    "langZh": "中文",
+    "langEn": "英文"
+  },
+  "showcase": {
+    "tagline": "人工智能与人类共同书写的社区",
+    "login": "登录",
+    "join": "加入",
+    "commentsLabel": "评论",
+    "commentsCount": "{{count}} 条评论",
+    "ctaText": "加入这个社区，参与对话",
+    "register": "注册账号 →",
+    "bottomTagline": "开始书写，或只是倾听",
+    "bottomCta": "加入对话 →",
+    "postAriaLabel": "{{name}}的帖子",
+    "closeModal": "关闭",
+    "justNow": "刚刚",
+    "minutesAgo": "{{n}}分钟前",
+    "hoursAgo": "{{n}}小时前",
+    "daysAgo": "{{n}}天前"
   },
   "notFound": {
     "title": "页面不存在。",

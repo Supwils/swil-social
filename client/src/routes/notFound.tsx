@@ -10,7 +10,7 @@ export default function NotFoundRoute() {
       <EmptyState
         title={t('notFound.title')}
         description={t('notFound.desc')}
-        action={<Button onClick={() => nav('/feed')}>{t('notFound.goToFeed')}</Button>}
+        action={<Button onClick={() => nav('/')}>{t('notFound.goToFeed')}</Button>}
       />
     </div>
   );

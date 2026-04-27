@@ -25,7 +25,11 @@ export function RealtimeBridge() {
   const user = useSession((s) => s.user);
   const setConnected = useRealtime((s) => s.setConnected);
   const setUnreadN = useRealtime((s) => s.setUnreadNotifications);
+  const incUnreadN = useRealtime((s) => s.incUnreadNotifications);
   const setUnreadC = useRealtime((s) => s.setUnreadConversations);
+  const incUnreadC = useRealtime((s) => s.incUnreadConversations);
+  const incNewFeed = useRealtime((s) => s.incNewFeedPostCount);
+  const resetNewFeed = useRealtime((s) => s.resetNewFeedPostCount);
   const qc = useQueryClient();
 
   useEffect(() => {
@@ -34,6 +38,7 @@ export function RealtimeBridge() {
       setConnected(false);
       setUnreadN(0);
       setUnreadC(0);
+      resetNewFeed();
       return;
     }
 
@@ -61,14 +66,16 @@ export function RealtimeBridge() {
           };
         },
       );
-      notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
+      // Local-only increment — avoids HTTP roundtrip per push.
+      // Authoritative count is reseeded on mount, on focus, and on read events.
+      incUnreadN(1);
       toast(summarizeNotification(payload));
     };
 
     const onNotificationRead = (raw: unknown) => {
       const payload = raw as { ids: string[] | 'all' };
       qc.invalidateQueries({ queryKey: qk.notifications.list });
-      // Recompute unread count authoritatively
+      // Recompute unread count authoritatively (state changed on server)
       notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
       void payload;
     };
@@ -96,7 +103,13 @@ export function RealtimeBridge() {
       const onThisThread = window.location.pathname === `/messages/${payload.conversationId}`;
       if (payload.sender.id !== user.id && !onThisThread) {
         toast(`@${payload.sender.username}: ${preview(payload.text)}`);
+        // Local-only bump — server count reseeded on focus / read.
+        incUnreadC(1);
       }
+    };
+
+    const onPostNew = () => {
+      incNewFeed();
     };
 
     const onConversationUpdate = () => {
@@ -132,13 +145,18 @@ export function RealtimeBridge() {
     socket.on('message', onMessage);
     socket.on('message:read', onMessageRead);
     socket.on('conversation:update', onConversationUpdate);
+    socket.on('post:new', onPostNew);
 
     // Seed unread counts once on mount
-    notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
-    messagesApi
-      .unreadCount()
-      .then(setUnreadC)
-      .catch(() => undefined);
+    const reseedCounts = () => {
+      notificationsApi.unreadCount().then(setUnreadN).catch(() => undefined);
+      messagesApi.unreadCount().then(setUnreadC).catch(() => undefined);
+    };
+    reseedCounts();
+
+    // Reseed on tab focus — local increments may have drifted while idle.
+    const onFocus = () => reseedCounts();
+    window.addEventListener('focus', onFocus);
 
     return () => {
       const s = getSocket();
@@ -149,8 +167,10 @@ export function RealtimeBridge() {
       s?.off('message', onMessage);
       s?.off('message:read', onMessageRead);
       s?.off('conversation:update', onConversationUpdate);
+      s?.off('post:new', onPostNew);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [user, qc, setConnected, setUnreadN, setUnreadC]);
+  }, [user, qc, setConnected, setUnreadN, setUnreadC, incUnreadN, incUnreadC, incNewFeed, resetNewFeed]);
 
   return null;
 }

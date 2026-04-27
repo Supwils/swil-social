@@ -19,6 +19,7 @@ export interface UserDTO {
   website: string | null;
   profileTags: string[];
   isAgent: boolean;
+  agentBackend?: string;
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -42,6 +43,7 @@ export interface UserLiteDTO {
   headline: string;
   profileTags: string[];
   isAgent: boolean;
+  agentBackend?: string;
 }
 
 export interface PostDTO {
@@ -49,6 +51,7 @@ export interface PostDTO {
   author: UserLiteDTO;
   text: string;
   originalText?: string;
+  originalLang?: string;
   images: Array<{ url: string; width: number; height: number; blurhash?: string }>;
   video: { url: string; width: number; height: number; durationSec?: number } | null;
   tags: Array<{ slug: string; display: string }>;
@@ -81,6 +84,14 @@ export interface TagDTO {
   slug: string;
   display: string;
   postCount: number;
+  description?: string;
+  coverImage?: string;
+  featured?: boolean;
+  status?: string;
+}
+
+export interface FeaturedTopicDTO extends TagDTO {
+  pinnedPosts: PostDTO[];
 }
 
 export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): UserDTO {
@@ -97,6 +108,7 @@ export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): Us
     website: user.website,
     profileTags: [...(user.profileTags ?? [])],
     isAgent: user.isAgent ?? false,
+    ...(user.agentBackend ? { agentBackend: user.agentBackend } : {}),
     followerCount: user.followerCount,
     followingCount: user.followingCount,
     postCount: user.postCount,
@@ -120,6 +132,7 @@ export function toUserLiteDTO(user: UserDocument): UserLiteDTO {
     headline: user.headline,
     profileTags: [...(user.profileTags ?? [])],
     isAgent: user.isAgent ?? false,
+    ...(user.agentBackend ? { agentBackend: user.agentBackend } : {}),
   };
 }
 
@@ -131,6 +144,7 @@ export interface PostDTOContext {
   bookmarkedByMe?: boolean;
   echoOf?: PostDTO;
   translatedText?: string;
+  originalLang?: string;
   lang?: string;
 }
 
@@ -144,7 +158,7 @@ export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
     id: post._id.toString(),
     author: toUserLiteDTO(ctx.author),
     text: translated ?? post.text,
-    ...(translated ? { originalText: post.text } : {}),
+    ...(translated ? { originalText: post.text, originalLang: ctx.originalLang } : {}),
     images: post.images.map((i) => ({
       url: i.url,
       width: i.width,
@@ -209,6 +223,10 @@ export function toTagDTO(tag: TagDocument, lang?: string): TagDTO {
     slug: tag.slug,
     display: (lang && tag.translations?.[lang]) || tag.display,
     postCount: tag.postCount,
+    ...(tag.description ? { description: tag.description } : {}),
+    ...(tag.coverImage ? { coverImage: tag.coverImage } : {}),
+    ...(tag.featured ? { featured: true } : {}),
+    ...(tag.status && tag.status !== 'active' ? { status: tag.status } : {}),
   };
 }
 

@@ -128,9 +128,9 @@ export default function SettingsRoute() {
     usersApi.updateMe({ preferences: { theme: val } }).catch(() => {});
   };
 
-  const changeLanguage = (val: LanguagePreference) => {
+  const changeLanguage = async (val: LanguagePreference) => {
+    await usersApi.updateMe({ preferences: { language: val } }).catch(() => {});
     setLanguage(val);
-    usersApi.updateMe({ preferences: { language: val } }).catch(() => {});
   };
 
   const fileRef = useRef<HTMLInputElement | null>(null);

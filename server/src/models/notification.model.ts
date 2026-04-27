@@ -52,6 +52,8 @@ const NotificationSchema = new Schema<NotificationAttrs>(
 
 NotificationSchema.index({ recipientId: 1, updatedAt: -1 });
 NotificationSchema.index({ recipientId: 1, read: 1 });
+// Covers the common paginated query: filter by recipientId+read, sort by updatedAt
+NotificationSchema.index({ recipientId: 1, read: 1, updatedAt: -1 });
 // TTL: 90 days. MongoDB removes after expiration.
 NotificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
 

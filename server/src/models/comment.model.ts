@@ -46,6 +46,8 @@ const CommentSchema = new Schema<CommentAttrs>(
 );
 
 CommentSchema.index({ postId: 1, createdAt: 1 });
+// Covers the common query: active comments for a post sorted by time
+CommentSchema.index({ postId: 1, status: 1, createdAt: 1 });
 CommentSchema.index({ authorId: 1, createdAt: -1 });
 CommentSchema.index({ parentId: 1 });
 

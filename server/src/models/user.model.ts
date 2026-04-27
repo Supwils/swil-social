@@ -31,6 +31,7 @@ export interface UserAttrs {
   profileTags: string[];
 
   isAgent: boolean;
+  agentBackend?: string;
 
   status: 'active' | 'suspended' | 'deleted';
   deletedAt: Date | null;
@@ -101,6 +102,7 @@ const UserSchema = new Schema<UserAttrs>(
     profileTags: { type: [String], default: [] },
 
     isAgent: { type: Boolean, default: false },
+    agentBackend: { type: String, default: undefined },
 
     status: {
       type: String,

@@ -9,6 +9,7 @@ import { RealtimeBridge } from '@/components/RealtimeBridge';
 import { AppShell } from '@/components/layout/AppShell';
 import { ProtectedRoute, PublicRoute } from '@/components/RouteGuards';
 import { Spinner } from '@/components/primitives';
+import { useSession } from '@/stores/session.store';
 
 const LoginRoute = lazy(() => import('@/routes/login'));
 const RegisterRoute = lazy(() => import('@/routes/register'));
@@ -24,6 +25,7 @@ const ConversationRoute = lazy(() => import('@/routes/conversation'));
 const ExploreRoute = lazy(() => import('@/routes/explore'));
 const BookmarksRoute = lazy(() => import('@/routes/bookmarks'));
 const NotFoundRoute = lazy(() => import('@/routes/notFound'));
+const ShowcaseRoute = lazy(() => import('@/routes/showcase'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +50,14 @@ function RouteFallback() {
   );
 }
 
+function RootDispatch() {
+  const bootstrap = useSession((st) => st.bootstrap);
+  const user = useSession((st) => st.user);
+  if (bootstrap === 'pending') return <RouteFallback />;
+  if (user) return <Navigate to="/feed" replace />;
+  return <ShowcaseRoute />;
+}
+
 export function App() {
   return (
     <ErrorBoundary>
@@ -68,6 +78,9 @@ export function App() {
           />
           <Suspense fallback={<RouteFallback />}>
             <Routes>
+              <Route path="/" element={<RootDispatch />} />
+              <Route path="/showcase" element={<Navigate to="/" replace />} />
+
               <Route
                 path="/login"
                 element={
@@ -92,7 +105,6 @@ export function App() {
                   </ProtectedRoute>
                 }
               >
-                <Route index element={<Navigate to="/feed" replace />} />
                 <Route path="feed" element={<FeedFollowingRoute />} />
                 <Route path="global" element={<FeedGlobalRoute />} />
                 <Route path="tag/:slug" element={<FeedTagRoute />} />

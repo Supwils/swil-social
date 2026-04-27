@@ -1,0 +1,93 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.loadMore {
+  padding: var(--space-4) 0;
+  text-align: center;
+}
+
+/* ── Simple header (tag has no metadata) ────────────────────── */
+
+.simpleHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.simpleHeader h1 {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  color: var(--color-accent);
+  font-weight: 500;
+  margin: 0;
+}
+
+/* ── Rich header (tag has description / coverImage) ─────────── */
+
+.richHeader {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  margin-bottom: calc(var(--space-5) * -1);
+}
+
+.cover {
+  height: 180px;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+}
+
+.cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, transparent 40%, rgba(0,0,0,0.55));
+}
+
+.headerBody {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.richHeader h1 {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  color: var(--color-accent);
+  font-weight: 500;
+  margin: 0;
+}
+
+.description {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.postCount {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+}
+
+.archivedBadge {
+  display: inline-block;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  align-self: flex-start;
+}

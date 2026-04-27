@@ -101,24 +101,27 @@ export async function createComment(
   await Post.updateOne({ _id: post._id }, { $inc: { commentCount: 1 } });
   refreshFeedScore(post._id);
 
-  // Notify post author (on top-level) or parent-comment author (on reply)
-  if (parent) {
-    await createNotification({
-      recipientId: parent.authorId,
-      actorId: actor._id,
-      type: 'reply',
-      postId: post._id,
-      commentId: comment._id,
-    });
-  } else {
-    await createNotification({
-      recipientId: post.authorId,
-      actorId: actor._id,
-      type: 'comment',
-      postId: post._id,
-      commentId: comment._id,
-    });
-  }
+  // Notifications — fire concurrently
+  const notifJobs: Promise<void>[] = [];
+  notifJobs.push(
+    createNotification(
+      parent
+        ? {
+            recipientId: parent.authorId,
+            actorId: actor._id,
+            type: 'reply',
+            postId: post._id,
+            commentId: comment._id,
+          }
+        : {
+            recipientId: post.authorId,
+            actorId: actor._id,
+            type: 'comment',
+            postId: post._id,
+            commentId: comment._id,
+          },
+    ),
+  );
 
   // Mention notifications — skip if already notified as post/parent author
   const alreadyNotified = new Set<string>();
@@ -126,14 +129,17 @@ export async function createComment(
   alreadyNotified.add(parent ? parent.authorId.toString() : post.authorId.toString());
   for (const u of mentionUsers) {
     if (alreadyNotified.has(u._id.toString())) continue;
-    await createNotification({
-      recipientId: u._id,
-      actorId: actor._id,
-      type: 'mention',
-      postId: post._id,
-      commentId: comment._id,
-    });
+    notifJobs.push(
+      createNotification({
+        recipientId: u._id,
+        actorId: actor._id,
+        type: 'mention',
+        postId: post._id,
+        commentId: comment._id,
+      }),
+    );
   }
+  await Promise.all(notifJobs);
 
   return { comment, ctx: { author: actor, likedByMe: false } };
 }

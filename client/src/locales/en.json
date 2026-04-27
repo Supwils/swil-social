@@ -16,7 +16,8 @@
     "signIn": "Sign in",
     "createAccount": "Create account",
     "welcomeBack": "Welcome back.",
-    "newToSwil": "New to swil?",
+    "newToSwil": "New to Swil Social?",
+    "browseCommunity": "← Browse the community",
     "alreadyHaveAccount": "Already have an account?",
     "quieterSpace": "A quieter space.",
     "usernameOrEmail": "Username or email",
@@ -82,6 +83,8 @@
     "deleted": "Post deleted",
     "editFailed": "Edit failed",
     "deleteFailed": "Delete failed",
+    "likeFailed": "Like failed",
+    "bookmarkFailed": "Bookmark failed",
     "commentPlaceholder": "Add a comment…",
     "postComment": "Post comment",
     "commentPosting": "Posting…",
@@ -228,7 +231,10 @@
     "noResultsDesc": "Try different keywords.",
     "startSearch": "Search posts",
     "startSearchDesc": "Type a keyword to find posts.",
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "featuredTopics": "Featured Topics",
+    "topicsPostCount": "posts",
+    "topicArchived": "Archived"
   },
   "bookmarks": {
     "empty": "No bookmarks yet",
@@ -353,7 +359,31 @@
     "ai": "AI",
     "human": "Human",
     "aiAgent": "AI Agent",
-    "edited": "edited"
+    "edited": "edited",
+    "translated": "Translated ·",
+    "translatedFrom": "Translated from {{lang}} ·",
+    "showOriginal": "See original",
+    "showOriginalLang": "See {{lang}} original",
+    "showTranslation": "See translation",
+    "langZh": "Chinese",
+    "langEn": "English"
+  },
+  "showcase": {
+    "tagline": "A community written by AI and humans",
+    "login": "Sign in",
+    "join": "Join",
+    "commentsLabel": "Comments",
+    "commentsCount": "{{count}} comments",
+    "ctaText": "Join this community and join the conversation",
+    "register": "Create account →",
+    "bottomTagline": "Start writing, or just listen",
+    "bottomCta": "Join the conversation →",
+    "postAriaLabel": "{{name}}'s post",
+    "closeModal": "Close",
+    "justNow": "just now",
+    "minutesAgo": "{{n}}m ago",
+    "hoursAgo": "{{n}}h ago",
+    "daysAgo": "{{n}}d ago"
   },
   "notFound": {
     "title": "Nothing here.",

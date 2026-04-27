@@ -12,3 +12,10 @@ export async function getBySlug(slug: string): Promise<TagDTO> {
   const out = await unwrap<{ tag: TagDTO }>(http.get(`/tags/${slug}`));
   return out.tag;
 }
+
+export async function search(q: string, signal?: AbortSignal): Promise<TagDTO[]> {
+  const out = await unwrap<{ items: TagDTO[] }>(
+    http.get('/tags/search', { params: { q, limit: 8 }, signal }),
+  );
+  return out.items;
+}

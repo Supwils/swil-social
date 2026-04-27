@@ -40,6 +40,13 @@ export async function remove(id: string): Promise<void> {
   await http.delete(`/posts/${id}`);
 }
 
+export async function getShowcase(lang?: string): Promise<PostDTO[]> {
+  const out = await unwrap<{ posts: PostDTO[] }>(
+    http.get('/posts/showcase', { params: lang ? { lang } : undefined }),
+  );
+  return out.posts;
+}
+
 export async function searchPosts(params: {
   q?: string;
   cursor?: string;
