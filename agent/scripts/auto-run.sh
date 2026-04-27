@@ -207,9 +207,15 @@ run_agent() {
   mkdir -p "$ROOT_DIR/.agent-state"
 
   # Per-agent lock — heartbeat overlaps + manual triggers can race otherwise,
-  # leading to duplicate posts and memory.md corruption. Stale lock (>30 min)
-  # is reclaimed automatically.
-  if [[ -f "$lock_file" ]]; then
+  # leading to duplicate posts and memory.md corruption. Acquired via
+  # `set -o noclobber` redirect, which is atomic at the shell level: only one
+  # of N concurrent processes can create a missing file this way. Stale locks
+  # (>30 min) are reclaimed.
+  acquire_lock() {
+    ( set -o noclobber; echo "$$" > "$lock_file" ) 2>/dev/null
+  }
+
+  if ! acquire_lock; then
     local lock_age
     lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
     if (( lock_age < 1800 )); then
@@ -217,8 +223,12 @@ run_agent() {
       return
     fi
     _log "WARN $agent_name — stale lock (${lock_age}s) reclaiming"
+    rm -f "$lock_file"
+    if ! acquire_lock; then
+      _log "FAIL $agent_name — could not acquire lock after stale reclaim"
+      return
+    fi
   fi
-  echo "$$" > "$lock_file"
   # Single trap for the whole agent run — chained cleanups in one place.
   # Use a function so the order is obvious: logout first (best-effort), then
   # release the lock no matter what.
@@ -510,30 +520,48 @@ PROMPT
   responded_post_id="$(echo "$decision" | jq -r '.postId // ""' 2>/dev/null || echo '')"
   responded_comment_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
 
-  if [[ "$action" == "comment" || "$action" == "like" ]] && [[ -n "$responded_post_id" ]]; then
-    # Find notification IDs whose post.id or comment.id matches what we acted on
-    local notif_ids_json
-    notif_ids_json="$(bash "$SCRIPT_DIR/swil.sh" notifications 20 2>/dev/null | \
-      jq --arg pid "$responded_post_id" --arg cid "$responded_comment_id" -c '
-        [.data.items[]?
-          | select(
-              (.post.id == $pid) or
-              (($cid | length > 0) and (.comment.id == $cid))
-            )
-          | .id]
-      ' 2>/dev/null || echo '[]')"
-    if [[ "$notif_ids_json" != "[]" && -n "$notif_ids_json" ]]; then
-      bash "$SCRIPT_DIR/swil.sh" mark-notifications-read-ids "$notif_ids_json" >/dev/null 2>&1 || \
-        bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
-    fi
-  elif [[ "$action" == "post" ]]; then
-    # Posting is its own response to the world — no specific notification to clear.
-    :
-  else
-    # `nothing` or unknown action: clear the ambient notification log so we
-    # don't see the same items every wake-up forever.
-    bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
-  fi
+  # Type-filtered mark-read: only mark notifications the agent semantically
+  # *responded to*. Previous version matched any notification with the same
+  # post.id, which would silently mark a comment-on-post-X notification as
+  # read merely because the agent chose to like-some-other-thing involving
+  # post-X — losing context for next run. Now:
+  #   - comment with parentId (reply): match the specific comment.id
+  #   - comment top-level: match mention/comment notifications on this post
+  #     (i.e., things asking for a textual response)
+  #   - like / follow: do NOT mark — they aren't notification responses
+  #   - nothing: clear all so the same backlog doesn't loop forever
+  case "$action" in
+    comment)
+      if [[ -n "$responded_post_id" ]]; then
+        local notif_ids_json
+        notif_ids_json="$(bash "$SCRIPT_DIR/swil.sh" notifications 20 2>/dev/null | \
+          jq --arg pid "$responded_post_id" --arg cid "$responded_comment_id" -c '
+            [.data.items[]?
+              | select(
+                  (($cid | length > 0) and (.comment.id == $cid))
+                  or
+                  (($cid | length == 0) and (.post.id == $pid)
+                    and (.type == "mention" or .type == "comment" or .type == "reply"))
+                )
+              | .id]
+          ' 2>/dev/null || echo '[]')"
+        if [[ "$notif_ids_json" != "[]" && -n "$notif_ids_json" ]]; then
+          bash "$SCRIPT_DIR/swil.sh" mark-notifications-read-ids "$notif_ids_json" >/dev/null 2>&1 || true
+        fi
+      fi
+      ;;
+    nothing)
+      # Idle turn: clear ambient queue so the agent isn't stuck on the same
+      # 8 items forever. Mentions/replies that haven't been answered will
+      # re-arrive as new notifications when actors interact again.
+      bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
+      ;;
+    *)
+      # post / like / follow / unknown: leave notifications alone. They'll
+      # be addressed (or cleared via `nothing`) on a future run.
+      :
+      ;;
+  esac
 
   ) || _log "ERROR in agent $(basename "$1") — subshell exited non-zero"
 }

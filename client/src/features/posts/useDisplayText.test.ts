@@ -3,20 +3,37 @@ import { renderHook } from '@testing-library/react';
 import { useDisplayText } from './useDisplayText';
 
 describe('useDisplayText', () => {
-  it('returns the fallback for short posts (<5 non-empty lines)', () => {
-    const { result } = renderHook(() => useDisplayText('one\ntwo\nthree', 'fallback'));
+  it('returns the fallback for short posts (<10 non-empty lines)', () => {
+    // Tightened from <5 — short poetic posts (e.g. 4-5 line haiku) shouldn't
+    // be flattened by the agent-text normalizer.
+    const { result } = renderHook(() =>
+      useDisplayText('窗外的雨\n屏幕还亮着\n像一盏忘记熄的灯', 'fallback'),
+    );
     expect(result.current).toBe('fallback');
   });
 
-  it('joins entirely-fragmented posts (>65% of lines ≤6 chars)', () => {
-    const fragmented = '我\n是\n谁\n#\nAI\n#\nnow';
+  it('preserves a 5-line haiku — does NOT trigger case-1 join', () => {
+    // Direct regression guard against the bug where liushang-style short
+    // poems were being flattened into a single line.
+    const haiku = '窗外的雨\n不知何时停了\n屏幕还亮着\n像一盏\n忘记熄的灯';
+    const { result } = renderHook(() => useDisplayText(haiku, haiku));
+    expect(result.current).toBe(haiku);
+  });
+
+  it('joins entirely-fragmented posts (>80% of lines ≤6 chars, ≥10 lines)', () => {
+    const fragmented = ['我', '是', '谁', '在', '哪', '#', 'AI', '#', 'now', 'AGI'].join('\n');
     const { result } = renderHook(() => useDisplayText(fragmented, 'orig'));
-    expect(result.current).toBe('我是谁#AI#now');
+    expect(result.current).toBe('我是谁在哪#AI#nowAGI');
   });
 
   it('joins runs of ≥4 short lines but keeps long lines intact', () => {
+    // ≥10 non-empty lines so case-2 logic runs; mixed case
     const mixed = [
       'This is a normal paragraph.',
+      'Another normal one here.',
+      'And a third normal paragraph.',
+      'Fourth paragraph.',
+      'Fifth.',
       '',
       '#',
       'mTOR',
@@ -32,28 +49,40 @@ describe('useDisplayText', () => {
   });
 
   it('does NOT join runs shorter than 4 short lines', () => {
-    // Need ≥5 non-empty lines to enter the case-2 branch at all
-    const text = ['#', 'AI', 'normal long enough line', 'Another normal line', 'Closing line'].join('\n');
+    // Two leading short lines, then long ones — short run is only 2, stays separate.
+    const text = [
+      '#',
+      'AI',
+      'normal long enough line one',
+      'normal long enough line two',
+      'normal long enough line three',
+      'normal long enough line four',
+      'normal long enough line five',
+      'normal long enough line six',
+      'normal long enough line seven',
+      'normal long enough line eight',
+    ].join('\n');
     const { result } = renderHook(() => useDisplayText(text, 'orig'));
-    // First two short lines are <4 in a run, so they stay separate
     expect(result.current).toBe(text);
   });
 
-  it('case-1 dominates when most lines are short — joins everything regardless of long-line breakers', () => {
-    // 7 short + 1 long = 87.5% short — exceeds the 65% case-1 threshold,
-    // so the whole post collapses without honoring the long-line breaker.
-    const text = ['1', '2', '3', 'this line is longer than six chars', '4', '5', '6', '7'].join('\n');
+  it('case-1 dominates when most lines are short, even with a long-line breaker', () => {
+    // 11 short + 1 long = 91.7% short, exceeds the 80% case-1 threshold.
+    const text = [
+      '1', '2', '3', 'this line is longer than six chars', '4', '5', '6', '7', '8', '9', 'a', 'b',
+    ].join('\n');
     const { result } = renderHook(() => useDisplayText(text, 'orig'));
-    expect(result.current).toBe('123this line is longer than six chars4567');
+    expect(result.current).toBe('123this line is longer than six chars456789ab');
   });
 
   it('memoizes — same input produces same reference', () => {
+    const text = '我\n是\n谁\n在\n哪\n#\nAI\n#\nnow\nAGI';
     const { result, rerender } = renderHook(
-      ({ text, fb }: { text: string; fb: string }) => useDisplayText(text, fb),
-      { initialProps: { text: 'a\nb\nc\nd\ne', fb: 'orig' } },
+      ({ t, fb }: { t: string; fb: string }) => useDisplayText(t, fb),
+      { initialProps: { t: text, fb: 'orig' } },
     );
     const first = result.current;
-    rerender({ text: 'a\nb\nc\nd\ne', fb: 'orig' });
+    rerender({ t: text, fb: 'orig' });
     expect(result.current).toBe(first);
   });
 });

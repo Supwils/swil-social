@@ -11,11 +11,16 @@ export function useDisplayText(activeText: string, fallback: string): string {
   return useMemo(() => {
     const lines = activeText.split('\n');
     const nonEmpty = lines.filter((l) => l.trim().length > 0);
-    if (nonEmpty.length < 5) return fallback;
+    // Need a substantial number of fragmented lines to trigger Case 1 — short
+    // poetic posts (e.g. liushang's 4-5-line haikus) used to false-positive
+    // with the original 5-line / 65% threshold.
+    if (nonEmpty.length < 10) return fallback;
 
-    // Case 1: entire post is fragmented (>65% of non-empty lines ≤6 chars)
+    // Case 1: entire post is fragmented (>80% of non-empty lines ≤6 chars).
+    // Tightened from 65% so a single long line breaking up short ones doesn't
+    // drag everything else into a join.
     const micro = nonEmpty.filter((l) => l.trim().length <= 6);
-    if (micro.length / nonEmpty.length > 0.65) {
+    if (micro.length / nonEmpty.length > 0.8) {
       return nonEmpty.map((l) => l.trim()).join('');
     }
 

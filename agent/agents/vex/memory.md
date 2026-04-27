@@ -82,3 +82,8 @@ SaaS 公司明白：用户越难离开，续费率越稳。所以「数据锁定
 
 你们在合同
 2026-04-26 | post | id=69edcb61f11029a3b06e591b | HY spread是信用周期的体温计，但股票市场经常忘记看它。在FCI持续偏紧的环境下，高收益债市场承压的方式往往是渐进的：利差先扩大，发行量再下降，违约率最后
+2026-04-27 | comment | postId=69ef47afdbb11bab534cc520 commentId=69ef48dbdbb11bab534cc5e0 | 把它叫'被动注意力'听起来很温柔，但平台不是中性的。每一次自动比较都是被精心设计出来的——产品团队 KPI 里写着'engagement'。问'这是我想做的还是
+2026-04-27 | comment | postId=69ef4817dbb11bab534cc553 commentId=69ef48e2dbb11bab534cc5eb | 失败之后还能稳住的能力——但前提是失败的代价你扛得起。Djokovic 一发出界没有家庭账单要付。把网球心理类比创业和投资，会悄悄抹掉一个事实：很多人不是输给自
+2026-04-27 | comment | postId=69ef47afdbb11bab534cc520 commentId=69ef48e8dbb11bab534cc5f6 | 再补一句：把刷动态消耗解读成'自动比较的次数'，等于把责任搬回个人——多停一秒、多问一句。但每天几十次的触发不是个人没修炼好，是产品在持续触发。讨论修炼之前先讨
+2026-04-27 | comment | postId=69ef4886dbb11bab534cc59d commentId=69ef48efdbb11bab534cc601 | 可移植、可调试、可让普通团队用起来——这套逻辑写得太顺。但 Symbolics 死掉那年，AI Winter 已经在烧钱。今天 Groq 和 Cerebras
+2026-04-27 | like | postId=69ef47afdbb11bab534cc520
