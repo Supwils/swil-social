@@ -3,6 +3,18 @@
   border-bottom: 1px solid var(--color-border);
   display: flex;
   gap: var(--space-3);
+  animation: cardEnter 320ms var(--ease) both;
+}
+
+@keyframes cardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .card:first-child {
@@ -317,6 +329,7 @@
   color: var(--color-text-muted);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   font-variant-numeric: tabular-nums;
+  position: relative;
 }
 
 .actionBtn:hover {
@@ -324,33 +337,120 @@
   color: var(--color-text);
 }
 
+.actionBtn:hover svg {
+  transform: scale(1.08);
+}
+
+.actionBtn svg {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.actionBtn:active svg {
+  transform: scale(0.92);
+}
+
 .actionBtn:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-.likedBtn {
-  color: var(--color-danger);
-}
-
+/* ── Persistent active states (just color, no animation) ── */
+.likedBtn,
 .likedBtn:hover {
   color: var(--color-danger);
 }
 
-.activeBtn {
-  color: var(--color-accent);
-}
-
+.activeBtn,
 .activeBtn:hover {
   color: var(--color-accent);
 }
 
-.bookmarkedBtn {
+.bookmarkedBtn,
+.bookmarkedBtn:hover {
   color: var(--color-accent);
 }
 
-.bookmarkedBtn:hover {
-  color: var(--color-accent);
+/* ── Transient animation triggers (added via JS, removed after duration) ── */
+
+.justLiked svg {
+  animation: heartBurst 460ms var(--ease) both;
+}
+
+.justLiked::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  opacity: 0.45;
+  transform: translate(-50%, -50%) scale(0);
+  animation: heartPulse 560ms var(--ease) both;
+  pointer-events: none;
+}
+
+.justOpened svg {
+  animation: chatBounce 380ms var(--ease) both;
+}
+
+.justEchoed svg {
+  animation: echoSpin 540ms var(--ease) both;
+}
+
+.justBookmarked svg {
+  animation: bookmarkDrop 420ms var(--ease) both;
+}
+
+@keyframes heartBurst {
+  0%   { transform: scale(1); }
+  20%  { transform: scale(0.78); }
+  45%  { transform: scale(1.32) rotate(-6deg); }
+  70%  { transform: scale(0.96) rotate(2deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+
+@keyframes heartPulse {
+  0%   { transform: translate(-50%, -50%) scale(0);   opacity: 0.55; }
+  60%  { transform: translate(-50%, -50%) scale(3.4); opacity: 0;    }
+  100% { transform: translate(-50%, -50%) scale(3.6); opacity: 0;    }
+}
+
+@keyframes chatBounce {
+  0%   { transform: scale(1) translateY(0); }
+  35%  { transform: scale(1.18) translateY(-1px); }
+  60%  { transform: scale(0.94) translateY(0.5px); }
+  100% { transform: scale(1) translateY(0); }
+}
+
+@keyframes echoSpin {
+  0%   { transform: rotate(0) scale(1); }
+  50%  { transform: rotate(180deg) scale(1.18); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+@keyframes bookmarkDrop {
+  0%   { transform: translateY(-4px) scale(1); }
+  40%  { transform: translateY(2px) scale(1.1); }
+  70%  { transform: translateY(-1px) scale(0.96); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .justLiked svg,
+  .justLiked::before,
+  .justOpened svg,
+  .justEchoed svg,
+  .justBookmarked svg,
+  .actionBtn svg,
+  .actionBtn:hover svg,
+  .actionBtn:active svg {
+    animation: none !important;
+    transform: none !important;
+    transition: none !important;
+  }
 }
 
 /* ─── Compact (grid) card ─── */
@@ -559,6 +659,31 @@
 
 .flipBackViewPost:hover {
   background: var(--color-accent-soft);
+}
+
+/* Bottom return-to-post bar inside the flipped card.
+   Sticky to the bottom of the scroll container so it stays in view no matter
+   how long the comment thread is — mirrors the comment toggle's position on
+   the front face. The slight gradient/blur smooths the visual handoff between
+   scrolling content and the fixed bar. */
+.flipBackFooter {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  margin-left: calc(-1 * var(--space-3));
+  margin-right: calc(-1 * var(--space-3));
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  justify-content: flex-start;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-bg) 0%, transparent) 0%,
+    var(--color-bg) 35%
+  );
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

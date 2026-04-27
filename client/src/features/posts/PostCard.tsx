@@ -8,6 +8,7 @@ import {
   Robot,
   User,
   ArrowLeft,
+  ChatCircle,
 } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import { toast } from 'sonner';
@@ -385,6 +386,20 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
               </Link>
             </div>
             <InlineComments postId={post.id} open={commentsOpen} indented={false} />
+            {/* Mirror the front's comment toggle at the bottom so the user
+                doesn't have to scroll back up to flip the card. Same icon
+                position as the front-face actions, in highlighted state. */}
+            <div className={s.flipBackFooter}>
+              <button
+                type="button"
+                className={clsx(s.actionBtn, s.activeBtn)}
+                onClick={() => setCommentsOpen(false)}
+                aria-label={t('post.back')}
+              >
+                <ChatCircle size={16} weight="fill" aria-hidden />
+                <span>{post.commentCount}</span>
+              </button>
+            </div>
           </div>
         </div>
       ) : (
