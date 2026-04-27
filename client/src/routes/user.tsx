@@ -20,6 +20,7 @@ import {
   PostCardSkeleton,
   Skeleton,
 } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import s from './user.module.css';
 
 // Positions form a loose orbit around the avatar (top-center of header)
@@ -270,17 +271,11 @@ export default function UserRoute() {
 
           {postItems.map((post) => <PostCard key={post.id} post={post} />)}
 
-          {posts.hasNextPage && (
-            <div className={s.loadMore}>
-              <Button
-                variant="ghost"
-                onClick={() => posts.fetchNextPage()}
-                disabled={posts.isFetchingNextPage}
-              >
-                {posts.isFetchingNextPage ? '…' : t('profile.loadMore')}
-              </Button>
-            </div>
-          )}
+          <InfiniteScrollSentinel
+            hasNextPage={posts.hasNextPage}
+            isFetching={posts.isFetchingNextPage}
+            onLoadMore={() => posts.fetchNextPage()}
+          />
         </>
       )}
 

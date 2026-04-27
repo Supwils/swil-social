@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { MagnifyingGlass } from '@phosphor-icons/react';
 import * as postsApi from '@/api/posts.api';
 import { Skeleton, EmptyState } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { PostCard } from '@/features/posts/PostCard';
 import { useDebounce } from '@/lib/useDebounce';
 import { track } from '@/lib/analytics';
@@ -85,17 +86,11 @@ export function ExplorePostsTab() {
           </div>
         )}
 
-        {q.hasNextPage && (
-          <div className={s.loadMore}>
-            <button
-              className={s.loadMoreBtn}
-              onClick={() => q.fetchNextPage()}
-              disabled={q.isFetchingNextPage}
-            >
-              {q.isFetchingNextPage ? '…' : t('explore.loadMore')}
-            </button>
-          </div>
-        )}
+        <InfiniteScrollSentinel
+          hasNextPage={q.hasNextPage}
+          isFetching={q.isFetchingNextPage}
+          onLoadMore={() => q.fetchNextPage()}
+        />
       </div>
     </>
   );

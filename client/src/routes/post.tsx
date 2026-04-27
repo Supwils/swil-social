@@ -20,6 +20,7 @@ import {
   Skeleton,
   Textarea,
 } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { MarkdownBody } from '@/features/posts/MarkdownBody';
 import { formatRelative } from '@/lib/formatDate';
 import s from './post.module.css';
@@ -161,11 +162,11 @@ export default function PostRoute() {
         </article>
       ))}
 
-      {comments.hasNextPage && (
-        <Button variant="ghost" onClick={() => comments.fetchNextPage()}>
-          {t('post.loadMoreComments')}
-        </Button>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={comments.hasNextPage}
+        isFetching={comments.isFetchingNextPage}
+        onLoadMore={() => comments.fetchNextPage()}
+      />
     </div>
   );
 }

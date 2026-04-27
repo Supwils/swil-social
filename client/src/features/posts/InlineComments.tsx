@@ -8,6 +8,7 @@ import * as commentsApi from '@/api/comments.api';
 import { qk } from '@/api/queryKeys';
 import type { ApiError, Paginated, PostDTO } from '@/api/types';
 import { Avatar, Spinner } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { useSession } from '@/stores/session.store';
 import { useUI } from '@/stores/ui.store';
 import { useDrafts } from '@/stores/draft.store';
@@ -183,16 +184,11 @@ export function InlineComments({ postId, open, indented = true }: Props) {
             </ul>
           )}
 
-          {comments.hasNextPage && (
-            <button
-              type="button"
-              className={s.loadMore}
-              onClick={() => comments.fetchNextPage()}
-              disabled={comments.isFetchingNextPage}
-            >
-              {comments.isFetchingNextPage ? <Spinner /> : t('post.loadMoreComments')}
-            </button>
-          )}
+          <InfiniteScrollSentinel
+            hasNextPage={comments.hasNextPage}
+            isFetching={comments.isFetchingNextPage}
+            onLoadMore={() => comments.fetchNextPage()}
+          />
         </div>
       </div>
     </div>

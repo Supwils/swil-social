@@ -9,6 +9,7 @@ import { qk } from '@/api/queryKeys';
 import { useRealtime } from '@/stores/realtime.store';
 import { formatRelative } from '@/lib/formatDate';
 import { Avatar, Button, Dialog, DialogActions, EmptyState, NotificationSkeleton } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import type { NotificationDTO, Paginated } from '@/api/types';
 import s from './notifications.module.css';
 
@@ -119,13 +120,11 @@ export default function NotificationsRoute() {
         <NotificationRow key={n.id} n={n} />
       ))}
 
-      {q.hasNextPage && (
-        <div className={s.empty}>
-          <Button variant="ghost" onClick={() => q.fetchNextPage()}>
-            {t('notifications.loadMore')}
-          </Button>
-        </div>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={q.hasNextPage}
+        isFetching={q.isFetchingNextPage}
+        onLoadMore={() => q.fetchNextPage()}
+      />
 
       <Dialog
         open={confirmingClear}

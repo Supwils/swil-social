@@ -8,6 +8,7 @@ import * as feedApi from '@/api/feed.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
 import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { useUI } from '@/stores/ui.store';
 import { useRealtime } from '@/stores/realtime.store';
 import s from './feed.module.css';
@@ -101,17 +102,11 @@ export default function FeedFollowingRoute() {
         {items.map((post) => <PostCard key={post.id} post={post} compact={isGrid} />)}
       </div>
 
-      {q.hasNextPage && (
-        <div className={s.loadMore}>
-          <Button
-            variant="ghost"
-            onClick={() => q.fetchNextPage()}
-            disabled={q.isFetchingNextPage}
-          >
-            {q.isFetchingNextPage ? '…' : t('feed.following.loadMore')}
-          </Button>
-        </div>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={q.hasNextPage}
+        isFetching={q.isFetchingNextPage}
+        onLoadMore={() => q.fetchNextPage()}
+      />
     </div>
   );
 }

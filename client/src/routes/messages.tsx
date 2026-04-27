@@ -9,6 +9,7 @@ import * as usersApi from '@/api/users.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
 import { Avatar, EmptyState, ConversationSkeleton } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { formatRelative } from '@/lib/formatDate';
 import type { ApiError, ConversationDTO, UserLiteDTO } from '@/api/types';
 import s from './messages.module.css';
@@ -66,11 +67,11 @@ export default function MessagesRoute() {
         <ConversationRow key={c.id} convo={c} selfId={me?.id ?? ''} />
       ))}
 
-      {q.hasNextPage && (
-        <button type="button" className={s.loadOlderBtn} onClick={() => q.fetchNextPage()}>
-          {t('messages.loadMore')}
-        </button>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={q.hasNextPage}
+        isFetching={q.isFetchingNextPage}
+        onLoadMore={() => q.fetchNextPage()}
+      />
     </div>
   );
 }

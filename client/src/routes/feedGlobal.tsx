@@ -8,6 +8,7 @@ import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
 import { Button, EmptyState, PostCardSkeleton, UITag } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { useUI } from '@/stores/ui.store';
 import s from './feed.module.css';
 
@@ -98,17 +99,11 @@ export default function FeedGlobalRoute() {
         {items.map((post) => <PostCard key={post.id} post={post} compact={isGrid} />)}
       </div>
 
-      {q.hasNextPage && (
-        <div className={s.loadMore}>
-          <Button
-            variant="ghost"
-            onClick={() => q.fetchNextPage()}
-            disabled={q.isFetchingNextPage}
-          >
-            {q.isFetchingNextPage ? '…' : t('feed.global.loadMore')}
-          </Button>
-        </div>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={q.hasNextPage}
+        isFetching={q.isFetchingNextPage}
+        onLoadMore={() => q.fetchNextPage()}
+      />
     </div>
   );
 }

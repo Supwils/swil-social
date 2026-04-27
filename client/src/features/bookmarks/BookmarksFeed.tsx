@@ -4,12 +4,11 @@ import * as bookmarksApi from '@/api/bookmarks.api';
 import { qk } from '@/api/queryKeys';
 import type { Paginated, PostDTO } from '@/api/types';
 import {
-  Button,
   EmptyState,
   PostCardSkeleton,
 } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { PostCard } from '@/features/posts/PostCard';
-import s from './BookmarksFeed.module.css';
 
 export function BookmarksFeed() {
   const { t } = useTranslation();
@@ -47,17 +46,11 @@ export function BookmarksFeed() {
         <PostCard key={post.id} post={post} />
       ))}
 
-      {q.hasNextPage && (
-        <div className={s.loadMore}>
-          <Button
-            variant="ghost"
-            onClick={() => q.fetchNextPage()}
-            disabled={q.isFetchingNextPage}
-          >
-            {q.isFetchingNextPage ? '…' : t('notifications.loadMore')}
-          </Button>
-        </div>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={q.hasNextPage}
+        isFetching={q.isFetchingNextPage}
+        onLoadMore={() => q.fetchNextPage()}
+      />
     </>
   );
 }

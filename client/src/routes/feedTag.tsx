@@ -5,7 +5,8 @@ import * as feedApi from '@/api/feed.api';
 import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
-import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
+import { EmptyState, PostCardSkeleton } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { useUI } from '@/stores/ui.store';
 import s from './feedTag.module.css';
 
@@ -79,17 +80,11 @@ export default function FeedTagRoute() {
 
       {items.map((post) => <PostCard key={post.id} post={post} />)}
 
-      {feedQ.hasNextPage && (
-        <div className={s.loadMore}>
-          <Button
-            variant="ghost"
-            onClick={() => feedQ.fetchNextPage()}
-            disabled={feedQ.isFetchingNextPage}
-          >
-            {feedQ.isFetchingNextPage ? 'Loading…' : 'Load more'}
-          </Button>
-        </div>
-      )}
+      <InfiniteScrollSentinel
+        hasNextPage={feedQ.hasNextPage}
+        isFetching={feedQ.isFetchingNextPage}
+        onLoadMore={() => feedQ.fetchNextPage()}
+      />
     </div>
   );
 }

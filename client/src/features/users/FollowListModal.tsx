@@ -6,6 +6,7 @@ import { MagnifyingGlass } from '@phosphor-icons/react';
 import * as followsApi from '@/api/follows.api';
 import { qk } from '@/api/queryKeys';
 import { Avatar, Skeleton, Dialog } from '@/components/primitives';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import s from './FollowListModal.module.css';
 
 interface Props {
@@ -129,15 +130,12 @@ export function FollowListModal({ username, type, open, onClose }: Props) {
           </Link>
         ))}
 
-        {q.hasNextPage && !isSearchMode && (
-          <button
-            type="button"
-            className={s.loadMore}
-            onClick={() => q.fetchNextPage()}
-            disabled={q.isFetchingNextPage}
-          >
-            {q.isFetchingNextPage ? '…' : t('profile.loadMore')}
-          </button>
+        {!isSearchMode && (
+          <InfiniteScrollSentinel
+            hasNextPage={q.hasNextPage}
+            isFetching={q.isFetchingNextPage}
+            onLoadMore={() => q.fetchNextPage()}
+          />
         )}
       </div>
     </Dialog>
