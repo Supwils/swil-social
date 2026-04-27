@@ -1,7 +1,7 @@
 ---
 title: Contributing
 status: stable
-last-updated: 2026-04-21
+last-updated: 2026-04-27
 owner: round-1
 ---
 
@@ -51,10 +51,38 @@ Every PR includes:
 - **Why** — link to the relevant phase in `10-roadmap.md`.
 - **How** — bullet list of notable decisions.
 - **Checklist**:
-  - [ ] `npm run typecheck`
-  - [ ] `npm run test`
+  - [ ] `npm run ci:check` (typecheck + lint + tests + build, both packages)
   - [ ] `/docs` updated if behavior/contracts changed
   - [ ] `handoff.md` updated
+
+### Local pre-commit / pre-push
+
+**Before every commit and push, run:**
+
+```bash
+npm run ci:check
+```
+
+This runs the same 8-step pipeline as GitHub Actions:
+
+1. Typecheck server
+2. Typecheck client
+3. Lint server (eslint)
+4. Lint client (eslint)
+5. Test server (vitest, with coverage thresholds)
+6. Test client (vitest, with coverage thresholds)
+7. Build server
+8. Build client
+
+Hooks at `scripts/git-hooks/{pre-commit,pre-push,commit-msg}` run subsets
+automatically — install via `npm run install-hooks` once after cloning.
+Even with hooks installed, run `npm run ci:check` manually for any
+non-trivial change before pushing — the hooks omit the build step on
+commit (for speed) and only the full pipeline catches build-time errors
+like `manualChunks` referencing a removed package.
+
+Bypass any single hook with `--no-verify`, but never push to `main`
+without a green `ci:check` locally first.
 
 ### Code style
 
@@ -67,8 +95,12 @@ Every PR includes:
 ### Tests
 
 - Backend: Vitest + supertest. One describe per module, one case per service method + HTTP happy path + one auth/validation failure.
-- Frontend: Vitest + React Testing Library. Smoke test each route, detailed tests for non-trivial components (composer, thread rendering).
-- Target: tests pass in CI, not 100% coverage. Coverage tracked but not gated.
+- Frontend: Vitest + React Testing Library + jsdom. Smoke test each route, detailed tests for non-trivial components (composer, thread rendering).
+- Coverage **is gated** — see `server/vitest.config.ts` and `client/vite.config.ts`:
+  - Server floor: 50% lines / 55% branches / 50% functions
+  - Client floor: 4% lines / 1% branches / 2% functions (will ratchet up monthly)
+  - Run `npm run test:coverage` to see the breakdown
+- Don't lower a threshold to make CI pass — write a test or add a note in the commit explaining why.
 
 ### Documentation
 
