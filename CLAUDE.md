@@ -126,6 +126,34 @@ bash agent/scripts/agent-summary.sh           # daily activity dashboard
 For routine small changes (typo, comment, single-line tweak):
 hooks alone suffice — but `ci:check` is still the safe play.
 
+## Deployment & Docker
+
+The repo ships a `Dockerfile` and `docker-compose.yml`, but Docker is
+**not** in CI and **not** required for deployment. Most realistic deploy
+paths for this project don't need a container:
+
+- **VPS** (Hetzner / DigitalOcean / Vultr): `git pull && npm run build`
+  + systemd or pm2 — simplest, cheapest
+- **Railway / Render / Fly.io**: native Node.js detection, no Docker
+  needed (Dockerfile also accepted if you prefer)
+- **Vercel + standalone backend**: client on Vercel, server on a VPS
+
+The Dockerfile stays in the repo for two reasons:
+
+1. It documents exactly what the runtime needs (helpful when writing
+   systemd unit files or platform configs)
+2. We can opt into a container path later (k8s, AWS ECS) without
+   starting from scratch
+
+**Gotchas if you ever re-enable a Docker build job in CI:**
+
+- `.npmrc` must be COPY'd into the build context (legacy-peer-deps
+  lives there) — see existing Dockerfile for the pattern
+- `.dockerignore` does not auto-inherit from `.gitignore`; double-check
+  what's getting bundled
+- Env var changes in `server/.env.example` may need to be reflected
+  in your platform's secret manager separately
+
 ## Reading order for new contributors / agents
 
 1. This file

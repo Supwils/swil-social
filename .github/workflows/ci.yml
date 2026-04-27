@@ -66,21 +66,18 @@ jobs:
           # Keep build env minimal — no secrets needed at build time.
           VITE_API_BASE: /api/v1
 
-  docker:
-    name: Docker build
-    runs-on: ubuntu-latest
-    needs: typecheck
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: swil-social:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+# Note: a Docker build job used to run here. Removed 2026-04-27 because
+# (a) we don't currently deploy via container, (b) it added ~2-3 min to
+# every CI run, and (c) every infra tweak (.npmrc, env vars, etc.) had
+# to be replicated into the Dockerfile. The Dockerfile is still in the
+# repo for when we do go down a container deploy path; just re-add a job
+# similar to:
+#
+#   docker:
+#     runs-on: ubuntu-latest
+#     needs: typecheck
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: docker/setup-buildx-action@v3
+#       - uses: docker/build-push-action@v5
+#         with: { context: ., push: false, tags: swil-social:ci }
