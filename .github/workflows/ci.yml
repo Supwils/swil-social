@@ -45,6 +45,18 @@ jobs:
       - name: Typecheck (client)
         run: npm --prefix client run typecheck
 
+      - name: Lint (server)
+        run: npm --prefix server run lint
+
+      - name: Lint (client)
+        run: npm --prefix client run lint
+
+      - name: Test (server)
+        run: npm --prefix server run test -- --reporter=dot
+
+      - name: Test (client)
+        run: npm --prefix client run test:run -- --reporter=dot
+
       - name: Build server
         run: npm --prefix server run build
 

@@ -222,7 +222,7 @@ export async function getExploreSummary(viewer: UserDocument): Promise<ExploreSu
 
   // Build featuredTopics with pinned posts
   const allPinnedIds = featuredTagDocs.flatMap((t) => t.pinnedPostIds ?? []);
-  let pinnedPostMap = new Map<string, PostDTO>();
+  const pinnedPostMap = new Map<string, PostDTO>();
   if (allPinnedIds.length > 0) {
     const pinnedDocs = (await Post.find({
       _id: { $in: allPinnedIds },

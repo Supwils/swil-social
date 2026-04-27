@@ -98,7 +98,7 @@ describe('createApp', () => {
 
     const app = createApp();
     const stack = (app as unknown as {
-      _router: { stack: Array<{ route?: { path: string; stack: Array<{ handle: Function }> } }> };
+      _router: { stack: Array<{ route?: { path: string; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> };
     })._router.stack;
     const healthIndex = stack.findIndex((layer) => layer.route?.path === '/health');
     const healthLayer = stack[healthIndex];

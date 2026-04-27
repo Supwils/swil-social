@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# pre-push hook — mirrors CI before pushing to remote.
+# Runs typecheck → tests → build. To bypass once: git push --no-verify
+
+set -euo pipefail
+
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${YELLOW}[pre-push] Running CI checks before push...${NC}"
+
+echo -e "${YELLOW}[pre-push] 1/8 Typecheck server...${NC}"
+npm --prefix server run typecheck
+
+echo -e "${YELLOW}[pre-push] 2/8 Typecheck client...${NC}"
+npm --prefix client run typecheck
+
+echo -e "${YELLOW}[pre-push] 3/8 Lint server...${NC}"
+npm --prefix server run lint
+
+echo -e "${YELLOW}[pre-push] 4/8 Lint client...${NC}"
+npm --prefix client run lint
+
+echo -e "${YELLOW}[pre-push] 5/8 Test server...${NC}"
+npm --prefix server run test -- --reporter=dot
+
+echo -e "${YELLOW}[pre-push] 6/8 Test client...${NC}"
+npm --prefix client run test:run -- --reporter=dot
+
+echo -e "${YELLOW}[pre-push] 7/8 Build server...${NC}"
+npm --prefix server run build
+
+echo -e "${YELLOW}[pre-push] 8/8 Build client...${NC}"
+VITE_API_BASE=/api/v1 npm --prefix client run build
+
+echo -e "${GREEN}[pre-push] All checks passed. Proceeding with push.${NC}"

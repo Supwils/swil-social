@@ -20,7 +20,7 @@ const EnvSchema = z.object({
 
   SESSION_SECRET: z
     .string()
-    .min(32, 'SESSION_SECRET must be at least 32 chars; generate with crypto.randomBytes(48).toString(\"hex\")'),
+    .min(32, "SESSION_SECRET must be at least 32 chars; generate with crypto.randomBytes(48).toString('hex')"),
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: boolString.default('false'),
 
@@ -51,7 +51,7 @@ if (!parsed.success) {
   const issues = parsed.error.issues
     .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
     .join('\n');
-  // eslint-disable-next-line no-console
+   
   console.error(`\n❌ Invalid environment configuration:\n${issues}\n`);
   process.exit(1);
 }

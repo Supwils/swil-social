@@ -9,10 +9,16 @@
     "dev:client": "npm --prefix client run dev",
     "install:all": "npm --prefix server install && npm --prefix client install",
     "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
+    "lint": "npm --prefix server run lint && npm --prefix client run lint",
+    "lint:fix": "npm --prefix server run lint:fix && npm --prefix client run lint:fix",
+    "format": "npm --prefix server run format && npm --prefix client run format",
+    "format:check": "npm --prefix server run format:check && npm --prefix client run format:check",
+    "test": "npm --prefix server run test && npm --prefix client run test:run",
     "build": "npm --prefix server run build && npm --prefix client run build",
     "seed": "npm --prefix server run seed",
     "seed:reset": "npm --prefix server run seed:reset",
-    "ci:check": "bash scripts/ci-check.sh"
+    "ci:check": "bash scripts/ci-check.sh",
+    "install-hooks": "bash scripts/install-hooks.sh"
   },
   "devDependencies": {
     "concurrently": "^9.0.1"

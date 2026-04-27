@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+coverage
+*.lock
+package-lock.json
+agent/context
+agent/logs
+agent/.agent-state
+.git
