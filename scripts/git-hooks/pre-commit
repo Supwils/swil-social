@@ -12,6 +12,14 @@ NC='\033[0m'
 
 echo -e "${YELLOW}[pre-commit] Running fast checks before commit...${NC}"
 
+# Secret scan — only runs if gitleaks is installed locally (brew install gitleaks).
+# CI also runs it as a hard gate via .github/workflows/gitleaks.yml, so this
+# local step is best-effort: catches earlier, but missing it is fine.
+if command -v gitleaks >/dev/null 2>&1; then
+  echo -e "${YELLOW}[pre-commit] 0/6 Secret scan (staged)...${NC}"
+  gitleaks git --staged --redact --no-banner -c .gitleaks.toml
+fi
+
 echo -e "${YELLOW}[pre-commit] 1/6 Typecheck server...${NC}"
 npm --prefix server run typecheck
 

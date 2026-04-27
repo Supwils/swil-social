@@ -11,6 +11,20 @@ NC='\033[0m'
 
 echo -e "${YELLOW}[pre-push] Running CI checks before push...${NC}"
 
+# Secret scan on the new commits being pushed (not full history).
+# Best-effort: skipped silently if gitleaks isn't installed locally (CI catches it).
+if command -v gitleaks >/dev/null 2>&1; then
+  echo -e "${YELLOW}[pre-push] 0/8 Secret scan (new commits)...${NC}"
+  # Scan all commits since origin/main. If origin/main isn't reachable
+  # (e.g. first push of a new branch), fall back to scanning the working tree.
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    gitleaks git --no-banner --redact -c .gitleaks.toml \
+      --log-opts="origin/main..HEAD"
+  else
+    gitleaks dir --no-banner --redact -c .gitleaks.toml .
+  fi
+fi
+
 echo -e "${YELLOW}[pre-push] 1/8 Typecheck server...${NC}"
 npm --prefix server run typecheck
 
