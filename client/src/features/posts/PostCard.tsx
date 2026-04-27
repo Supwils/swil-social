@@ -396,7 +396,7 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
                 onClick={() => setCommentsOpen(false)}
                 aria-label={t('post.back')}
               >
-                <ChatCircle size={16} weight="fill" aria-hidden />
+                <ChatCircle size={13} weight="fill" aria-hidden />
                 <span>{post.commentCount}</span>
               </button>
             </div>
