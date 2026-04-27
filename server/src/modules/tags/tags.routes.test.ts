@@ -145,6 +145,7 @@ describe('tags routes', () => {
     expect(error).toBeUndefined();
     expect(mocks.find).toHaveBeenCalledWith({
       lastUsedAt: { $gte: expect.any(Date) },
+      isAlias: { $ne: true },
     });
     expect(sort).toHaveBeenCalledWith({ postCount: -1 });
     expect(limit).toHaveBeenCalledWith(5);

@@ -26,6 +26,22 @@ export default defineConfig({
   build: {
     sourcemap: true,
     target: 'es2022',
+    // Split heavy 3rd-party packages out of the main bundle so the initial
+    // load doesn't ship every icon, the markdown stack, and socket.io upfront.
+    // Route code is already lazy-loaded via React.lazy in App.tsx.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'query-vendor': ['@tanstack/react-query', '@tanstack/react-query-devtools'],
+          'i18n-vendor': ['i18next', 'react-i18next'],
+          'markdown-vendor': ['marked', 'dompurify'],
+          'realtime-vendor': ['socket.io-client'],
+          'icons-vendor': ['@phosphor-icons/react'],
+          'ui-vendor': ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', 'cmdk', 'sonner'],
+        },
+      },
+    },
   },
   test: {
     environment: 'jsdom',
