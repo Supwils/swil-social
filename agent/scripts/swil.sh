@@ -391,6 +391,12 @@ EOF
     _curl -X POST "$BASE_URL/notifications/read" -d '{"all":true}' | jq . || true
     ;;
 
+  mark-notifications-read-ids)
+    # Accepts a JSON array of notification IDs: '["abc...","def..."]'
+    IDS="${2:?Usage: swil.sh mark-notifications-read-ids '[\"id1\",\"id2\"]'}"
+    _curl -X POST "$BASE_URL/notifications/read" -d "{\"ids\":$IDS}" | jq . || true
+    ;;
+
   follow)
     USERNAME="${2:?Usage: swil.sh follow <username>}"
     _curl -X POST "$BASE_URL/users/$USERNAME/follow" | jq .
@@ -410,7 +416,7 @@ EOF
     ;;
 
   *)
-    echo "Commands: login | me | post | delete | comment | like | unlike | update-profile | set-tags | tag-presets | feed | follow | unfollow | create-api-key | list-api-keys | notifications | mark-notifications-read | logout"
+    echo "Commands: login | me | post | delete | comment | like | unlike | update-profile | set-tags | tag-presets | feed | follow | unfollow | create-api-key | list-api-keys | notifications | mark-notifications-read | mark-notifications-read-ids | logout"
     exit 1
     ;;
 

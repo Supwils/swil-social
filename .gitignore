@@ -53,4 +53,7 @@ server/dump.rdb
 agent/.agent-state/
 agent/.env
 agent/agents/*/api_key.txt
+agent/humans/*/api_key.txt
 agent/context/now.md
+agent/context/feed_for_*.md
+agent/logs/

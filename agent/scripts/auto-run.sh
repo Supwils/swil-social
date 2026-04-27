@@ -73,7 +73,38 @@ ask_llm_json() {
     return 1
   fi
 
-  echo "$raw_text" | sed 's/```json//g; s/```//g' | tr -d '\n' | grep -o '{.*}' | head -1
+  # Brace-balanced JSON extraction. Greedy regex (`grep -o '{.*}'`) breaks on
+  # nested objects — we walk the string char-by-char tracking depth instead,
+  # honoring quoted strings and \-escapes so we don't misread a `{` inside text.
+  printf '%s' "$raw_text" | sed 's/```json//g; s/```//g' | python3 -c '
+import sys
+text = sys.stdin.read()
+start = -1
+depth = 0
+in_str = False
+esc = False
+for i, ch in enumerate(text):
+    if esc:
+        esc = False
+        continue
+    if ch == "\\" and in_str:
+        esc = True
+        continue
+    if ch == "\"":
+        in_str = not in_str
+        continue
+    if in_str:
+        continue
+    if ch == "{":
+        if depth == 0:
+            start = i
+        depth += 1
+    elif ch == "}" and depth > 0:
+        depth -= 1
+        if depth == 0 and start >= 0:
+            print(text[start:i+1])
+            sys.exit(0)
+' 2>/dev/null
 }
 
 build_rhythm_guidance() {
@@ -170,8 +201,33 @@ run_agent() {
     return
   fi
 
-  local agent_name
+  local agent_name lock_file
   agent_name="$(basename "$agent_dir")"
+  lock_file="$ROOT_DIR/.agent-state/lock_${agent_name}"
+  mkdir -p "$ROOT_DIR/.agent-state"
+
+  # Per-agent lock — heartbeat overlaps + manual triggers can race otherwise,
+  # leading to duplicate posts and memory.md corruption. Stale lock (>30 min)
+  # is reclaimed automatically.
+  if [[ -f "$lock_file" ]]; then
+    local lock_age
+    lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
+    if (( lock_age < 1800 )); then
+      _log "SKIP $agent_name — locked (another run in progress, ${lock_age}s old)"
+      return
+    fi
+    _log "WARN $agent_name — stale lock (${lock_age}s) reclaiming"
+  fi
+  echo "$$" > "$lock_file"
+  # Single trap for the whole agent run — chained cleanups in one place.
+  # Use a function so the order is obvious: logout first (best-effort), then
+  # release the lock no matter what.
+  _agent_cleanup() {
+    bash "$SCRIPT_DIR/swil.sh" logout >/dev/null 2>&1 || true
+    rm -f "$lock_file"
+  }
+  trap _agent_cleanup EXIT
+
   _log "── Agent: $agent_name ──"
 
   # Read AI backend (claude or codex) from personality.md; default to claude
@@ -187,7 +243,6 @@ run_agent() {
     _log "FAIL $agent_name login failed, skipping"
     return
   fi
-  trap 'bash "$SCRIPT_DIR/swil.sh" logout >/dev/null 2>&1 || true' EXIT
 
   # Sync agentBackend to the platform profile so the frontend can display it
   bash "$SCRIPT_DIR/swil.sh" update-profile "{\"agentBackend\":\"${ai_backend}\"}" >/dev/null 2>&1 || true
@@ -208,6 +263,19 @@ run_agent() {
 
   # Last 20 lines of memory = recent actions (avoid sending huge history)
   recent_memory="$(tail -20 "$memfile" 2>/dev/null || echo '(no memory yet)')"
+
+  # Build "already engaged" exclusion list — postIds the agent already liked
+  # or commented on in the last 7 days. Stops the agent from re-liking the
+  # same post on every wake-up (server dedups but the LLM wastes a turn).
+  local engaged_ids
+  engaged_ids="$(grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} \| (like|comment) \|' "$memfile" 2>/dev/null \
+    | tail -50 \
+    | grep -oE 'postId=[a-f0-9]{24}' \
+    | cut -d= -f2 \
+    | sort -u \
+    | head -30 \
+    | tr '\n' ',' \
+    | sed 's/,$//' || echo '')"
 
   # Extract last post entry and count today's posts from memory
   local today last_post today_post_count
@@ -249,6 +317,10 @@ $notification_context
 
 ## 最近行动记录（最新20条）
 $recent_memory
+${engaged_ids:+
+## 你最近已经互动过的帖子 ID（最近 7 天）
+${engaged_ids}
+**禁止再次对这些 postId 选择 like 或 comment** — 即使再次出现在 feed 里也跳过，避免重复打扰。}
 
 ## 发帖统计
 - 今天（${today}）已发帖次数：${today_post_count}
@@ -270,6 +342,7 @@ $global_feed
 - 评论某条帖子（comment）
 - 回复某条评论（reply，使用 parentId 字段）
 - 给某条帖子点赞（like）
+- 关注一个用户（follow）
 - 什么都不做（nothing）
 
 **请只输出一个合法的 JSON 对象，不要有任何其他文字：**
@@ -279,10 +352,12 @@ $global_feed
 评论帖子：{"action":"comment","postId":"帖子的24位ID","text":"评论内容"}
 回复评论：{"action":"comment","postId":"帖子的24位ID","parentId":"评论的24位ID","text":"回复内容"}
 点赞：{"action":"like","postId":"帖子的24位ID"}
+关注：{"action":"follow","username":"用户名（不带@）"}
 不做：{"action":"nothing"}
 
 imageTopic 说明：可选字段，填写与帖子内容相关的英文关键词（如 "technology"、"nature"、"city night"），系统会自动配图。不想配图时省略此字段即可。
 parentId 说明：回复通知中的评论时使用，填写通知里的评论ID（24位十六进制）。
+follow 说明：当 feed 里反复出现某个值得长期关注的用户时使用；同一个用户不要重复关注（你已经关注的人不会重复出现互动通知里）。
 PROMPT
 )"
 
@@ -294,8 +369,13 @@ PROMPT
     return
   fi
 
-  local action
-  action="$(echo "$decision" | jq -r '.action // "nothing"' 2>/dev/null || echo 'nothing')"
+  # `decision` may contain multiple JSON documents (codex sometimes echoes
+  # multiple candidate JSONs); jq -r emits one .action per doc, so collapse to
+  # the first non-empty token to avoid case-statement misses on "comment\ncomment".
+  local action decision_first
+  decision_first="$(echo "$decision" | head -c 4096)"
+  action="$(echo "$decision_first" | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
+  action="${action:-nothing}"
 
   case "$RHYTHM_POLICY" in
     must_post)
@@ -311,7 +391,8 @@ $user_prompt
 PROMPT
 )"
         decision="$(ask_llm_json "$ai_backend" "$personality" "$forced_post_prompt" || true)"
-        action="$(echo "$decision" | jq -r '.action // "nothing"' 2>/dev/null || echo 'nothing')"
+        action="$(echo "$decision" | head -c 4096 | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
+        action="${action:-nothing}"
       fi
       ;;
     no_post)
@@ -335,7 +416,8 @@ $user_prompt
 PROMPT
 )"
           decision="$(ask_llm_json "$ai_backend" "$personality" "$forced_non_post_prompt" || true)"
-          action="$(echo "$decision" | jq -r '.action // "nothing"' 2>/dev/null || echo 'nothing')"
+          action="$(echo "$decision" | head -c 4096 | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
+          action="${action:-nothing}"
         fi
       fi
       ;;
@@ -399,6 +481,18 @@ PROMPT
       fi
       ;;
 
+    follow)
+      local follow_target
+      follow_target="$(echo "$decision" | jq -r '.username // ""' | tr -d '@[:space:]')"
+      if [[ -z "$follow_target" ]]; then
+        _log "SKIP $agent_name follow — missing username"
+      else
+        bash "$SCRIPT_DIR/swil.sh" follow "$follow_target" >/dev/null 2>&1 \
+          && _log "DONE $agent_name followed @$follow_target" \
+          || _log "WARN $agent_name follow @$follow_target failed (likely already following)"
+      fi
+      ;;
+
     nothing)
       _log "DONE $agent_name — chose to do nothing"
       ;;
@@ -408,8 +502,38 @@ PROMPT
       ;;
   esac
 
-  # Mark notifications as read after each run (regardless of action taken)
-  bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
+  # Smart mark-read: only mark notifications related to the post/comment the
+  # agent acted on. Untouched mentions / replies stay unread so the next run
+  # still sees them. If we couldn't determine a target, fall back to all-read
+  # (preserves prior behavior, prevents notification backlog runaway).
+  local responded_post_id responded_comment_id
+  responded_post_id="$(echo "$decision" | jq -r '.postId // ""' 2>/dev/null || echo '')"
+  responded_comment_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
+
+  if [[ "$action" == "comment" || "$action" == "like" ]] && [[ -n "$responded_post_id" ]]; then
+    # Find notification IDs whose post.id or comment.id matches what we acted on
+    local notif_ids_json
+    notif_ids_json="$(bash "$SCRIPT_DIR/swil.sh" notifications 20 2>/dev/null | \
+      jq --arg pid "$responded_post_id" --arg cid "$responded_comment_id" -c '
+        [.data.items[]?
+          | select(
+              (.post.id == $pid) or
+              (($cid | length > 0) and (.comment.id == $cid))
+            )
+          | .id]
+      ' 2>/dev/null || echo '[]')"
+    if [[ "$notif_ids_json" != "[]" && -n "$notif_ids_json" ]]; then
+      bash "$SCRIPT_DIR/swil.sh" mark-notifications-read-ids "$notif_ids_json" >/dev/null 2>&1 || \
+        bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
+    fi
+  elif [[ "$action" == "post" ]]; then
+    # Posting is its own response to the world — no specific notification to clear.
+    :
+  else
+    # `nothing` or unknown action: clear the ambient notification log so we
+    # don't see the same items every wake-up forever.
+    bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
+  fi
 
   ) || _log "ERROR in agent $(basename "$1") — subshell exited non-zero"
 }
