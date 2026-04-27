@@ -17,10 +17,12 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 
-# Copy lockfiles for both packages first so this layer caches well.
-COPY server/package.json server/package-lock.json* ./server/
-COPY client/package.json client/package-lock.json* ./client/
-COPY package.json package-lock.json* ./
+# Copy lockfiles + .npmrc for both packages first so this layer caches well.
+# .npmrc carries `legacy-peer-deps=true` (see comment in those files); without
+# it the install fails on eslint-plugin-react's outdated peer range.
+COPY server/package.json server/package-lock.json* server/.npmrc* ./server/
+COPY client/package.json client/package-lock.json* client/.npmrc* ./client/
+COPY package.json package-lock.json* .npmrc* ./
 
 # Install with dev deps (needed for build steps).
 RUN --mount=type=cache,target=/root/.npm \
@@ -54,7 +56,7 @@ ENV NODE_ENV=production \
 RUN addgroup -S app && adduser -S -G app app
 
 # Re-install only production deps for the server.
-COPY server/package.json server/package-lock.json* ./server/
+COPY server/package.json server/package-lock.json* server/.npmrc* ./server/
 RUN --mount=type=cache,target=/root/.npm \
     npm --prefix server ci --omit=dev --no-audit --no-fund
 
