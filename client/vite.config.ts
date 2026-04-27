@@ -38,7 +38,7 @@ export default defineConfig({
           'markdown-vendor': ['marked', 'dompurify'],
           'realtime-vendor': ['socket.io-client'],
           'icons-vendor': ['@phosphor-icons/react'],
-          'ui-vendor': ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', 'cmdk', 'sonner'],
+          'ui-vendor': ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', 'sonner'],
         },
       },
     },

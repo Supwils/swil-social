@@ -32,10 +32,6 @@ const EnvSchema = z.object({
   AWS_S3_BUCKET: z.string().optional(),
   AWS_CLOUDFRONT_URL: z.string().optional(),
 
-  CLOUDINARY_CLOUD_NAME: z.string().optional(),
-  CLOUDINARY_API_KEY: z.string().optional(),
-  CLOUDINARY_API_SECRET: z.string().optional(),
-
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),
@@ -71,11 +67,5 @@ export const s3Enabled = Boolean(
 );
 
 export const sentryEnabled = Boolean(env.SENTRY_DSN);
-
-export const cloudinaryEnabled = Boolean(
-  env.CLOUDINARY_CLOUD_NAME &&
-  env.CLOUDINARY_API_KEY &&
-  env.CLOUDINARY_API_SECRET,
-);
 
 export const translateEnabled = Boolean(env.GOOGLE_TRANSLATE_API_KEY);

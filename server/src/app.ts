@@ -39,15 +39,17 @@ export function createApp(opts: AppOptions = {}): Express {
   app.use(requestLogger);
 
   // CSP: tight allowlist. External hosts we genuinely need are the image CDNs
-  // the app displays (Cloudinary for user uploads; Picsum/Dicebear for seed
-  // data) and Google Fonts until we self-host. Loosen only when the need is
-  // real and documented; never go `'unsafe-inline'` for scripts.
+  // the app displays (Picsum/Dicebear for seed data, S3/CloudFront for
+  // user uploads — set via AWS_CLOUDFRONT_URL) and Google Fonts until we
+  // self-host. Loosen only when the need is real and documented; never go
+  // `'unsafe-inline'` for scripts.
   const selfOnly = ["'self'"];
+  const cloudfrontHost = env.AWS_CLOUDFRONT_URL ? [env.AWS_CLOUDFRONT_URL] : [];
   const imageSrc = [
     "'self'",
     'data:',
     'blob:',
-    'https://res.cloudinary.com',
+    ...cloudfrontHost,
     'https://picsum.photos',
     'https://fastly.picsum.photos',
     'https://api.dicebear.com',
@@ -71,7 +73,7 @@ export function createApp(opts: AppOptions = {}): Express {
           fontSrc: ["'self'", 'data:', ...fontAndStyleHosts],
           imgSrc: imageSrc,
           connectSrc: ["'self'", 'ws:', 'wss:'],
-          mediaSrc: ["'self'", 'https://res.cloudinary.com'],
+          mediaSrc: ["'self'", ...cloudfrontHost],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
           baseUri: selfOnly,
