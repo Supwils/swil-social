@@ -24,7 +24,7 @@
     "seed:reset": "tsx scripts/seed.ts -- --reset"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.1038.0",
     "@aws-sdk/lib-storage": "^3.600.0",
     "bcrypt": "^5.1.1",
     "connect-mongo": "^5.1.0",
