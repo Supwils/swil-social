@@ -21,10 +21,38 @@ updates:
     commit-message:
       prefix: 'chore(deps)'
       include: scope
+    ignore:
+      # Major version bumps for these require manual migration work
+      - dependency-name: "mongoose"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       types:
         patterns:
           - '@types/*'
+      express:
+        patterns:
+          - 'express'
+          - 'express-*'
+          - 'connect-*'
+          - 'cors'
+          - 'helmet'
+          - 'cookie-parser'
+      dev-tools:
+        patterns:
+          - 'typescript'
+          - 'typescript-eslint'
+          - 'eslint*'
+          - '@eslint/*'
+          - 'prettier'
+          - 'tsx'
+          - 'vitest'
+          - '@vitest/*'
+      pino:
+        patterns:
+          - 'pino'
+          - 'pino-*'
 
   - package-ecosystem: npm
     directory: /client
@@ -36,11 +64,16 @@ updates:
     commit-message:
       prefix: 'chore(deps)'
       include: scope
+    ignore:
+      # Major version bumps for these require manual migration work
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: ["version-update:semver-major"]
     groups:
       react:
         patterns:
           - 'react'
           - 'react-dom'
+          - 'react-*'
           - '@types/react'
           - '@types/react-dom'
       tanstack:
@@ -52,6 +85,17 @@ updates:
       types:
         patterns:
           - '@types/*'
+      dev-tools:
+        patterns:
+          - 'typescript'
+          - 'typescript-eslint'
+          - 'eslint*'
+          - '@eslint/*'
+          - 'prettier'
+          - 'vite'
+          - '@vitejs/*'
+          - 'vitest'
+          - '@vitest/*'
 
   - package-ecosystem: github-actions
     directory: /
