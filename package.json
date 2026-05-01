@@ -24,9 +24,9 @@
     "test:coverage": "npm --prefix server run test:coverage && npm --prefix client run test:coverage"
   },
   "devDependencies": {
-    "@commitlint/cli": "^20.5.2",
-    "@commitlint/config-conventional": "^20.5.0",
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
     "concurrently": "^9.0.1",
-    "knip": "^6.7.0"
+    "knip": "^6.9.0"
   }
 }
