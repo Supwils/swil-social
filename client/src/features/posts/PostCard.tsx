@@ -202,54 +202,56 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
     </Link>
   );
 
-  const bodyContent = (
-    <>
-      <header className={s.header}>
-        <Link to={`/u/${post.author.username}`} className={s.authorLink}>
-          <span className={s.authorName}>
-            {post.author.displayName || post.author.username}
+  const postHeader = (
+    <header className={s.header}>
+      <Link to={`/u/${post.author.username}`} className={s.authorLink}>
+        <span className={s.authorName}>
+          {post.author.displayName || post.author.username}
+        </span>
+        <span className={s.authorHandle}>@{post.author.username}</span>
+        {post.author.isAgent ? (
+          <span className={s.badgeAgent} title={t('common.aiAgent')}>
+            <Robot size={11} weight="fill" aria-hidden />
+            {t('common.ai')}
           </span>
-          <span className={s.authorHandle}>@{post.author.username}</span>
-          {post.author.isAgent ? (
-            <span className={s.badgeAgent} title={t('common.aiAgent')}>
-              <Robot size={11} weight="fill" aria-hidden />
-              {t('common.ai')}
-            </span>
-          ) : (
-            <span className={s.badgeHuman} title={t('common.human')}>
-              <User size={11} weight="fill" aria-hidden />
-            </span>
-          )}
+        ) : (
+          <span className={s.badgeHuman} title={t('common.human')}>
+            <User size={11} weight="fill" aria-hidden />
+          </span>
+        )}
+      </Link>
+      <div className={s.headerRight}>
+        <Link
+          to={`/p/${post.id}`}
+          className={s.date}
+          title={formatAbsolute(post.createdAt)}
+        >
+          <time dateTime={post.createdAt}>{formatRelative(post.createdAt)}</time>
         </Link>
-        <div className={s.headerRight}>
-          <Link
-            to={`/p/${post.id}`}
-            className={s.date}
-            title={formatAbsolute(post.createdAt)}
+        {isMine && (
+          <Menu
+            ariaLabel="Post actions"
+            trigger={<DotsThree size={18} weight="bold" aria-hidden />}
           >
-            <time dateTime={post.createdAt}>{formatRelative(post.createdAt)}</time>
-          </Link>
-          {isMine && (
-            <Menu
-              ariaLabel="Post actions"
-              trigger={<DotsThree size={18} weight="bold" aria-hidden />}
+            <MenuItem
+              onSelect={() => {
+                setDraftText(post.text);
+                setEditing(true);
+              }}
             >
-              <MenuItem
-                onSelect={() => {
-                  setDraftText(post.text);
-                  setEditing(true);
-                }}
-              >
-                <PencilSimple size={14} aria-hidden /> {t('post.edit')}
-              </MenuItem>
-              <MenuItem danger onSelect={() => setDeleting(true)}>
-                <Trash size={14} aria-hidden /> {t('post.delete')}
-              </MenuItem>
-            </Menu>
-          )}
-        </div>
-      </header>
+              <PencilSimple size={14} aria-hidden /> {t('post.edit')}
+            </MenuItem>
+            <MenuItem danger onSelect={() => setDeleting(true)}>
+              <Trash size={14} aria-hidden /> {t('post.delete')}
+            </MenuItem>
+          </Menu>
+        )}
+      </div>
+    </header>
+  );
 
+  const postMain = (
+    <>
       {editing ? (
         <form onSubmit={onSubmitEdit} className={s.editForm}>
           <Textarea
@@ -290,6 +292,11 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
           {compact && !expanded && (
             <button type="button" className={s.expandBtn} onClick={() => setExpanded(true)}>
               {t('post.readMore')}
+            </button>
+          )}
+          {compact && expanded && (
+            <button type="button" className={s.collapseBtn} onClick={() => setExpanded(false)}>
+              {t('post.collapse')}
             </button>
           )}
           {post.originalText && (
@@ -364,11 +371,16 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
   return (
     <article className={clsx(s.card, compact && s.cardCompact)}>
       {compact ? (
-        // GRID MODE: 3D flip
+        // GRID MODE: avatar + header row, then full-width content below
         <div className={clsx(s.flipInner, commentsOpen && s.flipped)}>
           <div className={s.flipFront}>
-            {avatarEl}
-            <div className={s.body}>{bodyContent}</div>
+            <div className={s.compactHead}>
+              {avatarEl}
+              {postHeader}
+            </div>
+            <div className={s.compactBody}>
+              {postMain}
+            </div>
           </div>
           <div className={s.flipBack}>
             <div className={s.flipBackNav}>
@@ -407,7 +419,8 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
         <>
           {avatarEl}
           <div className={s.body}>
-            {bodyContent}
+            {postHeader}
+            {postMain}
             <InlineComments postId={post.id} open={commentsOpen} indented={false} />
           </div>
         </>

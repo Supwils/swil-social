@@ -1,0 +1,66 @@
+.counter {
+  display: inline-block;
+  position: relative;
+  vertical-align: baseline;
+  overflow: hidden;
+  height: 1em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.value {
+  display: inline-block;
+  transition: transform var(--dur-base) var(--ease), opacity var(--dur-base) var(--ease);
+}
+
+.enter {
+  animation: rollIn var(--dur-base) var(--ease) both;
+}
+
+.exit {
+  animation: rollOut var(--dur-base) var(--ease) both;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+@keyframes rollIn {
+  from { transform: translateY(70%); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+@keyframes rollOut {
+  from { transform: translateY(0);    opacity: 1; }
+  to   { transform: translateY(-70%); opacity: 0; }
+}
+
+/* When count goes DOWN (unlike), reverse the direction */
+.down.enter {
+  animation: rollInDown var(--dur-base) var(--ease) both;
+}
+
+.down.exit {
+  animation: rollOutDown var(--dur-base) var(--ease) both;
+}
+
+@keyframes rollInDown {
+  from { transform: translateY(-70%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes rollOutDown {
+  from { transform: translateY(0);   opacity: 1; }
+  to   { transform: translateY(70%); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter,
+  .exit,
+  .down.enter,
+  .down.exit {
+    animation: none !important;
+  }
+  .exit {
+    display: none;
+  }
+}

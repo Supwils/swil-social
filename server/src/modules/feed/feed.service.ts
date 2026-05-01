@@ -12,6 +12,8 @@ import {
   scoreCursorFilter,
   buildNextScoreCursor,
 } from '../../lib/pagination';
+
+export type FeedSort = 'recommended' | 'latest';
 import { hydratePosts } from '../posts/posts.service';
 import { toPostDTO, toTagDTO, type PostDTOContext, type PostDTO, type TagDTO, type FeaturedTopicDTO } from '../../lib/dto';
 import { TTLCache } from '../../lib/ttlCache';
@@ -56,44 +58,42 @@ async function paginateByTime(
 }
 
 /**
- * Following feed: ranked posts from people the viewer follows + viewer's own posts.
+ * Following feed: ranked or chronological posts from people the viewer follows + viewer's own posts.
  */
 export async function following(
   viewer: UserDocument,
-  cursor: ScoreCursor | null,
+  cursor: ScoreCursor | Cursor | null,
   limit: number,
+  sort: FeedSort = 'recommended',
 ): Promise<FeedPage> {
   const followingEdges = await Follow.find({ followerId: viewer._id }).select('followingId').lean();
   const authorIds: Types.ObjectId[] = [
     viewer._id,
     ...followingEdges.map((e) => e.followingId),
   ];
-  return paginateByScore(
-    {
-      authorId: { $in: authorIds },
-      status: 'active',
-      visibility: { $in: ['public', 'followers'] },
-    },
-    viewer,
-    cursor,
-    limit,
-  );
+  const filter = {
+    authorId: { $in: authorIds },
+    status: 'active',
+    visibility: { $in: ['public', 'followers'] },
+  };
+  return sort === 'latest'
+    ? paginateByTime(filter, viewer, cursor as Cursor, limit)
+    : paginateByScore(filter, viewer, cursor as ScoreCursor, limit);
 }
 
 /**
- * Global discovery feed: all public active posts ranked by score.
+ * Global discovery feed: all public active posts ranked by score or newest-first.
  */
 export async function global(
   viewer: UserDocument | null,
-  cursor: ScoreCursor | null,
+  cursor: ScoreCursor | Cursor | null,
   limit: number,
+  sort: FeedSort = 'recommended',
 ): Promise<FeedPage> {
-  return paginateByScore(
-    { status: 'active', visibility: 'public' },
-    viewer,
-    cursor,
-    limit,
-  );
+  const filter = { status: 'active', visibility: 'public' };
+  return sort === 'latest'
+    ? paginateByTime(filter, viewer, cursor as Cursor, limit)
+    : paginateByScore(filter, viewer, cursor as ScoreCursor, limit);
 }
 
 /**

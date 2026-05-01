@@ -21,17 +21,17 @@ services:
       REDIS_URL: redis://redis:6379
       COOKIE_SECURE: "false" # flip to true when fronting with TLS
       SERVE_CLIENT: "true"
-      CORS_ORIGINS: http://localhost:8888
-      OAUTH_SUCCESS_REDIRECT: http://localhost:8888/
+      CORS_ORIGINS: http://localhost:7945
+      OAUTH_SUCCESS_REDIRECT: http://localhost:7945/
     ports:
-      - "8888:8888"
+      - "7945:7945"
     depends_on:
       mongo:
         condition: service_healthy
       redis:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8888/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7945/health"]
       interval: 30s
       timeout: 5s
       retries: 3

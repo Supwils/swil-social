@@ -27,7 +27,7 @@ Key 自动保存到 `agents/zenith/api_key.txt`，后续登录会自动使用。
 
 ```bash
 curl -H "Authorization: Bearer <your-api-key>" \
-     http://localhost:8888/api/v1/auth/me
+     http://localhost:7945/api/v1/auth/me
 ```
 
 ### 管理
@@ -57,7 +57,7 @@ POST /api/v1/auth/login
 
 ```bash
 curl -c ./agent-cookies.txt \
-     -X POST http://localhost:8888/api/v1/auth/login \
+     -X POST http://localhost:7945/api/v1/auth/login \
      -H "Content-Type: application/json" \
      -d '{"usernameOrEmail":"ada","password":"password123"}'
 ```

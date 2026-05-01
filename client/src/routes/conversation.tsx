@@ -16,7 +16,7 @@ import * as messagesApi from '@/api/messages.api';
 import { qk } from '@/api/queryKeys';
 import { useSession } from '@/stores/session.store';
 import { Avatar, Spinner } from '@/components/primitives';
-import { emit, on } from '@/api/realtime';
+import { emit, emitTyping, emitTypingEnd, on } from '@/api/realtime';
 import { useRealtime } from '@/stores/realtime.store';
 import { formatRelative } from '@/lib/formatDate';
 import type { ApiError, MessageDTO, Paginated } from '@/api/types';
@@ -29,15 +29,24 @@ export default function ConversationRoute() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const [text, setText] = useState('');
+  const [typingUserId, setTypingUserId] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
   const setUnreadC = useRealtime((s) => s.setUnreadConversations);
 
-  // Join/leave conversation room
+  // Join/leave conversation room, clear typing timer on unmount
   useEffect(() => {
     if (!id) return;
     emit('conversation:join', { conversationId: id });
-    return () => { emit('conversation:leave', { conversationId: id }); };
+    return () => {
+      emit('conversation:leave', { conversationId: id });
+      if (typingTimerRef.current) {
+        clearTimeout(typingTimerRef.current);
+        if (isTypingRef.current) emitTypingEnd(id);
+      }
+    };
   }, [id]);
 
   // Mark read on enter and decrement nav badge
@@ -74,6 +83,8 @@ export default function ConversationRoute() {
       const msg = payload as MessageDTO;
       if (msg.conversationId !== id) return;
       if (msg.sender.id === me?.id) return;
+      // Clear typing indicator when a message arrives
+      setTypingUserId(null);
       messagesApi
         .markRead(id)
         .then(() => messagesApi.unreadCount())
@@ -81,6 +92,20 @@ export default function ConversationRoute() {
         .catch(() => undefined);
     });
   }, [id, me?.id, setUnreadC]);
+
+  // Typing indicator listeners
+  useEffect(() => {
+    if (!id) return;
+    const offTyping = on('typing', (payload) => {
+      const { userId: uid } = payload as { userId: string };
+      setTypingUserId(uid);
+    });
+    const offTypingEnd = on('typing:end', (payload) => {
+      const { userId: uid } = payload as { userId: string };
+      setTypingUserId((prev) => (prev === uid ? null : prev));
+    });
+    return () => { offTyping(); offTypingEnd(); };
+  }, [id]);
 
   const send = useMutation({
     mutationFn: () => messagesApi.send(id, text.trim()),
@@ -127,6 +152,17 @@ export default function ConversationRoute() {
   const onTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value);
     autoResize(e.target);
+
+    // Typing indicator: emit once per burst, clear after 2s of inactivity
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      emitTyping(id);
+    }
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => {
+      isTypingRef.current = false;
+      emitTypingEnd(id);
+    }, 2000);
   };
 
   const messages = q.data?.pages.flatMap((p) => p.items) ?? [];
@@ -177,6 +213,16 @@ export default function ConversationRoute() {
           <MessageBubble key={m.id} m={m} mine={m.sender.id === me?.id} />
         ))}
       </div>
+
+      {typingUserId && other && typingUserId !== me?.id && (
+        <div className={s.typingIndicator}>
+          <span className={s.typingName}>{other.displayName || other.username}</span>
+          {' '}{t('messages.isTyping')}
+          <span className={s.typingDots}>
+            <span /><span /><span />
+          </span>
+        </div>
+      )}
 
       <form onSubmit={onSubmit} className={s.composeRow}>
         <textarea

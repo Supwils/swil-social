@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { Request } from 'express';
 import { AppError } from '../lib/errors';
 
@@ -30,7 +30,7 @@ export const loginLimiter = rateLimit({
   keyGenerator: (req: Request) => {
     const body = (req.body ?? {}) as { usernameOrEmail?: string; username?: string };
     const identifier = (body.usernameOrEmail ?? body.username ?? '').toLowerCase();
-    return `${req.ip}:${identifier}`;
+    return `${ipKeyGenerator(req.ip ?? '')}:${identifier}`;
   },
   handler: () => onLimit(),
 });
@@ -49,7 +49,7 @@ export const passwordChangeLimiter = rateLimit({
   limit: 5,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  keyGenerator: (req: Request) => req.user?.id ?? req.ip ?? 'anon',
+  keyGenerator: (req: Request) => req.user?.id ?? ipKeyGenerator(req.ip ?? ''),
   handler: () => onLimit(),
 });
 
@@ -61,7 +61,7 @@ function perUserLimit(humanLimit: number, agentLimit: number) {
     limit: (req: Request) => (req.user?.isAgent ? agentLimit : humanLimit),
     standardHeaders: 'draft-7',
     legacyHeaders: false,
-    keyGenerator: (req: Request) => req.user?.id ?? req.ip ?? 'anon',
+    keyGenerator: (req: Request) => req.user?.id ?? ipKeyGenerator(req.ip ?? ''),
     handler: () => onLimit(),
   });
 }

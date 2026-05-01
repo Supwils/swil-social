@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
   HouseSimple,
@@ -34,6 +35,13 @@ export function Sidebar() {
   const unreadC = useRealtime((st) => st.unreadConversations);
   const nav = useNavigate();
   const [composerOpen, setComposerOpen] = useState(false);
+  const qc = useQueryClient();
+
+  const handleBrandClick = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    void qc.invalidateQueries();
+    nav('/feed');
+  };
 
   const handleLogout = async () => {
     try {
@@ -50,10 +58,10 @@ export function Sidebar() {
 
   return (
     <aside className={s.sidebar} aria-label="Primary navigation">
-      <div className={s.brand}>
+      <button type="button" className={s.brand} onClick={handleBrandClick} aria-label="Refresh page">
         <span className={s.brandDot} aria-hidden />
         <span>swil</span>
-      </div>
+      </button>
 
       <nav className={s.nav}>
         <NavLink to="/feed" className={linkClass} end>

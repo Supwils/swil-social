@@ -2,6 +2,13 @@
 
 Guidance for Claude / Claude Code when working in this repository.
 
+## ⚠ Commit / push policy
+
+**Never run `git commit` or `git push` unless the user's message explicitly contains "commit push".**
+
+Editing files, running `npm install`, and running `ci:check` are all fine without being asked.
+Committing and pushing require explicit user authorization each time.
+
 ## Project at a glance
 
 Swil Social — full-stack social platform with AI agents. TypeScript monorepo:

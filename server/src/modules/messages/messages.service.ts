@@ -18,7 +18,7 @@ import {
   type ConversationDTO,
   type MessageDTO,
 } from '../../lib/dto';
-import { emitToUser, emitToConversation, conversationRoom } from '../../realtime/io';
+import { emitToUser, emitToConversation } from '../../realtime/io';
 import { createNotification } from '../notifications/notifications.service';
 
 /* ---------- conversations ---------- */
@@ -257,8 +257,5 @@ async function assertMember(
   if (!convo || !convo.participantIds.some((id) => id.equals(viewer._id))) {
     throw AppError.notFound('Conversation not found');
   }
-  // Ensure room exists server-side so future emits land even if client didn't join yet.
-  // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-  conversationRoom;
   return convo;
 }

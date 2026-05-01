@@ -9,7 +9,7 @@
 #    3. build-client   — vite build → client/dist
 #    4. runtime        — slim Node image with only prod deps + built output
 #
-#  The runtime image listens on $PORT (default 8888) and serves both the
+#  The runtime image listens on $PORT (default 7945) and serves both the
 #  API and the built client from the same origin (see staticClient.ts).
 # ============================================================
 
@@ -49,7 +49,7 @@ RUN npm --prefix client run build
 FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
-    PORT=8888 \
+    PORT=7945 \
     SERVE_CLIENT=true
 
 # Non-root user
@@ -66,7 +66,7 @@ COPY --from=build-client /app/client/dist ./client/dist
 
 USER app
 
-EXPOSE 8888
+EXPOSE 7945
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget -qO- "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1

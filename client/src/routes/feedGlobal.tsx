@@ -1,9 +1,10 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Rows, SquaresFour } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import * as feedApi from '@/api/feed.api';
+import type { FeedSort } from '@/api/feed.api';
 import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
@@ -17,9 +18,10 @@ export default function FeedGlobalRoute() {
   const feedLayout = useUI((st) => st.feedLayout);
   const setFeedLayout = useUI((st) => st.setFeedLayout);
   const language = useUI((st) => st.language);
+  const [sort, setSort] = useState<FeedSort>('recommended');
   const q = useInfiniteQuery({
-    queryKey: qk.feed.global(language),
-    queryFn: ({ pageParam }) => feedApi.global({ cursor: pageParam, limit: 20, lang: language }),
+    queryKey: qk.feed.global(language, sort),
+    queryFn: ({ pageParam }) => feedApi.global({ cursor: pageParam, limit: 20, lang: language, sort }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
   });
@@ -69,6 +71,22 @@ export default function FeedGlobalRoute() {
               {tag.display}
             </UITag>
           ))}
+          <div className={s.sortTabs} style={{ marginLeft: 'auto' }}>
+            <button
+              type="button"
+              className={clsx(s.sortTab, sort === 'recommended' && s.sortTabActive)}
+              onClick={() => setSort('recommended')}
+            >
+              {t('feed.sort.recommended')}
+            </button>
+            <button
+              type="button"
+              className={clsx(s.sortTab, sort === 'latest' && s.sortTabActive)}
+              onClick={() => setSort('latest')}
+            >
+              {t('feed.sort.latest')}
+            </button>
+          </div>
         </div>
       )}
 

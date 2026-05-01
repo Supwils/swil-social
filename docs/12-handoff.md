@@ -1,17 +1,17 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-04-24
-owner: round-9
+last-updated: 2026-04-28
+owner: round-10
 ---
 
 # Handoff
 
-**If you are picking up this repo, this is the first file to read.** This document is the authoritative snapshot of where the project stands. v1 shipped in Rounds 1–8. Round 9 begins post-v1 improvements.
+**If you are picking up this repo, this is the first file to read.** This document is the authoritative snapshot of where the project stands. v1 shipped in Rounds 1–8. Rounds 9–10 are post-v1 improvements.
 
 ## Status
 
-**v1 — COMPLETE. Post-v1 improvements in progress.** Eight core phases plus one improvements round:
+**v1 — COMPLETE. Post-v1 improvements in progress.**
 
 | Phase | Round | Focus |
 |---|---|---|
@@ -25,6 +25,61 @@ owner: round-9
 | P7 | 7 | Polish — Markdown, ⌘K, draft autosave, edit/delete, write rate limits |
 | P8 | 8 | Ops — Docker, CI, deployment playbook, Sentry scaffolding |
 | Post-v1 | 9 | Feed ranking, agent auth hardening, UI bug fixes |
+| Post-v1 | 10 | UX features (comment edit/delete, @mention, notification grouping, typing indicator) + global debug scan |
+
+## What just shipped (Round 10 — UX features + debug scan)
+
+### Comment edit / delete UI
+
+`InlineComments` now exposes a 3-dot menu for comment authors:
+
+- **Edit**: inline textarea replaces comment text; Save mutates via `PATCH /comments/:id`; Cancel discards. `(edited)` badge shows `common.edited` i18n key.
+- **Delete**: toast with undo-style confirmation (Sonner `toast()` with action button). On confirm, `DELETE /comments/:id`.
+- Both mutations update the `commentCount` optimistically across all feed/user caches via `bumpCount(delta)`.
+
+### @mention autocomplete in comments
+
+Reused the existing `useAutocomplete` + `AutocompleteDropdown` from `PostComposer`. The comment compose textarea now:
+- Tracks cursor position on every keystroke.
+- Triggers user search when the cursor is inside an `@word` token.
+- Shows a dropdown; selection replaces the token with `@username `.
+
+### Notifications grouping UI
+
+`notifications.tsx` now groups fine-grained notification entries client-side before rendering:
+
+- `like` and `echo` events targeting the same post/comment are merged into a single row with stacked avatars (up to 3 visible).
+- Actor label: "Alice" (1), "Alice and Bob" (2), "Alice and 3 others" (3+) — using new i18n keys `notifications.and` + `notifications.actorsWithOthers`.
+- Other types (comment, follow, reply, mention, message) remain ungrouped.
+
+### Typing indicator in DMs
+
+Full end-to-end implementation:
+
+- **Server** (`realtime/io.ts`): `typing` and `typing:end` socket events broadcast to conversation room (excluding sender). No extra membership check needed — room join already validates it.
+- **Client API** (`realtime.ts`): `emitTyping(conversationId)` + `emitTypingEnd(conversationId)` helpers added to `RealtimeEvent` union type.
+- **UI** (`conversation.tsx`): 2s debounce — emit `typing` on first keystroke, emit `typing:end` after 2s of silence. Cleanup on unmount. Animated 3-dot bounce indicator (`messages.module.css`).
+
+### Global debug scan & cleanup
+
+Ran a full codebase bug scan (see findings inline). One real issue fixed:
+
+- **`server/src/modules/messages/messages.service.ts`**: removed a dead no-op `conversationRoom;` expression with a misleading comment that claimed it "ensured room exists" (it did nothing; the import was also removed).
+
+Most other scan findings were false positives on close inspection (TanStack Query prefix invalidation correctly handles all feed variants; `markReady()` is correctly in `.finally()`; non-null assertion in showcase is guarded by outer `length > 0` check; Socket.IO listeners persist through reconnects by design).
+
+### Dependency maintenance
+
+- Upgraded React 18 → 19 (`react`, `react-dom`, `@types/react`, `@types/react-dom`).
+- Applied all safe Dependabot patches (pino 9→10, pino-http 10→11, vitest 2→4, dotenv 16→17, various `@types/*`).
+- Added explicit `"mongodb": "^6.20.0"` to `server/package.json` to fix a MODULE_NOT_FOUND crash caused by npm hoisting changes after mongoose upgrade.
+
+### Validated
+
+- `npm run ci:check` — all 8 steps pass (typecheck, lint, test ×2, build ×2). Server: 141 tests. Client: 34 tests.
+- No new lint errors introduced.
+
+---
 
 ## What just shipped (Round 9 — post-v1 improvements)
 
@@ -115,7 +170,7 @@ Full roadmap with per-phase details: [`docs/10-roadmap.md`](./10-roadmap.md).
 ### Docker + compose
 
 - **`Dockerfile`** — 4-stage build: `deps` (install both packages) · `build-server` (tsc) · `build-client` (vite build) · `runtime` (slim Node 20, prod deps only, non-root `app` user, `HEALTHCHECK` hitting `/health`). Layer-caches `package*.json` before source.
-- **`docker-compose.yml`** — `app` + `mongo:7` (with healthcheck) + `redis:7-alpine` with named volumes. `app` depends on mongo `service_healthy`. Ports 8888 / 27017 / 6379 exposed for local use.
+- **`docker-compose.yml`** — `app` + `mongo:7` (with healthcheck) + `redis:7-alpine` with named volumes. `app` depends on mongo `service_healthy`. Ports 7945 / 27017 / 6379 exposed for local use.
 - **`.dockerignore`** — excludes `node_modules`, `dist`, `.env` (but keeps `.env.example`), `docs`, `client-legacy` (already gone but defensive).
 
 ### CI
@@ -197,35 +252,48 @@ The `/docs/10-roadmap.md` "Stretch / post-v1 ideas" section lists the catalog of
 
 Pick one, write a short ADR explaining the decision, tackle it in a new round. Update this handoff at the end.
 
-## Repo at end of Round 8
+## Repo at end of Round 10
 
 ```
-Full-Stack-Web-Social/
+swil-social/
 ├── .github/
-│   ├── workflows/ci.yml              NEW
-│   └── dependabot.yml                NEW
-├── client/                            — Vite + React 18 + TS; design system; Markdown; ⌘K
+│   ├── workflows/ci.yml
+│   └── dependabot.yml
+├── agent/                             — agent runtime, scripts, per-agent context files
+├── client/                            — Vite + React 19 + TS; design system; Markdown; ⌘K
 ├── server/                            — Express + TS; /api/v1/* + /socket.io; CSP
+│   └── src/
+│       ├── models/                    — user, post, comment, like, follow, tag,
+│       │                                notification, conversation, message,
+│       │                                apiKey, bookmark, event
+│       ├── modules/                   — auth, users, posts, comments, likes, follows,
+│       │                                tags, notifications, messages, feed, bookmarks
+│       ├── realtime/io.ts             — Socket.IO: rooms, typing indicator, membership check
+│       └── lib/feedScorer.ts          — HackerNews gravity score + batched bulkWrite
 ├── docs/
 │   ├── README.md
 │   ├── 00-vision.md
-│   ├── 01-architecture.md
+│   ├── 01-architecture.md            UPDATED (React 19, actual routes/models)
 │   ├── 02-design-system.md
 │   ├── 03-api-reference.md
-│   ├── 04-data-model.md
-│   ├── 05-auth-flow.md
+│   ├── 04-data-model.md              UPDATED (apikeys, bookmarks, events, notification.echo)
+│   ├── 05-auth-flow.md               UPDATED (API Key auth section)
 │   ├── 06-security.md
 │   ├── 07-setup.md
-│   ├── 08-deployment.md              EXPANDED
+│   ├── 08-deployment.md
 │   ├── 09-contributing.md
-│   ├── 10-roadmap.md                 P8 closed
+│   ├── 10-roadmap.md
 │   ├── 11-decisions/*.md             ADR 001-003
-│   └── 12-handoff.md                 THIS FILE — v1 complete
-├── .dockerignore                      NEW
+│   ├── 12-handoff.md                 THIS FILE
+│   ├── 13-feature-spec.md
+│   ├── 14-bugs/001-inline-comments-layout.md
+│   ├── 15-performance-optimizations.md
+│   └── 16-interview-prep.md          NEW — comprehensive interview Q&A
+├── .dockerignore
 ├── .gitignore
-├── Dockerfile                         NEW
-├── docker-compose.yml                 NEW
-├── README.md                          UPDATED
+├── Dockerfile
+├── docker-compose.yml
+├── README.md
 └── package.json                       (root workspace orchestration)
 ```
 
@@ -272,6 +340,9 @@ Prod same-origin serving. Strict CSP + HSTS. Sentry scaffolding. Dockerfile (mul
 
 ### Round 9 (2026-04-24) — post-v1
 Feed ranking via HackerNews gravity score (`feedScore` field + `feedScorer.ts`). Agent auth hardened: `swil.sh` prefers per-agent API Key over shared password. Three `PostCard` / `InlineComments` UI bugs fixed (layout squeeze, agent vertical text, author name overlap). Bug case library started at `docs/14-bugs/`.
+
+### Round 10 (2026-04-28) — post-v1 UX + debug scan
+Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm), @mention autocomplete in InlineComments (reused existing hook/component), notification grouping UI (client-side aggregation with stacked avatars + i18n), typing indicator in DMs (Socket.IO room broadcast, 2s debounce, 3-dot animation). React upgraded to v19. Dead code cleanup in `messages.service.ts`. All-green `ci:check` (141 server + 34 client tests). Global debug scan — no critical bugs found, one dead-code line removed.
 
 ## How to update this doc when you continue
 

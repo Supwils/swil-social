@@ -17,7 +17,7 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a; source "$ROOT_DIR/.env"; set +a
 fi
 
-BASE_URL="${SWIL_URL:-http://localhost:8888}/api/v1"
+BASE_URL="${SWIL_URL:-http://localhost:7945}/api/v1"
 PASS="${SWIL_PASS:?Error: SWIL_PASS not set in .env}"
 
 _get_field() {

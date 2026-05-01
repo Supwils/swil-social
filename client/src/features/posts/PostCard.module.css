@@ -482,7 +482,8 @@
   overflow: hidden;
 }
 
-.expandBtn {
+.expandBtn,
+.collapseBtn {
   display: inline-block;
   margin-top: var(--space-1);
   font-size: var(--text-small);
@@ -492,7 +493,8 @@
   cursor: pointer;
 }
 
-.expandBtn:hover {
+.expandBtn:hover,
+.collapseBtn:hover {
   text-decoration: underline;
 }
 
@@ -601,11 +603,27 @@
 
 .flipFront {
   display: flex;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-2);
   width: 100%;
   padding: var(--space-4);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
+}
+
+.compactHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+/* Remove bottom margin from header inside grid card — gap handles spacing */
+.compactHead .header {
+  margin-bottom: 0;
+}
+
+.compactBody {
+  min-width: 0;
 }
 
 .flipBack {

@@ -141,6 +141,7 @@ describe('feed routes', () => {
       expect.objectContaining({ id: 'viewer-id' }),
       null,
       12,
+      'recommended',
     );
   });
 
@@ -151,7 +152,7 @@ describe('feed routes', () => {
 
     expect(error).toBeUndefined();
     expect(res.statusCode).toBe(200);
-    expect(mocks.global).toHaveBeenCalledWith(null, null, 20);
+    expect(mocks.global).toHaveBeenCalledWith(null, null, 20, 'recommended');
   });
 
   it('passes tag slugs through to the tag feed', async () => {

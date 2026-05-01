@@ -2,7 +2,7 @@
  * Serve the built client (`client/dist`) from the same origin as the API.
  *
  * Only active in production (or when `SERVE_CLIENT=true` is explicitly set).
- * In dev the Vite server handles the client on port 5173 and proxies `/api`
+ * In dev the Vite server handles the client on port 5947 and proxies `/api`
  * back to us, so we skip static mounting entirely to avoid masking route 404s.
  *
  * Mounts a SPA fallback: unknown paths that don't start with `/api/`,

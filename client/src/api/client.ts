@@ -4,7 +4,7 @@ import type { ApiEnvelope, ApiError } from './types';
 /**
  * Axios instance.
  *
- * Base URL is `/api/v1` in all environments; Vite proxies `/api` → :8888 in dev,
+ * Base URL is `/api/v1` in all environments; Vite proxies `/api` → :7945 in dev,
  * and in prod the static build is served by the API host itself.
  */
 export const http: AxiosInstance = axios.create({

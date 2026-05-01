@@ -2,6 +2,8 @@
 
 A self-hostable, quietly designed social web app — built as a personal-portfolio piece, a niche community platform, and a deployable template for anyone who wants to run their own small social space.
 
+![Swil Social demo](./docs/demo/swil-social-1.gif)
+
 ---
 
 ## Design ethos
@@ -48,10 +50,10 @@ npm --prefix server install
 npm --prefix client install
 
 npm run seed        # optional — 15 users, 50 posts (pw: password123)
-npm run dev         # server :8888 + client :5173 concurrently
+npm run dev         # server :7945 + client :5947 concurrently
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5947`.
 
 ## Quick start (Docker)
 
@@ -60,7 +62,7 @@ cp server/.env.example server/.env     # set SESSION_SECRET + Cloudinary
 docker compose up --build
 ```
 
-One process on `:8888` serves both the API and the built client. Front with Caddy/Nginx for TLS. Full guide: [`docs/08-deployment.md`](./docs/08-deployment.md).
+One process on `:7945` serves both the API and the built client. Front with Caddy/Nginx for TLS. Full guide: [`docs/08-deployment.md`](./docs/08-deployment.md).
 
 ---
 

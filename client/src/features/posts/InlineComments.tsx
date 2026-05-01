@@ -1,12 +1,25 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import clsx from 'clsx';
 import { Link } from 'react-router-dom';
-import { type InfiniteData, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  type InfiniteData,
+  useInfiniteQuery,
+  useMutation,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { DotsThreeVertical } from '@phosphor-icons/react';
 import * as commentsApi from '@/api/comments.api';
 import { qk } from '@/api/queryKeys';
-import type { ApiError, Paginated, PostDTO } from '@/api/types';
+import type { ApiError, CommentDTO, Paginated, PostDTO } from '@/api/types';
 import { Avatar, Spinner } from '@/components/primitives';
 import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { useSession } from '@/stores/session.store';
@@ -14,6 +27,8 @@ import { useUI } from '@/stores/ui.store';
 import { useDrafts } from '@/stores/draft.store';
 import { formatRelative } from '@/lib/formatDate';
 import { MarkdownBody } from './MarkdownBody';
+import { useAutocomplete, applySelection } from './useAutocomplete';
+import { AutocompleteDropdown } from './AutocompleteDropdown';
 import s from './InlineComments.module.css';
 
 interface Props {
@@ -33,8 +48,20 @@ export function InlineComments({ postId, open, indented = true }: Props) {
   const setDraftStore = useDrafts((st) => st.setDraft);
   const clearDraft = useDrafts((st) => st.clearDraft);
   const draftKey = `comment.${postId}`;
+
+  // Compose state
   const [text, setText] = useState<string>(() => getDraft(draftKey)?.text ?? '');
+  const [cursorPos, setCursorPos] = useState(0);
+  const [acActiveIndex, setAcActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+
+  // Autocomplete for compose textarea
+  const { trigger: acTrigger, results: acResults } = useAutocomplete(text, cursorPos);
 
   useEffect(() => {
     if (!text.trim()) {
@@ -54,27 +81,53 @@ export function InlineComments({ postId, open, indented = true }: Props) {
     enabled: open,
   });
 
+  const invalidateComments = () =>
+    qc.invalidateQueries({ queryKey: qk.posts.comments(postId, language) });
+
+  const bumpCount = (delta: 1 | -1) => {
+    const updater = (old: InfiniteData<Paginated<PostDTO>> | undefined) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((pg) => ({
+          ...pg,
+          items: pg.items.map((p) =>
+            p.id === postId ? { ...p, commentCount: p.commentCount + delta } : p,
+          ),
+        })),
+      };
+    };
+    qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>({ queryKey: ['feed'] }, updater);
+    qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>({ queryKey: ['users'] }, updater);
+  };
+
   const submit = useMutation({
     mutationFn: () => commentsApi.create(postId, { text }),
     onSuccess: () => {
       setText('');
       clearDraft(draftKey);
-      qc.invalidateQueries({ queryKey: qk.posts.comments(postId, language) });
-      // Sync commentCount in all feed caches — avoids a full refetch
-      const bump = (old: InfiniteData<Paginated<PostDTO>> | undefined) => {
-        if (!old) return old;
-        return {
-          ...old,
-          pages: old.pages.map((pg) => ({
-            ...pg,
-            items: pg.items.map((p) =>
-              p.id === postId ? { ...p, commentCount: p.commentCount + 1 } : p,
-            ),
-          })),
-        };
-      };
-      qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>({ queryKey: ['feed'] }, bump);
-      qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>({ queryKey: ['users'] }, bump);
+      invalidateComments();
+      bumpCount(1);
+    },
+    onError: (err) => toast.error((err as unknown as ApiError).message),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, text }: { id: string; text: string }) =>
+      commentsApi.update(id, text),
+    onSuccess: () => {
+      setEditingId(null);
+      setEditText('');
+      invalidateComments();
+    },
+    onError: (err) => toast.error((err as unknown as ApiError).message),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => commentsApi.remove(id),
+    onSuccess: () => {
+      invalidateComments();
+      bumpCount(-1);
     },
     onError: (err) => toast.error((err as unknown as ApiError).message),
   });
@@ -85,11 +138,83 @@ export function InlineComments({ postId, open, indented = true }: Props) {
     submit.mutate();
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  // @mention selection handler
+  const handleAcSelect = (item: (typeof acResults)[number]) => {
+    if (!acTrigger) return;
+    const replacement = 'username' in item ? item.username : item.slug;
+    const { newText, newCursor } = applySelection(
+      text,
+      acTrigger.triggerIndex,
+      acTrigger.query.length,
+      acTrigger.prefix,
+      replacement,
+    );
+    setText(newText);
+    setAcActiveIndex(0);
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(newCursor, newCursor);
+      textareaRef.current?.focus();
+      setCursorPos(newCursor);
+    });
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Autocomplete keyboard navigation
+    if (acTrigger && acResults.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setAcActiveIndex((i) => Math.min(i + 1, acResults.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setAcActiveIndex((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const selected = acResults[acActiveIndex];
+        if (selected) {
+          e.preventDefault();
+          handleAcSelect(selected);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        setCursorPos(0);
+        return;
+      }
+    }
+    // Submit on Cmd/Ctrl+Enter
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       if (text.trim() && !submit.isPending) submit.mutate();
     }
+  };
+
+  const startEdit = (c: CommentDTO) => {
+    setMenuOpenId(null);
+    setEditingId(c.id);
+    setEditText(c.text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditText('');
+  };
+
+  const saveEdit = (id: string) => {
+    if (!editText.trim() || updateMutation.isPending) return;
+    updateMutation.mutate({ id, text: editText.trim() });
+  };
+
+  const handleDelete = (id: string) => {
+    setMenuOpenId(null);
+    toast(t('post.deleteCommentConfirm'), {
+      action: {
+        label: t('post.delete'),
+        onClick: () => removeMutation.mutate(id),
+      },
+    });
   };
 
   const items = useMemo(() => comments.data?.pages.flatMap((p) => p.items) ?? [], [comments.data]);
@@ -107,17 +232,34 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                 alt=""
               />
               <div className={s.composeField}>
-                <textarea
-                  ref={textareaRef}
-                  className={s.textarea}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={onKeyDown}
-                  placeholder={t('post.commentPlaceholder')}
-                  rows={1}
-                  maxLength={2000}
-                  aria-label="Write a comment"
-                />
+                <div className={s.autocompleteWrap}>
+                  <textarea
+                    ref={textareaRef}
+                    className={s.textarea}
+                    value={text}
+                    onChange={(e) => {
+                      setText(e.target.value);
+                      setCursorPos(e.target.selectionStart);
+                      setAcActiveIndex(0);
+                    }}
+                    onSelect={(e) =>
+                      setCursorPos((e.target as HTMLTextAreaElement).selectionStart)
+                    }
+                    onKeyDown={onKeyDown}
+                    placeholder={t('post.commentPlaceholder')}
+                    rows={1}
+                    maxLength={2000}
+                    aria-label="Write a comment"
+                  />
+                  {acTrigger && acResults.length > 0 && (
+                    <AutocompleteDropdown
+                      prefix={acTrigger.prefix}
+                      results={acResults}
+                      activeIndex={acActiveIndex}
+                      onSelect={handleAcSelect}
+                    />
+                  )}
+                </div>
                 {text.trim().length > 0 && (
                   <div className={s.composeActions}>
                     <button
@@ -174,10 +316,91 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                       <time dateTime={c.createdAt} className={s.time}>
                         {formatRelative(c.createdAt)}
                       </time>
+                      {me?.id === c.author.id && editingId !== c.id && (
+                        <div className={s.menu}>
+                          <button
+                            type="button"
+                            className={s.menuTrigger}
+                            onClick={() =>
+                              setMenuOpenId(menuOpenId === c.id ? null : c.id)
+                            }
+                            onBlur={() =>
+                              window.setTimeout(
+                                () => setMenuOpenId((id) => (id === c.id ? null : id)),
+                                150,
+                              )
+                            }
+                            aria-label="Comment options"
+                          >
+                            <DotsThreeVertical size={14} weight="bold" />
+                          </button>
+                          {menuOpenId === c.id && (
+                            <div className={s.menuDropdown}>
+                              <button
+                                type="button"
+                                className={s.menuItem}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => startEdit(c)}
+                              >
+                                {t('post.edit')}
+                              </button>
+                              <button
+                                type="button"
+                                className={clsx(s.menuItem, s.menuItemDanger)}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => handleDelete(c.id)}
+                              >
+                                {t('post.delete')}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div className={s.itemText}>
-                      <MarkdownBody source={c.text} compact />
-                    </div>
+
+                    {editingId === c.id ? (
+                      <form
+                        className={s.editForm}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          saveEdit(c.id);
+                        }}
+                      >
+                        <textarea
+                          className={s.textarea}
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          rows={2}
+                          maxLength={2000}
+                          autoFocus
+                        />
+                        <div className={s.composeActions}>
+                          <button
+                            type="button"
+                            className={s.cancelBtn}
+                            onClick={cancelEdit}
+                          >
+                            {t('post.cancel')}
+                          </button>
+                          <button
+                            type="submit"
+                            className={s.submitBtn}
+                            disabled={
+                              updateMutation.isPending || !editText.trim()
+                            }
+                          >
+                            {updateMutation.isPending ? <Spinner /> : t('post.save')}
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className={s.itemText}>
+                        <MarkdownBody source={c.text} compact />
+                        {c.editedAt && (
+                          <span className={s.edited}> ({t('common.edited')})</span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </li>
               ))}

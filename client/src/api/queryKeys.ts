@@ -22,8 +22,8 @@ export const qk = {
     list: ['bookmarks'] as const,
   },
   feed: {
-    following: (lang?: string) => ['feed', 'following', lang ?? 'en'] as const,
-    global: (lang?: string) => ['feed', 'global', lang ?? 'en'] as const,
+    following: (lang?: string, sort?: string) => ['feed', 'following', lang ?? 'en', sort ?? 'recommended'] as const,
+    global: (lang?: string, sort?: string) => ['feed', 'global', lang ?? 'en', sort ?? 'recommended'] as const,
     byTag: (slug: string, lang?: string) => ['feed', 'tag', slug, lang ?? 'en'] as const,
   },
   tags: {

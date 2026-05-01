@@ -42,6 +42,10 @@
     "tooFast": "Please take a moment to fill in the form."
   },
   "feed": {
+    "sort": {
+      "recommended": "Recommended",
+      "latest": "Latest"
+    },
     "global": {
       "title": "Global",
       "lede": "everyone, quietly",
@@ -85,6 +89,7 @@
     "deleteFailed": "Delete failed",
     "likeFailed": "Like failed",
     "bookmarkFailed": "Bookmark failed",
+    "deleteCommentConfirm": "Delete this comment?",
     "commentPlaceholder": "Add a comment…",
     "postComment": "Post comment",
     "commentPosting": "Posting…",
@@ -106,6 +111,7 @@
     "echoLabel": "echoed",
     "echoPosted": "Echo posted",
     "readMore": "Read more",
+    "collapse": "Show less",
     "visibility": "Visibility",
     "visibilityPublic": "Public",
     "visibilityFollowers": "Followers",
@@ -149,7 +155,9 @@
     "followed": "started following you",
     "mentioned": "mentioned you",
     "messagedYou": "sent you a message",
-    "echoedPost": "echoed your post"
+    "echoedPost": "echoed your post",
+    "and": "and",
+    "actorsWithOthers": "{{first}} and {{count}} others"
   },
   "messages": {
     "title": "Messages",
@@ -164,7 +172,8 @@
     "messagePlaceholder": "Write a message — Enter to send, Shift+Enter for a newline",
     "send": "Send",
     "loadOlder": "Load older",
-    "noUsers": "No users found"
+    "noUsers": "No users found",
+    "isTyping": "is typing"
   },
   "settings": {
     "title": "Settings",

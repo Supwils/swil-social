@@ -10,8 +10,76 @@ import { useRealtime } from '@/stores/realtime.store';
 import { formatRelative } from '@/lib/formatDate';
 import { Avatar, Button, Dialog, DialogActions, EmptyState, NotificationSkeleton } from '@/components/primitives';
 import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
-import type { NotificationDTO, Paginated } from '@/api/types';
+import type { NotificationDTO, Paginated, UserLiteDTO } from '@/api/types';
 import s from './notifications.module.css';
+
+/* ---------- grouping helpers ---------- */
+
+interface GroupedNotification {
+  key: string;
+  type: NotificationDTO['type'];
+  actors: UserLiteDTO[];
+  post?: { id: string; textPreview: string };
+  comment?: { id: string; textPreview: string };
+  message?: { id: string; conversationId: string };
+  anyUnread: boolean;
+  latestCreatedAt: string;
+}
+
+function groupNotifications(items: NotificationDTO[]): GroupedNotification[] {
+  const groups = new Map<string, GroupedNotification>();
+
+  for (const n of items) {
+    // Group likes and echos by their target; keep other types individual
+    let key: string;
+    if (n.type === 'like' || n.type === 'echo') {
+      const target = n.comment
+        ? `comment:${n.comment.id}`
+        : n.post
+          ? `post:${n.post.id}`
+          : n.id;
+      key = `${n.type}:${target}`;
+    } else {
+      key = n.id;
+    }
+
+    const existing = groups.get(key);
+    if (existing) {
+      if (!existing.actors.find((a) => a.id === n.actor.id)) {
+        existing.actors.push(n.actor);
+      }
+      if (!n.read) existing.anyUnread = true;
+      if (n.createdAt > existing.latestCreatedAt) {
+        existing.latestCreatedAt = n.createdAt;
+      }
+    } else {
+      groups.set(key, {
+        key,
+        type: n.type,
+        actors: [n.actor],
+        post: n.post,
+        comment: n.comment,
+        message: n.message,
+        anyUnread: !n.read,
+        latestCreatedAt: n.createdAt,
+      });
+    }
+  }
+
+  return Array.from(groups.values());
+}
+
+function actorLabel(actors: UserLiteDTO[], t: (k: string, opts?: Record<string, unknown>) => string): string {
+  if (actors.length === 1) return actors[0].displayName || actors[0].username;
+  if (actors.length === 2)
+    return `${actors[0].displayName || actors[0].username} ${t('notifications.and')} ${actors[1].displayName || actors[1].username}`;
+  return t('notifications.actorsWithOthers', {
+    first: actors[0].displayName || actors[0].username,
+    count: actors.length - 1,
+  });
+}
+
+/* ---------- component ---------- */
 
 export default function NotificationsRoute() {
   const { t } = useTranslation();
@@ -62,10 +130,11 @@ export default function NotificationsRoute() {
     },
   });
 
-  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const rawItems = q.data?.pages.flatMap((p) => p.items) ?? [];
+  const groups = groupNotifications(rawItems);
 
   useEffect(() => {
-    if (!q.isSuccess || autoMarked.current || !items.some((n) => !n.read)) return;
+    if (!q.isSuccess || autoMarked.current || !rawItems.some((n) => !n.read)) return;
     autoMarked.current = true;
     _markAllRead();
     notificationsApi.markRead({ all: true }).catch(() => {
@@ -73,7 +142,7 @@ export default function NotificationsRoute() {
       qc.invalidateQueries({ queryKey: qk.notifications.list });
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q.isSuccess, items]);
+  }, [q.isSuccess, rawItems]);
 
   return (
     <div className={s.page}>
@@ -84,7 +153,7 @@ export default function NotificationsRoute() {
             variant="ghost"
             size="sm"
             onClick={() => markAll.mutate()}
-            disabled={markAll.isPending || !items.some((n) => !n.read)}
+            disabled={markAll.isPending || !rawItems.some((n) => !n.read)}
           >
             {t('notifications.markAllRead')}
           </Button>
@@ -92,7 +161,7 @@ export default function NotificationsRoute() {
             variant="ghost"
             size="sm"
             onClick={() => setConfirmingClear(true)}
-            disabled={items.length === 0}
+            disabled={rawItems.length === 0}
           >
             {t('notifications.clearAll')}
           </Button>
@@ -109,15 +178,15 @@ export default function NotificationsRoute() {
         </>
       )}
 
-      {q.isSuccess && items.length === 0 && (
+      {q.isSuccess && groups.length === 0 && (
         <EmptyState
           title={t('notifications.empty')}
           description={t('notifications.emptyDesc')}
         />
       )}
 
-      {items.map((n) => (
-        <NotificationRow key={n.id} n={n} />
+      {groups.map((g) => (
+        <GroupedNotificationRow key={g.key} g={g} />
       ))}
 
       <InfiniteScrollSentinel
@@ -149,41 +218,58 @@ export default function NotificationsRoute() {
   );
 }
 
-function NotificationRow({ n }: { n: NotificationDTO }) {
+function GroupedNotificationRow({ g }: { g: GroupedNotification }) {
   const { t } = useTranslation();
-  const actorName = n.actor.displayName || n.actor.username;
-  const href = linkFor(n);
-  const verb = verbFor(n, t);
+  const href = linkFor(g);
+  const verb = verbFor(g, t);
+  const label = actorLabel(g.actors, t);
+  const visibleAvatars = g.actors.slice(0, 3);
 
   const content = (
     <div className={s.body}>
       <div className={s.text}>
-        <Link to={`/u/${n.actor.username}`} className={s.strong}>
-          {actorName}
-        </Link>{' '}
+        <span className={s.strong}>{label}</span>{' '}
         {verb}
       </div>
-      {(n.post?.textPreview || n.comment?.textPreview) && (
+      {(g.post?.textPreview || g.comment?.textPreview) && (
         <div className={s.preview}>
-          "{n.comment?.textPreview ?? n.post?.textPreview}"
+          "{g.comment?.textPreview ?? g.post?.textPreview}"
         </div>
       )}
     </div>
   );
 
-  const row = (
-    <article className={clsx(s.item, !n.read && s.itemUnread)}>
-      <Link to={`/u/${n.actor.username}`} aria-label={actorName}>
+  const avatarSection =
+    g.actors.length === 1 ? (
+      <Link to={`/u/${g.actors[0].username}`} aria-label={label}>
         <Avatar
-          src={n.actor.avatarUrl}
-          name={actorName}
+          src={g.actors[0].avatarUrl}
+          name={g.actors[0].displayName || g.actors[0].username}
           size="md"
           alt=""
         />
       </Link>
+    ) : (
+      <div className={s.avatarStack}>
+        {visibleAvatars.map((actor, i) => (
+          <div key={actor.id} className={s.stackedAvatar} style={{ zIndex: visibleAvatars.length - i }}>
+            <Avatar
+              src={actor.avatarUrl}
+              name={actor.displayName || actor.username}
+              size="sm"
+              alt=""
+            />
+          </div>
+        ))}
+      </div>
+    );
+
+  const row = (
+    <article className={clsx(s.item, g.anyUnread && s.itemUnread)}>
+      {avatarSection}
       {content}
-      <time className={s.date} dateTime={n.createdAt}>
-        {formatRelative(n.createdAt)}
+      <time className={s.date} dateTime={g.latestCreatedAt}>
+        {formatRelative(g.latestCreatedAt)}
       </time>
     </article>
   );
@@ -191,10 +277,10 @@ function NotificationRow({ n }: { n: NotificationDTO }) {
   return href ? <Link to={href}>{row}</Link> : row;
 }
 
-function verbFor(n: NotificationDTO, t: (key: string) => string): string {
-  switch (n.type) {
+function verbFor(g: GroupedNotification, t: (k: string) => string): string {
+  switch (g.type) {
     case 'like':
-      return n.comment ? t('notifications.likedComment') : t('notifications.likedPost');
+      return g.comment ? t('notifications.likedComment') : t('notifications.likedPost');
     case 'comment':
       return t('notifications.commentedOn');
     case 'reply':
@@ -210,9 +296,9 @@ function verbFor(n: NotificationDTO, t: (key: string) => string): string {
   }
 }
 
-function linkFor(n: NotificationDTO): string | null {
-  if (n.type === 'follow') return `/u/${n.actor.username}`;
-  if (n.type === 'message' && n.message) return `/messages/${n.message.conversationId}`;
-  if (n.post) return `/p/${n.post.id}`;
+function linkFor(g: GroupedNotification): string | null {
+  if (g.type === 'follow' && g.actors.length === 1) return `/u/${g.actors[0].username}`;
+  if (g.type === 'message' && g.message) return `/messages/${g.message.conversationId}`;
+  if (g.post) return `/p/${g.post.id}`;
   return null;
 }

@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
-const API_TARGET = process.env.VITE_API_TARGET || 'http://localhost:8888';
+const API_TARGET = process.env.VITE_API_TARGET || 'http://localhost:7945';
 
 export default defineConfig({
   plugins: [react()],
@@ -13,7 +13,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 5947,
     strictPort: true,
     proxy: {
       '/api': {

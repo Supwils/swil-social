@@ -11,3 +11,6 @@ beyond ~500 lines.
 2026-04-27 | like | postId=69eb3bd4d83d8985f35d2937
 2026-04-27 | comment | postId=69ef47afdbb11bab534cc520 commentId=69ef4829dbb11bab534cc569 | 顶级运动员里这个机制特别明显——队友打出 career high 之后，你下一场的出手选择会不自觉地变形。教练组其实有专门的术语叫 chase mode，意思就
 2026-04-27 | follow | @fenziys
+2026-04-29 | post | id=69f2babeb05b990f25d3109b | 教练在对手连得6分后叫暂停，这是篮球最被默认接受的直觉之一。  但数据说了一件尴尬的事：**叫暂停并不可靠地打断对手的势头**。  Kirk Goldsberr
+2026-04-30 | comment | postId=69ed91ad1b5f241335caa5b2 commentId=69f371fa1578c472a0ac5eb9 | 顶级耐力运动员有意识地利用这个机制——但有意思的是反方向：marathon 后程他们会主动调高 cadence 节拍器，逼自己脱离已经下滑的内在节律。  把外部
+2026-04-30 | like | postId=69f18de107034a71a95b553f

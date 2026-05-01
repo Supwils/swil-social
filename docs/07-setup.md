@@ -97,19 +97,19 @@ npm install            # once
 npm --prefix server install
 npm --prefix client install
 
-npm run dev            # starts server on :8888 AND client on :5173
+npm run dev            # starts server on :7945 AND client on :5947
 ```
 
-Open `http://localhost:5173`. The Vite dev server proxies `/api/*` and `/auth/google*` to `:8888`.
+Open `http://localhost:5947`. The Vite dev server proxies `/api/*` and `/auth/google*` to `:7945`.
 
 ### Or separately
 
 ```sh
 # Terminal 1 — backend
-cd server && npm run dev   # :8888
+cd server && npm run dev   # :7945
 
 # Terminal 2 — frontend
-cd client && npm run dev   # :5173
+cd client && npm run dev   # :5947
 ```
 
 What works:
@@ -119,9 +119,9 @@ What works:
 - `/api/v1/auth/*` and `/api/v1/users/*` on the new API surface.
 
 What works (post-Round 4):
-- **Full end-to-end user flows via the new client** on `http://localhost:5173`: register, login, logout, view feed (following + global + by-tag), user profile, post detail with comments, like/unlike, follow/unfollow, edit profile, change password, upload avatar, change theme.
+- **Full end-to-end user flows via the new client** on `http://localhost:5947`: register, login, logout, view feed (following + global + by-tag), user profile, post detail with comments, like/unlike, follow/unfollow, edit profile, change password, upload avatar, change theme.
 - `/api/v1/*` for all of Posts, Comments, Likes, Follows, Tags, Feed, Users, Auth.
-- Legacy flat URLs still served by the server (`client-legacy/` can still run against `:8888` if you want to verify parity).
+- Legacy flat URLs still served by the server (`client-legacy/` can still run against `:7945` if you want to verify parity).
 - Not yet: Notifications, DMs (Round 6). Visual design (Round 5 — current UI is intentionally barebones).
 
 Root scripts (from repo root):
@@ -146,7 +146,7 @@ Server scripts (inside `server/`):
 Client scripts (inside `client/`):
 | Command | Purpose |
 |---|---|
-| `npm run dev` | Vite dev server on :5173 |
+| `npm run dev` | Vite dev server on :5947 |
 | `npm run build` | Typecheck then production build to `dist/` |
 | `npm run preview` | Serve the prod build locally |
 | `npm run typecheck` | Strict TS check |
@@ -176,7 +176,7 @@ npm run typecheck
 npm test
 ```
 
-Ports will be 5173 (Vite) and 8888 (API), with the client Vite config proxying `/api` to the server.
+Ports will be 5947 (Vite) and 7945 (API), with the client Vite config proxying `/api` to the server.
 
 ---
 
@@ -198,10 +198,10 @@ Creates: 15 users (each password `password123`), 50 posts with Unsplash images, 
 ### `MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017`
 MongoDB isn't running. `brew services start mongodb-community` (or equivalent).
 
-### `EADDRINUSE :::8888`
+### `EADDRINUSE :::7945`
 Another process holds the port.
 ```sh
-lsof -i :8888   # find the PID
+lsof -i :7945   # find the PID
 kill <PID>
 ```
 
@@ -209,7 +209,7 @@ kill <PID>
 Legacy sessions live in memory. Any server restart drops them. This is fixed in Round 2 when sessions move to Mongo.
 
 ### CORS error in browser console
-The backend expects requests from `http://localhost:3000` (legacy) or `http://localhost:5173` (new). If you changed ports, update `CORS_ORIGINS` in `server/.env`.
+The backend expects requests from `http://localhost:3000` (legacy) or `http://localhost:5947` (new). If you changed ports, update `CORS_ORIGINS` in `server/.env`.
 
 ### Images don't upload
 Cloudinary env vars not set, or invalid. The server should log a clear message; if it doesn't, file a bug (Round 3 owns improving this).

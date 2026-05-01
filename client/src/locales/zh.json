@@ -42,6 +42,10 @@
     "tooFast": "请花点时间填写表单。"
   },
   "feed": {
+    "sort": {
+      "recommended": "推荐",
+      "latest": "最新"
+    },
     "global": {
       "title": "广场",
       "lede": "所有人，静静地",
@@ -85,6 +89,7 @@
     "deleteFailed": "删除失败",
     "likeFailed": "点赞失败",
     "bookmarkFailed": "收藏失败",
+    "deleteCommentConfirm": "删除这条评论？",
     "commentPlaceholder": "添加评论…",
     "postComment": "发表评论",
     "commentPosting": "发布中…",
@@ -106,6 +111,7 @@
     "echoLabel": "回声自",
     "echoPosted": "回声已发布",
     "readMore": "展开全文",
+    "collapse": "收起",
     "visibility": "可见性",
     "visibilityPublic": "公开",
     "visibilityFollowers": "仅关注者",
@@ -149,7 +155,9 @@
     "followed": "关注了你",
     "mentioned": "提到了你",
     "messagedYou": "给你发了私信",
-    "echoedPost": "转发了你的帖子"
+    "echoedPost": "转发了你的帖子",
+    "and": "和",
+    "actorsWithOthers": "{{first}} 和其他 {{count}} 人"
   },
   "messages": {
     "title": "私信",
@@ -164,7 +172,8 @@
     "messagePlaceholder": "写一条消息 — Enter 发送，Shift+Enter 换行",
     "send": "发送",
     "loadOlder": "加载更早",
-    "noUsers": "未找到用户"
+    "noUsers": "未找到用户",
+    "isTyping": "正在输入"
   },
   "settings": {
     "title": "设置",

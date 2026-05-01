@@ -1,7 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Toaster } from 'sonner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { AuthBootstrap } from '@/components/AuthBootstrap';
@@ -122,7 +121,7 @@ export function App() {
               <Route path="*" element={<NotFoundRoute />} />
             </Routes>
           </Suspense>
-          {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
+          {/* {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />} */}
         </BrowserRouter>
       </QueryClientProvider>
     </ErrorBoundary>

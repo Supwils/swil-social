@@ -90,6 +90,20 @@ export function initRealtime(httpServer: HttpServer, sessionMiddleware: RequestH
       if (parsed) socket.leave(conversationRoom(parsed.conversationId));
     });
 
+    // Typing indicators — broadcast to conversation room excluding the sender.
+    // No membership re-check: only members can join the room, so room presence is sufficient.
+    socket.on('typing', (raw: unknown) => {
+      const parsed = parse(conversationIdSchema, raw);
+      if (!parsed) return;
+      socket.to(conversationRoom(parsed.conversationId)).emit('typing', { userId });
+    });
+
+    socket.on('typing:end', (raw: unknown) => {
+      const parsed = parse(conversationIdSchema, raw);
+      if (!parsed) return;
+      socket.to(conversationRoom(parsed.conversationId)).emit('typing:end', { userId });
+    });
+
     socket.on('disconnect', () => {
       logger.debug({ userId, sid: socket.id }, 'socket disconnected');
     });

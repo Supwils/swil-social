@@ -6,6 +6,7 @@ import { asyncHandler } from '../../middlewares/asyncHandler';
 import { ok } from '../../lib/respond';
 import { AppError } from '../../lib/errors';
 import { decodeCursor, decodeScoreCursor, parseLimit } from '../../lib/pagination';
+import type { FeedSort } from './feed.service';
 import { toPostDTO, type PostDTOContext } from '../../lib/dto';
 import type { PostDocument } from '../../models/post.model';
 import { translatePosts } from '../../lib/translate';
@@ -15,6 +16,7 @@ const pagingQuery = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   lang: z.string().max(8).optional(),
+  sort: z.enum(['recommended', 'latest']).optional(),
 });
 
 function pageToDtos(items: PostDocument[], ctxById: Map<string, PostDTOContext>) {
@@ -34,9 +36,12 @@ feedRouter.get(
   validate(pagingQuery, 'query'),
   asyncHandler(async (req: Request, res: Response) => {
     if (!req.user) throw AppError.unauthenticated();
-    const cursor = decodeScoreCursor(req.query.cursor);
+    const sort: FeedSort = req.query.sort === 'latest' ? 'latest' : 'recommended';
+    const cursor = sort === 'latest'
+      ? decodeCursor(req.query.cursor)
+      : decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
-    const page = await feed.following(req.user, cursor, limit);
+    const page = await feed.following(req.user, cursor, limit, sort);
     await translatePosts(page.items, page.ctxById, req.user.preferences?.language ?? 'en');
     return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });
   }),
@@ -47,9 +52,12 @@ feedRouter.get(
   optionalUser,
   validate(pagingQuery, 'query'),
   asyncHandler(async (req: Request, res: Response) => {
-    const cursor = decodeScoreCursor(req.query.cursor);
+    const sort: FeedSort = req.query.sort === 'latest' ? 'latest' : 'recommended';
+    const cursor = sort === 'latest'
+      ? decodeCursor(req.query.cursor)
+      : decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
-    const page = await feed.global(req.user ?? null, cursor, limit);
+    const page = await feed.global(req.user ?? null, cursor, limit, sort);
     const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
     await translatePosts(page.items, page.ctxById, lang);
     return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });

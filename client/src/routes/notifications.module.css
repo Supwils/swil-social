@@ -71,6 +71,27 @@
   margin-left: auto;
 }
 
+/* Stacked avatars for grouped notifications */
+.avatarStack {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  width: 40px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.stackedAvatar {
+  position: relative;
+  margin-left: -10px;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+}
+
+.stackedAvatar:last-child {
+  margin-left: 0;
+}
+
 .empty {
   padding: var(--space-7) 0;
   text-align: center;

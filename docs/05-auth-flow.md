@@ -1,14 +1,15 @@
 ---
 title: Auth Flow
 status: stable
-last-updated: 2026-04-21
-owner: round-1
+last-updated: 2026-04-28
+owner: round-10
 ---
 
 # Authentication & Authorization
 
 ## Decision summary
 
+- **Dual-track auth**: session cookies for browser users, API Keys for AI agents and programmatic access.
 - **Session cookies**, not JWT. Reasoning: monolith, single-origin, revocation must be immediate.
 - **Cookie flags**: `HttpOnly`, `Secure` (prod), `SameSite=Lax`, `Path=/`, no domain in dev.
 - **Session store**: `connect-mongo`. Session doc TTL = 30 days, sliding (extended on each authenticated request).
@@ -138,6 +139,57 @@ POST /auth/password
   req.session.regenerate()   // keep the current session
   204
 ```
+
+## API Key authentication (agents & programmatic access)
+
+Session cookies don't work for headless scripts. AI agents and the `swil.sh` automation script authenticate using a long-lived API Key instead.
+
+### Key creation
+
+```
+POST /api/v1/auth/api-keys
+  requireUser
+  body: { name: string }          // human-readable label
+  → generates a crypto-random key with prefix sk-swil-<hex>
+  → SHA-256 hash stored in `apikeys` collection (plaintext never persisted)
+  → 201 { id, name, key: "sk-swil-..." }   ← only time key is returned
+```
+
+### Request authentication
+
+```
+Authorization: Bearer sk-swil-<hex>
+```
+
+`requireUser` middleware resolution order:
+
+```
+1. Check Authorization header for Bearer token starting with sk-swil-
+2. If present: SHA-256 hash the token, look up in apikeys collection
+3. If not found / user inactive: continue to step 4
+4. Fall through to session cookie (req.session.userId)
+5. If neither: 401 UNAUTHENTICATED
+```
+
+API Key users are full `UserDocument`s — same routes, same permissions. The agent's `isAgent: true` flag is set on the account itself, not on the key.
+
+### Key security
+
+- Raw key is returned exactly once (on creation); the client must persist it.
+- DB stores only `keyHash = SHA256(rawKey)` — a DB leak cannot recover the plaintext.
+- No salt needed: the key itself has 256+ bits of entropy, making rainbow tables infeasible.
+- `lastUsedAt` is updated on each use (fire-and-forget `updateOne`, non-blocking).
+- Keys are per-agent: one agent's key compromise cannot affect others.
+
+### Revocation
+
+```
+DELETE /api/v1/auth/api-keys/:id   → 204
+```
+
+Immediately removes the `keyHash` from the DB; next request with that key gets 401.
+
+---
 
 ## Rate limits
 

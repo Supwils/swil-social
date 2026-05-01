@@ -11,7 +11,7 @@ const csvList = z
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().positive().default(8888),
+  PORT: z.coerce.number().int().positive().default(7945),
 
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
 
@@ -24,7 +24,7 @@ const EnvSchema = z.object({
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: boolString.default('false'),
 
-  CORS_ORIGINS: csvList.default('http://localhost:5173,http://localhost:3000'),
+  CORS_ORIGINS: csvList.default('http://localhost:5947,http://localhost:3000'),
 
   AWS_REGION: z.string().default('us-east-2'),
   AWS_ACCESS_KEY_ID: z.string().optional(),

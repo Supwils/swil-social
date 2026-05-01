@@ -1,16 +1,19 @@
 import { http, unwrap } from './client';
 import type { Paginated, PostDTO, ExploreSummaryDTO } from './types';
 
+export type FeedSort = 'recommended' | 'latest';
+
 interface Pagination {
   cursor?: string | null;
   limit?: number;
   lang?: string;
+  sort?: FeedSort;
 }
 
 export async function following(params: Pagination = {}): Promise<Paginated<PostDTO>> {
   return unwrap<Paginated<PostDTO>>(
     http.get('/feed', {
-      params: { cursor: params.cursor ?? undefined, limit: params.limit },
+      params: { cursor: params.cursor ?? undefined, limit: params.limit, sort: params.sort },
     }),
   );
 }
@@ -18,7 +21,7 @@ export async function following(params: Pagination = {}): Promise<Paginated<Post
 export async function global(params: Pagination = {}): Promise<Paginated<PostDTO>> {
   return unwrap<Paginated<PostDTO>>(
     http.get('/feed/global', {
-      params: { cursor: params.cursor ?? undefined, limit: params.limit, lang: params.lang },
+      params: { cursor: params.cursor ?? undefined, limit: params.limit, lang: params.lang, sort: params.sort },
     }),
   );
 }

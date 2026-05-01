@@ -1,8 +1,8 @@
 ---
 title: Architecture
 status: stable
-last-updated: 2026-04-21
-owner: round-1
+last-updated: 2026-04-28
+owner: round-10
 ---
 
 # Architecture
@@ -11,7 +11,7 @@ owner: round-1
 
 ```
           ┌────────────────────────────────┐
-          │  Browser (React 18 + TS)       │
+          │  Browser (React 19 + TS)       │
           │  Vite build · CSS Modules      │
           │  Zustand (client state)        │
           │  TanStack Query (server cache) │
@@ -57,12 +57,19 @@ client/
 │   ├── routes/                  # one file per route, lazy-loaded
 │   │   ├── login.tsx
 │   │   ├── register.tsx
-│   │   ├── feed.tsx
-│   │   ├── post.$id.tsx
-│   │   ├── user.$username.tsx
+│   │   ├── feedGlobal.tsx
+│   │   ├── feedFollowing.tsx
+│   │   ├── feedTag.tsx
+│   │   ├── post.tsx             # single post + comments
+│   │   ├── user.tsx             # profile page
 │   │   ├── settings.tsx
-│   │   ├── messages.tsx
-│   │   └── notifications.tsx
+│   │   ├── messages.tsx         # conversation list
+│   │   ├── conversation.tsx     # DM thread
+│   │   ├── notifications.tsx
+│   │   ├── bookmarks.tsx
+│   │   ├── explore/             # people + post search tabs
+│   │   ├── showcase.tsx         # public read-only landing
+│   │   └── notFound.tsx
 │   ├── features/                # feature-first organization
 │   │   ├── auth/
 │   │   ├── posts/
@@ -73,9 +80,10 @@ client/
 │   │   ├── notifications/
 │   │   └── messages/
 │   ├── components/              # generic, cross-feature UI
-│   │   ├── primitives/          # Button, Input, Avatar, Card, Dialog
-│   │   ├── layout/              # AppShell, Sidebar, TopBar
-│   │   └── feedback/            # Toast, Skeleton, ErrorState, EmptyState
+│   │   ├── primitives/          # Button, Input, Avatar, Card, Dialog, AnimatedCounter
+│   │   ├── layout/              # AppShell, Sidebar, MobileTabBar
+│   │   ├── RealtimeBridge.tsx   # socket lifecycle + cache sync
+│   │   └── RouteTransition.tsx  # page-level enter animation
 │   ├── api/                     # axios instance + typed endpoint fns
 │   │   ├── client.ts
 │   │   ├── auth.api.ts
@@ -83,6 +91,7 @@ client/
 │   │   └── ...
 │   ├── stores/                  # Zustand stores (client-only state)
 │   │   ├── session.store.ts
+│   │   ├── realtime.store.ts    # socket connection + unread counts
 │   │   ├── ui.store.ts          # theme, cmdk open, etc.
 │   │   └── draft.store.ts
 │   ├── hooks/                   # reusable hooks
@@ -131,14 +140,16 @@ server/
 │   │   ├── notifications/
 │   │   └── messages/
 │   ├── models/                  # Mongoose schemas (thin)
+│   │   # user, post, comment, like, follow, tag, notification,
+│   │   # conversation, message, apiKey, bookmark, event
 │   ├── realtime/
-│   │   ├── io.ts                # Socket.io server init
-│   │   └── handlers/
+│   │   └── io.ts                # Socket.io server: rooms, typing, membership check
 │   ├── lib/                     # errors, logger, pagination, helpers
 │   └── types/                   # shared types
 ├── scripts/
 │   ├── seed.ts                  # dummy data with unsplash images
-│   └── reset-db.ts
+│   ├── reset-db.ts
+│   └── backfill-feed-scores.ts  # one-time migration: seed feedScore on old posts
 ```
 
 Route → controller → service → model. Each layer has a single responsibility:
@@ -180,7 +191,7 @@ One codebase, three environments, switched entirely by env vars.
 | `NODE_ENV` | development | development | production |
 | `MONGODB_URI` | `mongodb://127.0.0.1:27017/swil_social` | Atlas cluster | Atlas cluster |
 | `REDIS_URL` | `redis://127.0.0.1:6379` (optional) | Upstash/managed | managed |
-| `CORS_ORIGINS` | `http://localhost:5173` | dev frontend URL | prod frontend URL |
+| `CORS_ORIGINS` | `http://localhost:5947` | dev frontend URL | prod frontend URL |
 | `COOKIE_SECURE` | false | true | true |
 
 No conditional logic reads `NODE_ENV` to change behavior beyond log verbosity and error detail. Everything else is a config value.

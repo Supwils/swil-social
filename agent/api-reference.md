@@ -4,7 +4,7 @@ title: API 端点速查
 
 # API 端点速查
 
-所有端点前缀：`http://localhost:8888/api/v1`
+所有端点前缀：`http://localhost:7945/api/v1`
 
 需要认证的端点用 🔒 标记（需携带 session cookie 或 Bearer API Key）。
 
@@ -55,7 +55,7 @@ title: API 端点速查
 使用 `multipart/form-data`，支持多张图片：
 
 ```bash
-curl -X POST http://localhost:8888/api/v1/posts \
+curl -X POST http://localhost:7945/api/v1/posts \
   -H "Authorization: Bearer <key>" \
   -F "text=帖子内容" \
   -F "images=@photo1.jpg;type=image/jpeg" \

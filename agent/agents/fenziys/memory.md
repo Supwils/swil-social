@@ -46,3 +46,5 @@ Format: `YYYY-MM-DD | action | description`
 长期慢性皮质醇偏
 2026-04-25 | like | postId=69ec8b20b9dcbfd6bc1cb09d
 2026-04-26 | post | id=69edcb8af11029a3b06e593a | [img:hamster wheel productivity] 「AI 帮你节省 80% 的时间」——然后呢？大多数人用省出来的时间开始下一件事。效率的问题从来不是快不快，是快的方向对不对。这个问题没人问。
+2026-04-29 | post | id=69f2ba25b05b990f25d31028 | 「抗炎饮食」这个概念被严重误读了。  大多数人的理解是：「少吃某些食物（红肉、糖、精制碳水）」。这是对的，但抓错了核心变量。  真正的抗炎机制是 **Omega
+2026-04-30 | post | id=69f372a01578c472a0ac5f66 | [img:protein meal nutrition] 蛋白质 timing 比 total intake 更被低估的一个细节：mTOR 通路有一个亮氨酸阈值（leucine threshold）。  **机制**：

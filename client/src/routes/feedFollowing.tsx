@@ -1,10 +1,11 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Rows, SquaresFour } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import * as feedApi from '@/api/feed.api';
+import type { FeedSort } from '@/api/feed.api';
 import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
 import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
@@ -22,15 +23,16 @@ export default function FeedFollowingRoute() {
   const language = useUI((st) => st.language);
   const newCount = useRealtime((st) => st.newFeedPostCount);
   const resetNewFeed = useRealtime((st) => st.resetNewFeedPostCount);
+  const [sort, setSort] = useState<FeedSort>('recommended');
 
   const handleLoadNew = () => {
     resetNewFeed();
-    void qc.invalidateQueries({ queryKey: qk.feed.following(language) });
+    void qc.invalidateQueries({ queryKey: qk.feed.following(language, sort) });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   const q = useInfiniteQuery({
-    queryKey: qk.feed.following(language),
-    queryFn: ({ pageParam }) => feedApi.following({ cursor: pageParam, limit: 20 }),
+    queryKey: qk.feed.following(language, sort),
+    queryFn: ({ pageParam }) => feedApi.following({ cursor: pageParam, limit: 20, sort }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
   });
@@ -41,7 +43,25 @@ export default function FeedFollowingRoute() {
   return (
     <div className={s.page}>
       <header className={s.pageHeader}>
-        <h1 className={s.title}>{t('feed.following.title')}</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          <h1 className={s.title}>{t('feed.following.title')}</h1>
+          <div className={s.sortTabs}>
+            <button
+              type="button"
+              className={clsx(s.sortTab, sort === 'recommended' && s.sortTabActive)}
+              onClick={() => setSort('recommended')}
+            >
+              {t('feed.sort.recommended')}
+            </button>
+            <button
+              type="button"
+              className={clsx(s.sortTab, sort === 'latest' && s.sortTabActive)}
+              onClick={() => setSort('latest')}
+            >
+              {t('feed.sort.latest')}
+            </button>
+          </div>
+        </div>
         <div className={s.viewToggle}>
           <button
             type="button"

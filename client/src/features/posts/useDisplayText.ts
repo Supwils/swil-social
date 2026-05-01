@@ -25,7 +25,7 @@ export function useDisplayText(activeText: string, fallback: string): string {
     }
 
     // Case 2: trailing / embedded runs of ≥4 consecutive short lines
-    // e.g. "#\nmTOR\n#\n分子营养学" → "#mTOR#分子营养学"
+    // e.g. "#\nmTOR\n#\nkeyword" → "#mTOR#keyword"
     const out: string[] = [];
     let run: string[] = [];
     const flush = () => {

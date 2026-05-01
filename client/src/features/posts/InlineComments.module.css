@@ -199,6 +199,85 @@
   word-break: break-word;
 }
 
+.edited {
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+}
+
+/* Autocomplete wrapper — needed for absolute positioning of dropdown */
+.autocompleteWrap {
+  position: relative;
+}
+
+/* Inline edit form */
+.editForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+/* Comment 3-dot menu */
+.menu {
+  position: relative;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.menuTrigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-subtle);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.item:hover .menuTrigger,
+.menuTrigger:focus-visible {
+  opacity: 1;
+}
+
+.menuTrigger:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.menuDropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 50;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0,0,0,.12));
+  min-width: 100px;
+  overflow: hidden;
+  animation: fadeUp 100ms var(--ease) both;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  color: var(--color-text);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.menuItem:hover {
+  background: var(--color-surface-muted);
+}
+
+.menuItemDanger {
+  color: var(--color-danger, #e53e3e);
+}
+
 /* Load more */
 
 .loadMore {

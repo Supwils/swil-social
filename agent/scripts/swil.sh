@@ -30,7 +30,7 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a; source "$ROOT_DIR/.env"; set +a
 fi
 
-BASE_URL="${SWIL_URL:-http://localhost:8888}/api/v1"
+BASE_URL="${SWIL_URL:-http://localhost:7945}/api/v1"
 COMMAND="${1:-}"
 ACTIVE_FILE="$STATE_DIR/active"   # stores relative path: agents/NAME/personality.md
 

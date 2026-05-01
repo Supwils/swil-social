@@ -9,17 +9,28 @@ export interface AvatarProps {
   name?: string;
   size?: AvatarSize;
   className?: string;
+  /** Show a pulsing green status indicator at the bottom-right corner */
+  online?: boolean;
 }
 
-export function Avatar({ src, alt, name, size = 'md', className }: AvatarProps) {
+export function Avatar({ src, alt, name, size = 'md', className, online }: AvatarProps) {
   const initial = name ? name.trim().charAt(0).toUpperCase() : '·';
-  return (
+  const avatarEl = (
     <span className={clsx(s.avatar, s[size], className)} aria-hidden={!alt}>
       {src ? (
         <img src={src} alt={alt ?? ''} className={s.img} loading="lazy" />
       ) : (
         <span>{initial}</span>
       )}
+    </span>
+  );
+
+  if (!online) return avatarEl;
+
+  return (
+    <span className={s.wrapper}>
+      {avatarEl}
+      <span className={s.statusDot} aria-label="online" />
     </span>
   );
 }

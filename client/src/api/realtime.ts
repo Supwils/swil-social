@@ -47,7 +47,9 @@ export type RealtimeEvent =
   | 'message'
   | 'message:read'
   | 'conversation:update'
-  | 'post:new';
+  | 'post:new'
+  | 'typing'
+  | 'typing:end';
 
 export function on(event: RealtimeEvent, listener: (payload: unknown) => void): () => void {
   const s = socket;
@@ -60,4 +62,12 @@ export function on(event: RealtimeEvent, listener: (payload: unknown) => void): 
 
 export function emit(event: string, payload?: unknown, ack?: (ok: boolean) => void): void {
   socket?.emit(event, payload ?? {}, ack);
+}
+
+export function emitTyping(conversationId: string): void {
+  socket?.emit('typing', { conversationId });
+}
+
+export function emitTypingEnd(conversationId: string): void {
+  socket?.emit('typing:end', { conversationId });
 }

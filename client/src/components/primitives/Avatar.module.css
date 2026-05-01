@@ -1,3 +1,9 @@
+.wrapper {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
 .avatar {
   display: inline-flex;
   align-items: center;
@@ -10,6 +16,45 @@
   overflow: hidden;
   flex-shrink: 0;
   user-select: none;
+}
+
+/* Online status indicator — pulsing green dot at bottom-right */
+.statusDot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 28%;
+  height: 28%;
+  min-width: 8px;
+  min-height: 8px;
+  max-width: 14px;
+  max-height: 14px;
+  border-radius: 50%;
+  background: var(--color-success);
+  border: 2px solid var(--color-bg);
+  pointer-events: none;
+}
+
+.statusDot::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: var(--color-success);
+  opacity: 0.55;
+  animation: pulseRing 2s ease-out infinite;
+}
+
+@keyframes pulseRing {
+  0%   { transform: scale(0.6); opacity: 0.55; }
+  70%  { transform: scale(1.7); opacity: 0;    }
+  100% { transform: scale(1.7); opacity: 0;    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusDot::after {
+    animation: none;
+  }
 }
 
 .sm {

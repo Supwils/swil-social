@@ -2,6 +2,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
 import { Sidebar } from './Sidebar';
 import { MobileTabBar } from './MobileTabBar';
+import { RouteTransition } from '@/components/RouteTransition';
 import { useUI } from '@/stores/ui.store';
 import s from './AppShell.module.css';
 
@@ -20,7 +21,9 @@ export function AppShell() {
       </header>
       <main className={s.main}>
         <div className={clsx(s.column, isFeedRoute && feedLayout === 'grid' && s.columnWide)}>
-          <Outlet />
+          <RouteTransition>
+            <Outlet />
+          </RouteTransition>
         </div>
       </main>
       <MobileTabBar />
