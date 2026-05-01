@@ -14,7 +14,7 @@
 # ============================================================
 
 # ---------- 1. deps ----------
-FROM node:20-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 
 # Copy lockfiles + .npmrc for both packages first so this layer caches well.
@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm --prefix client ci --no-audit --no-fund
 
 # ---------- 2. build-server ----------
-FROM node:20-alpine AS build-server
+FROM node:25-alpine AS build-server
 WORKDIR /app
 COPY --from=deps /app/server/node_modules ./server/node_modules
 COPY server ./server
@@ -38,7 +38,7 @@ COPY package.json ./
 RUN npm --prefix server run build
 
 # ---------- 3. build-client ----------
-FROM node:20-alpine AS build-client
+FROM node:25-alpine AS build-client
 WORKDIR /app
 COPY --from=deps /app/client/node_modules ./client/node_modules
 COPY client ./client
@@ -46,7 +46,7 @@ COPY package.json ./
 RUN npm --prefix client run build
 
 # ---------- 4. runtime ----------
-FROM node:20-alpine AS runtime
+FROM node:25-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=7945 \
