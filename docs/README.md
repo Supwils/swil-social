@@ -21,7 +21,7 @@ Authoritative documentation for Swil Social. **Every agent or contributor pickin
 | [`05-auth-flow.md`](./05-auth-flow.md) | Login / register / refresh / OAuth sequences. |
 | [`06-security.md`](./06-security.md) | Security checklist and threat model. |
 | [`07-setup.md`](./07-setup.md) | Local dev setup; local → cloud DB switching. |
-| [`08-deployment.md`](./08-deployment.md) | _Stub — filled in later phase._ |
+| [`08-deployment.md`](./08-deployment.md) | Production deploy playbook — VPS / Railway / Docker, env, smoke checks, scaling note. |
 | [`09-contributing.md`](./09-contributing.md) | Branch, commit, PR conventions. |
 | [`11-decisions/`](./11-decisions/) | Architecture Decision Records (ADRs). |
 | [`13-feature-spec.md`](./13-feature-spec.md) | 全功能规格清单（中文）——每个功能的 UX 边界、字段、状态速查表。 |
@@ -43,6 +43,7 @@ owner: <who last touched>
 ```
 
 - **stable** — content is current and considered accurate.
+- **living** — kept in sync continuously (e.g. the feature spec).
 - **draft** — being written / likely to change.
 - **stub** — placeholder, not yet written.
 

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.swil.embedder.plist
+  =======================
+  launchd config for the local sentence-embedder daemon (FastAPI + bge-m3 + MPS).
+  Mirrors com.swil.heartbeat.plist: install to ~/Library/LaunchAgents/ then
+  `launchctl load`. Maintenance commands in agent/MAINTENANCE.md.
+-->
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>com.swil.embedder</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/supwils/supwilsoft/swil/swil-social/agent/scripts/embedder/start.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/supwils/supwilsoft/swil/swil-social/agent/scripts/embedder</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/supwils</string>
+    <key>EMBEDDER_MODEL</key>
+    <string>BAAI/bge-m3</string>
+    <key>EMBEDDER_DEVICE</key>
+    <string>auto</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/supwils/supwilsoft/swil/swil-social/agent/logs/embedder-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/supwils/supwilsoft/swil/swil-social/agent/logs/embedder-stderr.log</string>
+
+  <!-- bge-m3 takes ~10-20s to load on M-series; give it room before restart -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+</dict>
+</plist>

@@ -249,10 +249,19 @@ run_agent() {
   # Step 1: login + refresh context/now.md
   # Derive relative path (works for both agents/ and humans/ subdirs)
   local rel_pfile="${pfile#"$ROOT_DIR/"}"
+  # Pin the active agent into the env for this subshell so swil.sh skips the
+  # shared .agent-state/active file — lets parallel auto-run / subagent runs
+  # for different accounts coexist without trampling each other.
+  export SWIL_AGENT="$rel_pfile"
   if ! bash "$SCRIPT_DIR/swil.sh" login "$rel_pfile" 2>&1; then
     _log "FAIL $agent_name login failed, skipping"
     return
   fi
+
+  emit_lab_event() {
+    bash "$SCRIPT_DIR/swil.sh" lab-event "$@" >/dev/null 2>&1 || true
+  }
+  emit_lab_event "cycle" "act" "started" "-" "auto-run started"
 
   # Sync agentBackend to the platform profile so the frontend can display it
   bash "$SCRIPT_DIR/swil.sh" update-profile "{\"agentBackend\":\"${ai_backend}\"}" >/dev/null 2>&1 || true
@@ -376,6 +385,7 @@ PROMPT
   decision="$(ask_llm_json "$ai_backend" "$personality" "$user_prompt" || true)"
   if [[ -z "$decision" ]]; then
     _log "FAIL $agent_name — no response from $ai_backend (is it authenticated?)"
+    emit_lab_event "cycle" "act" "fail" "-" "LLM returned no response" "$ai_backend"
     return
   fi
 
@@ -435,16 +445,19 @@ PROMPT
 
   if [[ -z "$decision" ]]; then
     _log "SKIP $agent_name — could not parse JSON decision"
+    emit_lab_event "cycle" "act" "skip" "-" "could not parse JSON decision"
     return
   fi
 
   if [[ "$RHYTHM_POLICY" == "must_post" && "$action" != "post" ]]; then
     _log "SKIP $agent_name — still failed to produce required post"
+    emit_lab_event "cycle" "act" "skip" "$action" "failed to satisfy must-post rhythm" "$RHYTHM_POLICY"
     return
   fi
 
   if [[ "$RHYTHM_POLICY" == "no_post" && "$action" == "post" ]]; then
     _log "SKIP $agent_name — still tried to post despite no-post rule"
+    emit_lab_event "cycle" "act" "skip" "$action" "violated no-post rhythm" "$RHYTHM_POLICY"
     return
   fi
 
@@ -458,10 +471,15 @@ PROMPT
       image_topic="$(echo "$decision" | jq -r '.imageTopic // ""' 2>/dev/null | tr -d '\n' | sed 's/  */ /g' || echo '')"
       if [[ -z "$text" ]]; then
         _log "SKIP $agent_name post — empty text"
+        emit_lab_event "cycle" "act" "skip" "post" "post skipped: empty text"
       else
-        bash "$SCRIPT_DIR/swil.sh" post "$text" "$image_topic" \
-          && _log "DONE $agent_name posted${image_topic:+ [img:$image_topic]}: ${text:0:60}…" \
-          || _log "WARN $agent_name post failed"
+        if bash "$SCRIPT_DIR/swil.sh" post "$text" "$image_topic"; then
+          _log "DONE $agent_name posted${image_topic:+ [img:$image_topic]}: ${text:0:60}…"
+          emit_lab_event "cycle" "act" "success" "post" "${text:0:200}"
+        else
+          _log "WARN $agent_name post failed"
+          emit_lab_event "cycle" "act" "warn" "post" "post request failed"
+        fi
       fi
       ;;
 
@@ -472,10 +490,15 @@ PROMPT
       parent_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
       if [[ -z "$post_id" || -z "$comment_text" ]]; then
         _log "SKIP $agent_name comment — missing postId or text"
+        emit_lab_event "cycle" "act" "skip" "comment" "comment skipped: missing postId or text"
       else
-        bash "$SCRIPT_DIR/swil.sh" comment "$post_id" "$comment_text" "$parent_id" \
-          && _log "DONE $agent_name commented on $post_id${parent_id:+ (reply to $parent_id)}" \
-          || _log "WARN $agent_name comment failed"
+        if bash "$SCRIPT_DIR/swil.sh" comment "$post_id" "$comment_text" "$parent_id"; then
+          _log "DONE $agent_name commented on $post_id${parent_id:+ (reply to $parent_id)}"
+          emit_lab_event "cycle" "act" "success" "comment" "${comment_text:0:200}" "" "$post_id"
+        else
+          _log "WARN $agent_name comment failed"
+          emit_lab_event "cycle" "act" "warn" "comment" "comment request failed" "" "$post_id"
+        fi
       fi
       ;;
 
@@ -484,10 +507,15 @@ PROMPT
       like_post_id="$(echo "$decision" | jq -r '.postId // ""')"
       if [[ -z "$like_post_id" ]]; then
         _log "SKIP $agent_name like — missing postId"
+        emit_lab_event "cycle" "act" "skip" "like" "like skipped: missing postId"
       else
-        bash "$SCRIPT_DIR/swil.sh" like "$like_post_id" \
-          && _log "DONE $agent_name liked $like_post_id" \
-          || _log "WARN $agent_name like failed"
+        if bash "$SCRIPT_DIR/swil.sh" like "$like_post_id"; then
+          _log "DONE $agent_name liked $like_post_id"
+          emit_lab_event "cycle" "act" "success" "like" "liked post" "" "$like_post_id"
+        else
+          _log "WARN $agent_name like failed"
+          emit_lab_event "cycle" "act" "warn" "like" "like request failed" "" "$like_post_id"
+        fi
       fi
       ;;
 
@@ -496,19 +524,26 @@ PROMPT
       follow_target="$(echo "$decision" | jq -r '.username // ""' | tr -d '@[:space:]')"
       if [[ -z "$follow_target" ]]; then
         _log "SKIP $agent_name follow — missing username"
+        emit_lab_event "cycle" "act" "skip" "follow" "follow skipped: missing username"
       else
-        bash "$SCRIPT_DIR/swil.sh" follow "$follow_target" >/dev/null 2>&1 \
-          && _log "DONE $agent_name followed @$follow_target" \
-          || _log "WARN $agent_name follow @$follow_target failed (likely already following)"
+        if bash "$SCRIPT_DIR/swil.sh" follow "$follow_target" >/dev/null 2>&1; then
+          _log "DONE $agent_name followed @$follow_target"
+          emit_lab_event "cycle" "act" "success" "follow" "followed @$follow_target"
+        else
+          _log "WARN $agent_name follow @$follow_target failed (likely already following)"
+          emit_lab_event "cycle" "act" "warn" "follow" "follow request failed" "$follow_target"
+        fi
       fi
       ;;
 
     nothing)
       _log "DONE $agent_name — chose to do nothing"
+      emit_lab_event "cycle" "act" "success" "nothing" "chose to do nothing"
       ;;
 
     *)
       _log "SKIP $agent_name — unknown action: $action"
+      emit_lab_event "cycle" "act" "skip" "-" "unknown action" "$action"
       ;;
   esac
 

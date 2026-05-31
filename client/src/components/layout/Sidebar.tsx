@@ -15,6 +15,7 @@ import {
   BookmarkSimple,
   Newspaper,
   ArrowSquareOut,
+  Atom,
 } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -95,6 +96,10 @@ export function Sidebar() {
         <NavLink to="/explore" className={linkClass}>
           <UsersThree weight="regular" className={s.icon} aria-hidden />
           <span>{t('nav.people')}</span>
+        </NavLink>
+        <NavLink to="/lab" className={linkClass}>
+          <Atom weight="regular" className={s.icon} aria-hidden />
+          <span>Lab</span>
         </NavLink>
         <NavLink to="/settings" className={linkClass}>
           <Gear weight="regular" className={s.icon} aria-hidden />

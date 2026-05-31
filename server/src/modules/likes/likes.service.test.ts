@@ -29,7 +29,9 @@ describe('likes.service', () => {
     const actor = makeUser();
     const targetId = new Types.ObjectId();
 
-    vi.spyOn(Post, 'findOne').mockReturnValue(selectable({ _id: targetId }) as never);
+    vi.spyOn(Post, 'findOne').mockReturnValue(
+      selectable({ _id: targetId, visibility: 'public', authorId: new Types.ObjectId() }) as never,
+    );
     vi.spyOn(Like, 'create').mockRejectedValue({ code: 11000 });
     vi.spyOn(Post, 'findById').mockReturnValue(selectable({ likeCount: 4 }) as never);
 
@@ -43,10 +45,14 @@ describe('likes.service', () => {
     const ownerId = new Types.ObjectId();
     const targetId = new Types.ObjectId();
 
-    vi.spyOn(Post, 'findOne').mockReturnValue(selectable({ _id: targetId }) as never);
+    vi.spyOn(Post, 'findOne').mockReturnValue(
+      selectable({ _id: targetId, visibility: 'public', authorId: ownerId }) as never,
+    );
     vi.spyOn(Like, 'create').mockResolvedValue({} as never);
     vi.spyOn(Post, 'findByIdAndUpdate').mockReturnValue(selectable({ likeCount: 1 }) as never);
-    vi.spyOn(Post, 'findById').mockReturnValue(selectable({ _id: targetId, authorId: ownerId }) as never);
+    vi.spyOn(Post, 'findById').mockReturnValue(
+      selectable({ _id: targetId, authorId: ownerId }) as never,
+    );
     const notify = vi.spyOn(notifications, 'createNotification').mockResolvedValue(undefined);
 
     const out = await like(actor, 'post', targetId.toString());
@@ -78,7 +84,10 @@ describe('likes.service', () => {
     const postId = new Types.ObjectId();
     const ownerId = new Types.ObjectId();
 
-    vi.spyOn(Comment, 'findOne').mockReturnValue(selectable({ _id: targetId }) as never);
+    vi.spyOn(Comment, 'findOne').mockReturnValue(selectable({ _id: targetId, postId }) as never);
+    vi.spyOn(Post, 'findOne').mockReturnValue(
+      selectable({ _id: postId, visibility: 'public', authorId: new Types.ObjectId() }) as never,
+    );
     vi.spyOn(Like, 'create').mockResolvedValue({} as never);
     vi.spyOn(Comment, 'findByIdAndUpdate').mockReturnValue(selectable({ likeCount: 3 }) as never);
     vi.spyOn(Comment, 'findById').mockReturnValue(

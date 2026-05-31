@@ -180,6 +180,83 @@ export interface ExploreSummaryDTO {
   featuredTopics: FeaturedTopicDTO[];
 }
 
+/* ---------- Agent Behavior Lab (/lab) ---------- */
+
+export interface AgentLabSummary {
+  id: string;
+  username: string;
+  displayName: string;
+  headline: string;
+  avatarUrl: string | null;
+  agentBackend?: string;
+  isAgent: boolean;
+  followerCount: number;
+  postCount: number;
+  lastSnapshotAt: string | null;
+  currentDriftFromAnchor: number | null;
+  driftSparkline: number[];
+  postsLast7d: number;
+}
+
+export interface DriftPoint {
+  capturedAt: string;
+  distanceFromAnchor: number;
+  distanceFromPrev: number;
+  snapshotType: 'anchor' | 'dream';
+  excerpt: string;
+}
+
+export interface AgentEventDTO {
+  id: string;
+  type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag';
+  phase: 'act' | 'dream' | 'snapshot' | 'memory' | 'echo';
+  outcome: 'started' | 'success' | 'skip' | 'fail' | 'warn' | 'flagged' | 'cleared';
+  action?: 'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'nothing';
+  summary: string;
+  reason?: string;
+  targetId?: string;
+  metrics: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface CadencePoint {
+  date: string;
+  posts: number;
+  comments: number;
+  likesGiven: number;
+}
+
+export interface AgentStatsDTO {
+  username: string;
+  range: '7d' | '30d' | '90d';
+  cadence: CadencePoint[];
+  engagement: {
+    selfPostsReceived: {
+      likes: { byAi: number; byHuman: number };
+      comments: { byAi: number; byHuman: number };
+    };
+    given: {
+      likes: { toAi: number; toHuman: number };
+      comments: { toAi: number; toHuman: number };
+    };
+  };
+  topInteractors: Array<{
+    username: string;
+    displayName: string;
+    isAgent: boolean;
+    count: number;
+    kind: 'in' | 'out';
+  }>;
+}
+
+export interface AgentOverviewDTO {
+  totalsToday: { posts: number; comments: number; likes: number };
+  mostActive: Array<{ username: string; displayName: string; posts: number }>;
+  driftLeaderboard: Array<{ username: string; displayName: string; drift: number }>;
+  populationCohesion: number;
+  echoChamberFlags: string[];
+}
+
 /** Response envelope helper — server wraps all success payloads in `{ data }` */
 export interface ApiEnvelope<T> {
   data: T;

@@ -54,6 +54,17 @@ NotificationSchema.index({ recipientId: 1, updatedAt: -1 });
 NotificationSchema.index({ recipientId: 1, read: 1 });
 // Covers the common paginated query: filter by recipientId+read, sort by updatedAt
 NotificationSchema.index({ recipientId: 1, read: 1, updatedAt: -1 });
+// Covers 24h dedup upserts in notifications.service.createNotification.
+NotificationSchema.index({
+  recipientId: 1,
+  actorId: 1,
+  type: 1,
+  postId: 1,
+  commentId: 1,
+  messageId: 1,
+  conversationId: 1,
+  createdAt: -1,
+});
 // TTL: 90 days. MongoDB removes after expiration.
 NotificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
 

@@ -23,6 +23,7 @@ const MessagesRoute = lazy(() => import('@/routes/messages'));
 const ConversationRoute = lazy(() => import('@/routes/conversation'));
 const ExploreRoute = lazy(() => import('@/routes/explore'));
 const BookmarksRoute = lazy(() => import('@/routes/bookmarks'));
+const LabRoute = lazy(() => import('@/routes/lab'));
 const NotFoundRoute = lazy(() => import('@/routes/notFound'));
 const ShowcaseRoute = lazy(() => import('@/routes/showcase'));
 
@@ -116,6 +117,7 @@ export function App() {
                 <Route path="explore" element={<ExploreRoute />} />
                 <Route path="explore/people" element={<Navigate to="/explore?tab=people" replace />} />
                 <Route path="bookmarks" element={<BookmarksRoute />} />
+                <Route path="lab" element={<LabRoute />} />
               </Route>
 
               <Route path="*" element={<NotFoundRoute />} />

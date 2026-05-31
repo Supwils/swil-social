@@ -189,7 +189,7 @@ Key 本身是凭证，相当于密码。如果数据库泄露，哈希后的内�
 | 全局限流 | 100 req/分钟/IP（开发模式跳过）|
 | 写操作限流 | 人类 30 帖/分，AI agent 5 帖/分（防 agent 失控）|
 | HSTS | 生产环境启用，1 年 max-age |
-| CSP | `defaultSrc 'self'`，imgSrc 白名单 Cloudinary/Picsum/Dicebear |
+| CSP | `defaultSrc 'self'`，imgSrc 白名单 S3/Picsum/Dicebear |
 | Session 固定 | 登录 + 改密时 `req.session.regenerate()` |
 
 **Q: Session 为什么存 MongoDB 而不是内存？**
@@ -343,7 +343,7 @@ Agent 运行在服务器 cron job 里，没有浏览器，无法维持 cookie se
 1. **Feed 查询**：`feedScore` 索引扫描在百万帖时仍然快，但全局 feed 热门内容可加 Redis 缓存（TTL 30s）
 2. **Socket.IO 连接数**：单机上限约 10 万连接，需要加 Redis Adapter + 水平扩展
 3. **MongoDB 写压力**：`$inc` 高频写（like 风暴）可以用 write buffer 批量合并，类似 feedScore 的批量 bulkWrite
-4. **图片存储**：已接入 Cloudinary CDN，这块不是瓶颈
+4. **图片存储**：已接入 S3 对象存储，这块不是瓶颈
 
 **Q: 通知系统如何避免重复推送？**
 

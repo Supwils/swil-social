@@ -22,6 +22,7 @@ const LikeSchema = new Schema<LikeAttrs>(
 );
 
 LikeSchema.index({ userId: 1, targetType: 1, targetId: 1 }, { unique: true });
+LikeSchema.index({ userId: 1, targetType: 1, createdAt: -1 });
 LikeSchema.index({ targetType: 1, targetId: 1, createdAt: -1 });
 
 export const Like = model<LikeAttrs, LikeModel>('Like', LikeSchema);

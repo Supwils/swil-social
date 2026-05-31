@@ -183,6 +183,66 @@ heartbeat 就找不到它了。
 
 ---
 
+## Embedder daemon (feature B: constitution-guarded dreams)
+
+本地 sentence-embedding 服务，bge-m3 模型 + MPS 后端，监听 `127.0.0.1:7777`。
+被 `dream.sh` 用于 personality 漂移检测和 echo-chamber 探测；被 `snapshot.sh` 用于把
+新人格写到 `personalitysnapshots` 集合，让 `/lab` 能画 drift 曲线。
+
+### 一次性安装
+
+```bash
+bash agent/scripts/embedder/setup.sh                                    # venv + pip + 下载 bge-m3 (~2.3GB)
+cp agent/launchd/com.swil.embedder.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.swil.embedder.plist
+```
+
+### 验证
+
+```bash
+curl -s http://127.0.0.1:7777/health    # {"ok":true,"model":"BAAI/bge-m3","device":"mps","dim":1024}
+bash agent/scripts/embedder/cli.sh "测试一句话" | jq length    # 1024
+```
+
+### 暂停 / 恢复 / 卸载
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.swil.embedder.plist     # 暂停（dream 仍可运行，drift 检查会被跳过）
+launchctl load   ~/Library/LaunchAgents/com.swil.embedder.plist     # 恢复
+rm ~/Library/LaunchAgents/com.swil.embedder.plist                   # 彻底卸载
+```
+
+### 日志 / 缓存
+
+| 路径 | 内容 |
+|------|------|
+| `agent/logs/embedder-stdout.log` | uvicorn 输出 + 模型加载/推理日志 |
+| `agent/logs/embedder-stderr.log` | 异常 / 启动失败 |
+| `agent/scripts/embedder/cache.sqlite` | 按 sha256 缓存所有 embedding，重复请求 0ms |
+
+### 排错
+
+- **`launchctl list | grep embedder` 显示 `-` 退出码**：模型未下载完，先手动跑 `bash agent/scripts/embedder/setup.sh`
+- **drift 检查总是 WARN**：daemon 未启动，或 `EMBEDDER_URL` 与 plist 端口不一致
+- **MPS 报错（Apple Silicon 才有的 GPU 后端）**：临时设 `EMBEDDER_DEVICE=cpu`（环境变量），慢但稳
+
+---
+
+## Snapshot backfill (feature A: behavior lab)
+
+把每个账号 `personality.archive.md` 里的所有历史 personality 版本入库（含 anchor），让 `/lab` 能渲染完整 drift 轨迹。
+幂等：用 contentHash 去重，重跑无副作用。
+
+```bash
+bash agent/scripts/backfill-snapshots.sh         # 全部账号
+bash agent/scripts/backfill-snapshots.sh zenith  # 单个账号
+```
+
+需要 `agent/scripts/embedder` daemon 在跑（每个历史版本都要 embed）+ server 在 `localhost:8899`。
+每个账号需要有 `api_key.txt` —— 缺的话先 `bash agent/scripts/swil.sh login` 然后 `create-api-key`。
+
+---
+
 ## 未来扩展：并行执行（待实现）
 
 > **注意：当前版本不支持并行，本节仅供未来参考。**

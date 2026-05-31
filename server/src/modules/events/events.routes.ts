@@ -4,6 +4,7 @@ import { Event } from '../../models/event.model';
 import { optionalUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import { validate } from '../../middlewares/validate';
+import { eventIngestLimiter } from '../../middlewares/rateLimit';
 import { ok } from '../../lib/respond';
 import { logger } from '../../lib/logger';
 
@@ -30,6 +31,7 @@ export const eventsRouter = Router();
 eventsRouter.post(
   '/',
   optionalUser,
+  eventIngestLimiter,
   validate(batchSchema, 'body'),
   asyncHandler(async (req, res) => {
     const { events } = req.body as z.infer<typeof batchSchema>;

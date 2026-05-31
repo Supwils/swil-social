@@ -17,10 +17,7 @@ export async function findByUsername(username: string): Promise<UserDocument> {
   return user;
 }
 
-export async function updateMe(
-  user: UserDocument,
-  patch: UpdateMeInput,
-): Promise<UserDocument> {
+export async function updateMe(user: UserDocument, patch: UpdateMeInput): Promise<UserDocument> {
   if (patch.displayName !== undefined) user.displayName = patch.displayName;
   if (patch.bio !== undefined) user.bio = patch.bio;
   if (patch.headline !== undefined) user.headline = patch.headline;
@@ -37,15 +34,17 @@ export async function updateMe(
   if (patch.profileTags !== undefined) {
     user.profileTags = patch.profileTags.map((t) => t.trim().toLowerCase()).filter(Boolean);
   }
-  if (patch.agentBackend !== undefined) user.agentBackend = patch.agentBackend;
+  if (patch.agentBackend !== undefined) {
+    if (!user.isAgent) {
+      throw AppError.forbidden('Only agent accounts can set an AI backend');
+    }
+    user.agentBackend = patch.agentBackend;
+  }
   await user.save();
   return user;
 }
 
-export async function updateAvatar(
-  user: UserDocument,
-  buffer: Buffer,
-): Promise<UserDocument> {
+export async function updateAvatar(user: UserDocument, buffer: Buffer): Promise<UserDocument> {
   const oldUrl = user.avatarUrl;
   const { url } = await uploadBufferToS3(buffer, 'avatars');
   user.avatarUrl = url;

@@ -1,8 +1,8 @@
 ---
 title: Architecture
 status: stable
-last-updated: 2026-04-28
-owner: round-10
+last-updated: 2026-05-29
+owner: round-11
 ---
 
 # Architecture
@@ -30,8 +30,8 @@ owner: round-10
              │              │
              ▼              ▼
      ┌──────────────┐  ┌──────────────┐
-     │  MongoDB     │  │  Cloudinary  │
-     │ (local/cloud)│  │  (images)    │
+     │  MongoDB     │  │  S3 storage  │
+     │ (local/cloud)│  │  (media)     │
      │ + connect-mongo (sessions)     │
      └──────────────┘  └──────────────┘
              │
@@ -67,20 +67,19 @@ client/
 │   │   ├── conversation.tsx     # DM thread
 │   │   ├── notifications.tsx
 │   │   ├── bookmarks.tsx
+│   │   ├── lab.tsx              # agent behavior lab (drift, cadence, engagement)
 │   │   ├── explore/             # people + post search tabs
 │   │   ├── showcase.tsx         # public read-only landing
 │   │   └── notFound.tsx
 │   ├── features/                # feature-first organization
-│   │   ├── auth/
-│   │   ├── posts/
-│   │   ├── comments/
-│   │   ├── follows/
-│   │   ├── likes/
-│   │   ├── tags/
-│   │   ├── notifications/
-│   │   └── messages/
+│   │   ├── posts/               # PostCard (+images/actions/lightbox), composer,
+│   │   │                        #   InlineComments, VirtualPostList (window virtualization)
+│   │   ├── bookmarks/
+│   │   ├── users/               # follow-list modal, etc.
+│   │   └── lab/                 # agent behavior lab widgets (drift, sparkline)
 │   ├── components/              # generic, cross-feature UI
-│   │   ├── primitives/          # Button, Input, Avatar, Card, Dialog, AnimatedCounter
+│   │   ├── primitives/          # Button, Input, Textarea, Card, Avatar, Dialog, Menu, Select,
+│   │   │                        #   Skeleton, EmptyState, Tag, Spinner, AnimatedCounter
 │   │   ├── layout/              # AppShell, Sidebar, MobileTabBar
 │   │   ├── RealtimeBridge.tsx   # socket lifecycle + cache sync
 │   │   └── RouteTransition.tsx  # page-level enter animation
@@ -116,9 +115,8 @@ server/
 │   ├── config/
 │   │   ├── env.ts               # Zod-validated env loader
 │   │   ├── db.ts                # Mongo connection (single)
-│   │   ├── redis.ts             # optional
-│   │   ├── cloudinary.ts
-│   │   └── session.ts
+│   │   ├── s3.ts                # object storage (post images, avatars)
+│   │   └── session.ts           # connect-mongo session store
 │   ├── middlewares/
 │   │   ├── auth.ts              # requireUser / optionalUser
 │   │   ├── validate.ts          # Zod → 400 with field errors
@@ -177,7 +175,7 @@ JWTs are great for stateless microservices; they're overkill and harder to inval
 Tailwind fights the "quiet, restrained" aesthetic — utility soup makes every element look opinionated. styled-components has runtime cost and harder SSR stories. CSS Modules are scoped by default, compile to static CSS, and we already have designers on the team who know CSS. Design tokens live in a root `tokens.css`.
 
 ### Socket.io over raw WebSocket
-Auto-reconnect, rooms, fallbacks, and typed events with a minimal learning curve. Scale past one node is easy (Redis adapter).
+Auto-reconnect, rooms, fallbacks, and typed events with a minimal learning curve. Scaling past one node needs the `@socket.io/redis-adapter` — **not yet wired**, so today realtime assumes a single instance (see [`08-deployment.md`](./08-deployment.md) → "Scaling").
 
 ### TypeScript everywhere
 Non-negotiable at refactor time — after the rewrite, adding TS is expensive. Shared types between frontend and backend live in `packages/shared` if we adopt a monorepo, or by duplicating request/response types generated from Zod schemas. Round 2 decides.

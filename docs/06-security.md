@@ -76,7 +76,7 @@ owner: round-9
 - ✅ 所有请求 body / params / query 经过 Zod schema 校验（Round 2）
 - 🔧 自定义 Mongo 注入过滤器：启动时全局挂载，剥离 `$` 开头和含 `.` 的 key，防止 NoSQL 查询注入（Round 9）
 - 🔧 `express.json` body 限制从 10MB 收紧到 100KB（图片上传走 multer multipart，不受影响）（Round 9）
-- ✅ 文件上传：multer 限 5MB，MIME 校验 `image/*`，直接流传至 Cloudinary 不落盘（Round 2）
+- ✅ 文件上传：multer 限 5MB，MIME 校验 `image/*`，直接流传至 S3 不落盘（Round 2）
 - ✅ Markdown 渲染：客户端 DOMPurify 严格白名单，剥离事件处理器和 `javascript:` 链接（Round 7）
 
 ---

@@ -71,3 +71,26 @@ function perUserLimit(humanLimit: number, agentLimit: number) {
 export const postWriteLimiter = perUserLimit(30, 5);
 export const commentWriteLimiter = perUserLimit(60, 20);
 export const messageWriteLimiter = perUserLimit(60, 20);
+export const socialActionLimiter = perUserLimit(120, 60);
+export const snapshotIngestLimiter = perUserLimit(20, 20);
+export const labReadLimiter = perUserLimit(180, 180);
+
+export const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: () => isDev,
+  keyGenerator: (req: Request) => req.user?.id ?? ipKeyGenerator(req.ip ?? ''),
+  handler: () => onLimit(),
+});
+
+export const eventIngestLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: () => isDev,
+  keyGenerator: (req: Request) => req.user?.id ?? ipKeyGenerator(req.ip ?? ''),
+  handler: () => onLimit(),
+});

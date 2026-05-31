@@ -3,6 +3,7 @@ import { Post, type PostDocument } from '../../models/post.model';
 import { User, type UserDocument } from '../../models/user.model';
 import { Tag, type TagDocument } from '../../models/tag.model';
 import { Like } from '../../models/like.model';
+import { Follow } from '../../models/follow.model';
 import { AppError } from '../../lib/errors';
 import { decodeCursor, buildNextCursor } from '../../lib/pagination';
 import { translatePosts } from '../../lib/translate';
@@ -21,7 +22,9 @@ export async function getPostForViewer(
 
   const [author, tags, mentions, likedByMe] = await Promise.all([
     User.findById(post.authorId),
-    post.tagIds.length ? Tag.find({ _id: { $in: post.tagIds } }) : Promise.resolve([] as TagDocument[]),
+    post.tagIds.length
+      ? Tag.find({ _id: { $in: post.tagIds } })
+      : Promise.resolve([] as TagDocument[]),
     post.mentionIds.length
       ? User.find({ _id: { $in: post.mentionIds } })
       : Promise.resolve([] as UserDocument[]),
@@ -35,9 +38,16 @@ export async function getPostForViewer(
   if (post.echoOf) {
     const origPost = (await Post.findById(post.echoOf).lean()) as unknown as PostDocument | null;
     if (origPost) {
-      const origAuthor = (await User.findById(origPost.authorId).lean()) as unknown as UserDocument | null;
+      const origAuthor = (await User.findById(
+        origPost.authorId,
+      ).lean()) as unknown as UserDocument | null;
       if (origAuthor) {
-        echoOfDto = toPostDTO(origPost, { author: origAuthor, tags: [], mentions: [], likedByMe: false });
+        echoOfDto = toPostDTO(origPost, {
+          author: origAuthor,
+          tags: [],
+          mentions: [],
+          likedByMe: false,
+        });
       }
     }
   }
@@ -45,7 +55,10 @@ export async function getPostForViewer(
   return { post, ctx: { author, tags, mentions, likedByMe, echoOf: echoOfDto } };
 }
 
-export async function getShowcasePosts(viewer: UserDocument | null, lang: string): Promise<PostDTO[]> {
+export async function getShowcasePosts(
+  viewer: UserDocument | null,
+  lang: string,
+): Promise<PostDTO[]> {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 3_600_000);
 
   const candidates = (await Post.find({
@@ -116,16 +129,33 @@ export async function searchPosts(
   const limit = query.limit ?? 20;
 
   const filter: Record<string, unknown> = { status: 'active' };
+  const andClauses: Record<string, unknown>[] = [];
   if (query.q && query.q.trim()) {
     filter.$text = { $search: query.q.trim() };
+  }
+  if (viewer) {
+    const followingIds = (
+      await Follow.find({ followerId: viewer._id }).select('followingId').lean()
+    ).map((f) => f.followingId);
+    andClauses.push({
+      $or: [
+        { visibility: 'public' },
+        { authorId: viewer._id },
+        { visibility: 'followers', authorId: { $in: followingIds } },
+      ],
+    });
+  } else {
+    filter.visibility = 'public';
   }
   if (cursor) {
     const t = new Date(cursor.t);
     const id = new Types.ObjectId(cursor.id);
-    filter.$or = [
-      { createdAt: { $lt: t } },
-      { createdAt: t, _id: { $lt: id } },
-    ];
+    andClauses.push({
+      $or: [{ createdAt: { $lt: t } }, { createdAt: t, _id: { $lt: id } }],
+    });
+  }
+  if (andClauses.length > 0) {
+    filter.$and = andClauses;
   }
 
   const rawPosts = (await Post.find(filter)

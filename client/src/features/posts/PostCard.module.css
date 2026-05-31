@@ -222,8 +222,26 @@
   height: 100%;
   display: block;
   filter: saturate(0.92);
-  transition: filter var(--dur-base) var(--ease);
+  opacity: 0;
+  transition:
+    filter var(--dur-base) var(--ease),
+    opacity var(--dur-base) var(--ease);
   object-fit: cover;
+}
+
+/* Fade in once the image has decoded — paired with the reserved box above this
+   reveals the image in place instead of popping/shifting the layout. */
+.imgLoaded {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .img {
+    transition: filter var(--dur-base) var(--ease);
+  }
+  .img:not(.imgLoaded) {
+    opacity: 1;
+  }
 }
 
 .images1 .img {

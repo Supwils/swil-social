@@ -98,6 +98,7 @@ const PostSchema = new Schema<PostAttrs>(
 );
 
 PostSchema.index({ authorId: 1, createdAt: -1 });
+PostSchema.index({ authorId: 1, status: 1, createdAt: -1 });
 PostSchema.index({ status: 1, createdAt: -1 });
 PostSchema.index({ status: 1, visibility: 1, feedScore: -1 });
 PostSchema.index({ tagIds: 1, feedScore: -1 });

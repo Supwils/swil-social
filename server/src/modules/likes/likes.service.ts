@@ -6,6 +6,7 @@ import { AppError } from '../../lib/errors';
 import type { UserDocument } from '../../models/user.model';
 import { createNotification } from '../notifications/notifications.service';
 import { refreshFeedScore } from '../../lib/feedScorer';
+import { assertVisibility } from '../posts/posts.write';
 
 /**
  * Idempotent like/unlike.
@@ -14,15 +15,25 @@ import { refreshFeedScore } from '../../lib/feedScorer';
  * to avoid double-like races.
  */
 
-async function assertTargetExists(targetType: LikeTarget, targetId: string): Promise<void> {
+async function assertTargetVisible(
+  user: UserDocument,
+  targetType: LikeTarget,
+  targetId: string,
+): Promise<void> {
   if (!Types.ObjectId.isValid(targetId)) throw AppError.notFound('Target not found');
   const _id = new Types.ObjectId(targetId);
   if (targetType === 'post') {
-    const post = await Post.findOne({ _id, status: 'active' }).select('_id');
+    const post = await Post.findOne({ _id, status: 'active' }).select('_id visibility authorId');
     if (!post) throw AppError.notFound('Post not found');
+    await assertVisibility(post, user);
   } else {
-    const comment = await Comment.findOne({ _id, status: 'active' }).select('_id');
+    const comment = await Comment.findOne({ _id, status: 'active' }).select('_id postId');
     if (!comment) throw AppError.notFound('Comment not found');
+    const post = await Post.findOne({ _id: comment.postId, status: 'active' }).select(
+      '_id visibility authorId',
+    );
+    if (!post) throw AppError.notFound('Post not found');
+    await assertVisibility(post, user);
   }
 }
 
@@ -52,7 +63,7 @@ export async function like(
   targetType: LikeTarget,
   targetId: string,
 ): Promise<{ likeCount: number; liked: true }> {
-  await assertTargetExists(targetType, targetId);
+  await assertTargetVisible(user, targetType, targetId);
   const target = new Types.ObjectId(targetId);
   try {
     await Like.create({ userId: user._id, targetType, targetId: target });

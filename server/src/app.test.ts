@@ -22,6 +22,11 @@ vi.mock('./middlewares/rateLimit', () => ({
   postWriteLimiter: mocks.globalLimiter,
   commentWriteLimiter: mocks.globalLimiter,
   messageWriteLimiter: mocks.globalLimiter,
+  socialActionLimiter: mocks.globalLimiter,
+  snapshotIngestLimiter: mocks.globalLimiter,
+  labReadLimiter: mocks.globalLimiter,
+  searchLimiter: mocks.globalLimiter,
+  eventIngestLimiter: mocks.globalLimiter,
 }));
 
 vi.mock('./config/session', () => ({
@@ -37,15 +42,15 @@ vi.mock('./config/db', () => ({
 }));
 
 vi.mock('helmet', () => ({
-  default: () => ((_req: unknown, _res: unknown, next: (err?: unknown) => void) => next()),
+  default: () => (_req: unknown, _res: unknown, next: (err?: unknown) => void) => next(),
 }));
 
 vi.mock('cors', () => ({
-  default: () => ((_req: unknown, _res: unknown, next: (err?: unknown) => void) => next()),
+  default: () => (_req: unknown, _res: unknown, next: (err?: unknown) => void) => next(),
 }));
 
 vi.mock('cookie-parser', () => ({
-  default: () => ((_req: unknown, _res: unknown, next: (err?: unknown) => void) => next()),
+  default: () => (_req: unknown, _res: unknown, next: (err?: unknown) => void) => next(),
 }));
 
 import { createApp } from './app';
@@ -97,9 +102,15 @@ describe('createApp', () => {
     mocks.isDbHealthy.mockReturnValue(true);
 
     const app = createApp();
-    const stack = (app as unknown as {
-      _router: { stack: Array<{ route?: { path: string; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> };
-    })._router.stack;
+    const stack = (
+      app as unknown as {
+        _router: {
+          stack: Array<{
+            route?: { path: string; stack: Array<{ handle: (...args: unknown[]) => unknown }> };
+          }>;
+        };
+      }
+    )._router.stack;
     const healthIndex = stack.findIndex((layer) => layer.route?.path === '/health');
     const healthLayer = stack[healthIndex];
     const res = new MockRes();
@@ -121,11 +132,13 @@ describe('createApp', () => {
     mocks.isDbHealthy.mockReturnValue(true);
 
     const app = createApp();
-    const stack = (app as unknown as {
-      _router: {
-        stack: Array<{ handle: (...args: any[]) => unknown }>;
-      };
-    })._router.stack;
+    const stack = (
+      app as unknown as {
+        _router: {
+          stack: Array<{ handle: (...args: any[]) => unknown }>;
+        };
+      }
+    )._router.stack;
     const notFoundLayer = stack.at(-2);
     const errorLayer = stack.at(-1);
     const req = { method: 'GET', originalUrl: '/api/v1/does-not-exist' };
@@ -152,9 +165,11 @@ describe('createApp', () => {
     mocks.isDbHealthy.mockReturnValue(true);
 
     const app = createApp();
-    const stack = (app as unknown as {
-      _router: { stack: Array<{ handle: (req: any, res: any, next: () => void) => void }> };
-    })._router.stack;
+    const stack = (
+      app as unknown as {
+        _router: { stack: Array<{ handle: (req: any, res: any, next: () => void) => void }> };
+      }
+    )._router.stack;
     const healthIndex = stack.findIndex((layer: any) => layer.route?.path === '/health');
     const stripLayer = stack[healthIndex - 4];
 

@@ -17,8 +17,9 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a; source "$ROOT_DIR/.env"; set +a
 fi
 
-BASE_URL="${SWIL_URL:-http://localhost:7945}/api/v1"
+BASE_URL="${SWIL_URL:-http://localhost:8899}/api/v1"
 PASS="${SWIL_PASS:?Error: SWIL_PASS not set in .env}"
+AGENT_SETUP_TOKEN="${SWIL_AGENT_SETUP_TOKEN:-}"
 
 _get_field() {
   grep -i "^\- \*\*${2}:\*\*" "$1" | sed 's/.*\*\* //' | tr -d '[:space:]'
@@ -38,16 +39,23 @@ for PERSONALITY in "$ROOT_DIR"/agents/*/personality.md; do
 
   echo "→ Registering @$USERNAME ($DISPLAY) ..."
   tmp=$(mktemp)
+  BODY=$(jq -n \
+    --arg username "$USERNAME" \
+    --arg email "$EMAIL" \
+    --arg password "$PASS" \
+    --arg displayName "$DISPLAY" \
+    --arg token "$AGENT_SETUP_TOKEN" \
+    '{
+      username: $username,
+      email: $email,
+      password: $password,
+      displayName: $displayName,
+      isAgent: true
+    } + (if $token != "" then {agentSetupToken: $token} else {} end)')
   http_code=$(curl -s -o "$tmp" -w "%{http_code}" \
     -X POST "$BASE_URL/auth/register" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"username\": \"$USERNAME\",
-      \"email\": \"$EMAIL\",
-      \"password\": \"$PASS\",
-      \"displayName\": \"$DISPLAY\",
-      \"isAgent\": true
-    }")
+    -d "$BODY")
   RESPONSE=$(cat "$tmp"); rm -f "$tmp"
 
   if [[ "$http_code" == "201" ]]; then

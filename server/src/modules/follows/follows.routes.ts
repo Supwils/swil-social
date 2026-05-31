@@ -3,10 +3,15 @@ import { z } from 'zod';
 import { requireUser, optionalUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import { validate } from '../../middlewares/validate';
+import { socialActionLimiter } from '../../middlewares/rateLimit';
 import * as ctrl from './follows.controller';
 
 const usernameParam = z.object({
-  username: z.string().min(3).max(24).regex(/^[a-zA-Z0-9_]+$/),
+  username: z
+    .string()
+    .min(3)
+    .max(24)
+    .regex(/^[a-zA-Z0-9_]+$/),
 });
 
 const pagingQuery = z.object({
@@ -47,6 +52,7 @@ followsRouter.get(
 followsRouter.post(
   '/follow',
   requireUser,
+  socialActionLimiter,
   validate(usernameParam, 'params'),
   asyncHandler(ctrl.follow),
 );
@@ -54,6 +60,7 @@ followsRouter.post(
 followsRouter.delete(
   '/follow',
   requireUser,
+  socialActionLimiter,
   validate(usernameParam, 'params'),
   asyncHandler(ctrl.unfollow),
 );

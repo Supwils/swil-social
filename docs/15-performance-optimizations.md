@@ -1,6 +1,16 @@
+---
+title: Performance Optimizations
+status: stable
+last-updated: 2026-05-29
+owner: round-11
+---
+
 # 性能优化归档：Swil Social 平台
 
-> 记录于 2026-04-25。本文档涵盖本次对后端（Node.js + MongoDB）和前端（React + TanStack Query）所做的 8 项性能优化，包含问题根因、解决方案、背后的工程原理，以及面试时可用的核心考点。
+> 涵盖对后端（Node.js + MongoDB）和前端（React + TanStack Query）所做的 10 项性能优化，包含问题根因、解决方案、背后的工程原理，以及面试时可用的核心考点。
+>
+> - #1–#8 记录于 2026-04-25（DB 索引、批量写、`React.memo`、乐观更新等）。
+> - #9–#10 记录于 2026-05-29（Round 11 前端渲染层：Feed 虚拟列表、图片 CLS）。
 
 ---
 
@@ -14,6 +24,8 @@
 6. [useMemo 缓存文本解析结果](#6-usememo-缓存文本解析结果)
 7. [useMemo 缓存 flatMap 派生数组](#7-usememo-缓存-flatmap-派生数组)
 8. [通知页面乐观更新（Optimistic Update）](#8-通知页面乐观更新optimistic-update)
+9. [Feed 虚拟列表（Window Virtualization）](#9-feed-虚拟列表window-virtualization)
+10. [图片 CLS 修复 + 淡入加载](#10-图片-cls-修复--淡入加载)
 
 ---
 
@@ -387,9 +399,64 @@ notificationsApi.markRead({ all: true })
 
 ---
 
+## 9. Feed 虚拟列表（Window Virtualization）
+
+### 文件
+`client/src/features/posts/VirtualPostList.tsx`（新增）、`client/src/routes/feedGlobal.tsx`、`feedFollowing.tsx`、`feedTag.tsx`
+
+### 问题
+
+用户不断下拉加载，Feed 里的所有 `PostCard` 都常驻 DOM。加载 100 条帖子 = 100 个 PostCard 节点（每个内部还有评论区、图片），浏览器内存与布局/绘制成本随时间线性增长。
+
+### 解决方案
+
+引入 `@tanstack/react-virtual`，新增 `VirtualPostList` 组件，只挂载视口附近的卡片，DOM 节点数恒定（约 15–20 个），无论列表多长。已接入 global / following / tag 三个 feed 的**列表视图**；网格（grid）视图保持原样（虚拟化多列 CSS grid 是另一类问题）。
+
+关键实现点：
+
+- **Window virtualizer**：app shell 没有内层滚动容器（`.main` / `#root` 均为 `min-height: 100vh`，整页滚动），所以用 `useWindowVirtualizer` 而非容器版；用 `scrollMargin` 抵消列表上方 header / trending 区块的偏移，并在每次渲染用 `useLayoutEffect` 刷新 `offsetTop`（trending 异步加载会改变起始位置）。
+- **动态高度测量**：卡片高度不固定（图片晚加载、评论展开），用 `measureElement`（基于 `ResizeObserver`）动态测量，避免固定行高。
+- **无限加载**：由 virtualizer 自己的可视区范围驱动 `fetchNextPage`（最后一个虚拟项接近末尾时触发），替代了 list 模式下单独的 `IntersectionObserver` 哨兵。
+- **抑制入场动画**：`.card` 有一次性入场动画，虚拟化会让卡片反复挂载，故在虚拟容器内 `.row > article { animation: none }`，否则每次滚入都会重新抖动。
+
+### 面试考点
+
+> **Q：虚拟列表（windowing）解决的到底是什么瓶颈？**
+>
+> A：DOM 节点数量是内存、布局（layout）和绘制（paint）成本的关键变量。虚拟列表用一个撑满总高度的占位容器 + 绝对定位的少量真实节点，模拟出完整滚动，让真实节点数恒定。难点在于**可变高度**：需要支持动态测量的 virtualizer（`@tanstack/react-virtual` 的 `measureElement`），而不是只支持固定行高的方案（如老的 `react-window`）。
+
+---
+
+## 10. 图片 CLS 修复 + 淡入加载
+
+### 文件
+`client/src/features/posts/PostCardImages.tsx`、`client/src/features/posts/PostCard.module.css`
+
+### 问题
+
+帖子图片只设了 `loading="lazy"`，但没有声明尺寸。图片解码完成前浏览器不知道它多高 → 图片"撑开"把下方内容顶下去，造成布局抖动（CLS，Cumulative Layout Shift）。服务端其实早就为每张图存了 `width` / `height`（`server/src/lib/dto.ts`），但前端一直没用。
+
+### 解决方案
+
+- 每张 `<img>` 带上存储的 `width` / `height` 属性，浏览器据此在加载前**预留正确的盒子**；单图额外用内联 `aspect-ratio` 把外框锁成原图比例（单图 `height:auto`，靠外框 `aspect-ratio` 预留高度，加载后图片高度与预留值完全一致 → 零位移）。
+- 图片从 `opacity:0` 淡入到 `1`（配合外框的灰底，像渐显），并加 `decoding="async"`；命中缓存、`onLoad` 早于 React 挂载的情况用 ref 检查 `img.complete` 兜底，避免卡在透明态。
+- `prefers-reduced-motion` 降级：减少动效的用户直接显示，无淡入。
+
+### 与虚拟列表的协同
+
+预留尺寸让卡片高度从首次渲染起就稳定，减少了 #9 里 `measureElement` 的重测量churn —— 两个优化互相强化。
+
+### 面试考点
+
+> **Q：CLS 是什么？怎么从源头消除？**
+>
+> A：CLS 衡量页面生命周期内非预期的布局位移，是 Core Web Vitals 三大指标之一。根因通常是"先占 0 高度、内容到了再撑开"的元素（图片、广告、异步注入的 banner）。消除手段是**在内容到达前就预留出最终尺寸**：给图片显式 `width`/`height` 或 `aspect-ratio`，给异步区块留固定占位高度。
+
+---
+
 ## 综合架构视角
 
-### 本次优化覆盖的性能层次
+### 优化覆盖的性能层次
 
 ```
 ┌─────────────────────────────────────────┐
@@ -403,6 +470,8 @@ notificationsApi.markRead({ all: true })
 └─────────────────────────────────────────┘
 ```
 
+> #9 虚拟列表（windowing）与 #10 图片 CLS 同属**前端渲染层**——前者压低 DOM 节点数与布局/绘制成本，后者消除加载时的布局抖动。
+
 ### 性能优化的通用思路（面试框架）
 
 面试时被问到"如何优化一个慢的 Web 应用"，可以从以下四个维度回答：
@@ -413,19 +482,3 @@ notificationsApi.markRead({ all: true })
 4. **提前响应**：用乐观更新让用户感知延迟为零
 
 每个优化都应该能说清楚：**什么场景下会慢（触发条件）→ 为什么慢（根因）→ 怎么改（方案）→ 改了之后好在哪（量化收益）**。
-
----
-
-## 待实现的优化（Feed 虚拟列表）
-
-以下优化已规划但尚未实现，适合作为下一步改进方向：
-
-### Feed 虚拟列表（Virtual Scroll）
-
-**问题**：用户不断下拉加载，Feed 里的所有 `PostCard` 都常驻 DOM。加载 100 条帖子 = 100 个 PostCard 节点（每个内部还有评论区），浏览器内存随时间线性增长。
-
-**方案**：引入 `@tanstack/react-virtual`，只渲染**视口内可见**的 10-15 张卡片，滚动时动态替换。
-
-**核心概念**：虚拟列表（Virtual List / Windowing）。浏览器 DOM 节点数量是内存和渲染性能的关键瓶颈。虚拟列表用绝对定位模拟滚动，实际 DOM 节点数恒定在 15-20 个，无论列表有多长。
-
-**挑战**：PostCard 高度不固定（有图片的帖子更高），需要使用支持动态高度的 Virtualizer（如 `@tanstack/react-virtual`），而不是只支持固定高度的 `react-window`。

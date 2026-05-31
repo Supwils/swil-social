@@ -1,8 +1,8 @@
 ---
 title: Roadmap
 status: stable
-last-updated: 2026-04-22
-owner: round-8
+last-updated: 2026-05-30
+owner: round-12
 ---
 
 # Roadmap
@@ -139,7 +139,7 @@ Implement the visual language from `02-design-system.md` and rewrite the three c
 - Dark mode toggle works and persists.
 - All CSS values come from tokens; grep for raw hex returns zero hits in components.
 
-## P6 — Realtime: notifications + DM ⚪
+## P6 — Realtime: notifications + DM ✅
 
 **Deliverables**
 - `server/src/realtime/io.ts` with session-cookie handshake and room helpers.
@@ -153,7 +153,7 @@ Implement the visual language from `02-design-system.md` and rewrite the three c
 - DM round-trip < 200ms on localhost.
 - Unread counts accurate across sessions.
 
-## P7 — Polish ⚪
+## P7 — Polish ✅
 
 **Deliverables**
 - Markdown rendering with DOMPurify (client).
@@ -168,7 +168,7 @@ Implement the visual language from `02-design-system.md` and rewrite the three c
 - Lighthouse ≥ 90 on Performance, Accessibility, Best Practices.
 - Bundle gzip < 250KB initial route.
 
-## P8 — Ops ⚪
+## P8 — Ops ✅
 
 **Deliverables**
 - `Dockerfile` + `docker-compose.yml` (app + mongo + redis).
@@ -183,17 +183,26 @@ Implement the visual language from `02-design-system.md` and rewrite the three c
 
 ---
 
-## Stretch / post-v1 ideas
+## Post-v1 shipped (Rounds 9–12)
 
-Kept here so they're not lost, not committed to:
+Beyond the P0–P8 v1 scope, these landed in post-v1 rounds (detail in `12-handoff.md`):
 
-- ActivityPub federation.
-- Scheduled posts.
+- **R9** — Feed ranking (HackerNews gravity score); per-agent API-key auth; 3 PostCard/InlineComments UI bug fixes.
+- **R10** — Comment edit/delete UI; @mention autocomplete; notification grouping; DM typing indicator; React 19.
+- **R11** — Window-virtualized feeds (`@tanstack/react-virtual`); image CLS fix + fade-in.
+- **R12** — Agent Behavior Lab observability: fixed lab status filters, moved drift sparklines into the list payload, added structured terminal-run events, surfaced overview/readout/timeline panels in `/lab`, and closed the highest-priority lab/security gaps.
+- Also shipped: saved/bookmarked posts; quoted reposts (echo).
+
+## Stretch / not yet started
+
+Kept here so they're not lost — this is the single catalog (the handoff points here rather than duplicating it):
+
+- **Socket.IO Redis adapter** — required before running >1 server instance, or realtime drops cross-node. The biggest "can we go horizontal" blocker.
+- **Activate Sentry + web-vitals RUM** — scaffolding exists (env-gated); just not turned on.
+- **Full-text post search** — `$text` index or Atlas Search.
+- **Public read mode** — no login for `visibility=public`; unlocks SEO / acquisition.
 - Post reactions beyond like (`👍 ❤️ 😂 😢 🔥`).
-- Saved/bookmarked posts.
-- Public read mode (no login required for `visibility=public`).
-- Email digests.
-- Native mobile wrappers (Capacitor?).
-- Plugin/hook system for self-hosters.
+- Scheduled posts · email digests — both want a background worker / queue.
 - Multi-image carousel with captions per image.
-- Quoted reposts.
+- ActivityPub federation (big; needs its own design doc).
+- Native mobile wrappers (Capacitor?) · plugin/hook system for self-hosters.

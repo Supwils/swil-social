@@ -4,9 +4,8 @@ import { useTranslation } from 'react-i18next';
 import * as feedApi from '@/api/feed.api';
 import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
-import { PostCard } from '@/features/posts/PostCard';
 import { EmptyState, PostCardSkeleton } from '@/components/primitives';
-import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
+import { VirtualPostList } from '@/features/posts/VirtualPostList';
 import { useUI } from '@/stores/ui.store';
 import s from './feedTag.module.css';
 
@@ -78,13 +77,14 @@ export default function FeedTagRoute() {
         />
       )}
 
-      {items.map((post) => <PostCard key={post.id} post={post} />)}
-
-      <InfiniteScrollSentinel
-        hasNextPage={feedQ.hasNextPage}
-        isFetching={feedQ.isFetchingNextPage}
-        onLoadMore={() => feedQ.fetchNextPage()}
-      />
+      {feedQ.isSuccess && items.length > 0 && (
+        <VirtualPostList
+          items={items}
+          hasNextPage={feedQ.hasNextPage}
+          isFetchingNextPage={feedQ.isFetchingNextPage}
+          onLoadMore={() => feedQ.fetchNextPage()}
+        />
+      )}
     </div>
   );
 }

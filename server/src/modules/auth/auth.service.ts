@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { User, type UserDocument } from '../../models/user.model';
 import { ApiKey, type ApiKeyDocument } from '../../models/apiKey.model';
 import { AppError } from '../../lib/errors';
+import { env } from '../../config/env';
 import type { RegisterInput, LoginInput } from './auth.schemas';
 
 const BCRYPT_COST = 12;
@@ -23,6 +24,10 @@ export async function register(input: RegisterInput): Promise<UserDocument> {
   }
 
   const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
+  const isAgent = input.isAgent === true;
+  if (isAgent && (!env.AGENT_SETUP_TOKEN || input.agentSetupToken !== env.AGENT_SETUP_TOKEN)) {
+    throw AppError.forbidden('Agent account setup is not enabled for this request');
+  }
 
   const user = await User.create({
     username,
@@ -32,7 +37,7 @@ export async function register(input: RegisterInput): Promise<UserDocument> {
     passwordHash,
     authProviders: [{ provider: 'local' }],
     displayName: input.displayName ?? input.username,
-    isAgent: input.isAgent ?? false,
+    isAgent,
   });
 
   return user;

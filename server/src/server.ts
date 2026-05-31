@@ -17,6 +17,11 @@ import './models/tag.model';
 import './models/notification.model';
 import './models/conversation.model';
 import './models/message.model';
+import './models/apiKey.model';
+import './models/bookmark.model';
+import './models/event.model';
+import './models/personalitySnapshot.model';
+import './models/agentEvent.model';
 
 async function bootstrap(): Promise<void> {
   // Init monitoring BEFORE any other work so boot-time errors are captured.
@@ -62,7 +67,6 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap().catch((err) => {
-   
   console.error('fatal bootstrap error', err);
   process.exit(1);
 });

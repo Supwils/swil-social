@@ -30,9 +30,17 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a; source "$ROOT_DIR/.env"; set +a
 fi
 
-BASE_URL="${SWIL_URL:-http://localhost:7945}/api/v1"
+BASE_URL="${SWIL_URL:-http://localhost:8899}/api/v1"
 COMMAND="${1:-}"
-ACTIVE_FILE="$STATE_DIR/active"   # stores relative path: agents/NAME/personality.md
+ACTIVE_FILE="$STATE_DIR/active"   # CLI fallback only; relative path: agents/NAME/personality.md
+
+# Concurrency model:
+#   When SWIL_AGENT (relative personality.md path) is exported by the caller,
+#   swil.sh uses it directly and never reads/writes ACTIVE_FILE. This lets
+#   multiple parallel processes (subagents, auto-run, manual CLI) coexist
+#   without trampling each other's active session. Cookies and api_key.txt
+#   are already per-username, so no other state is shared.
+#   ACTIVE_FILE remains as the fallback for interactive CLI use.
 
 # Extract a field from a personality.md file
 # Usage: _get_field <file> <field_name>
@@ -42,8 +50,12 @@ _get_field() {
 
 # Get the active agent's personality file path (absolute)
 _personality_file() {
+  if [[ -n "${SWIL_AGENT:-}" ]]; then
+    echo "$ROOT_DIR/$SWIL_AGENT"
+    return
+  fi
   if [[ ! -f "$ACTIVE_FILE" ]]; then
-    echo "Error: no active agent. Run: swil.sh login <agents/NAME/personality.md>" >&2
+    echo "Error: no active agent. Run: swil.sh login <agents/NAME/personality.md> (or export SWIL_AGENT=<path>)" >&2
     exit 1
   fi
   echo "$ROOT_DIR/$(cat "$ACTIVE_FILE")"
@@ -157,6 +169,62 @@ _remember() {
   local note
   note="$(printf '%s' "$*" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
   echo "$(date +%Y-%m-%d) | $note" >> "$memory_file"
+
+  local action target_id
+  action="$(printf '%s' "$note" | awk -F'|' '{print $1}' | xargs)"
+  target_id="$(printf '%s' "$note" | grep -Eo '(id|postId|commentId)=[a-f0-9]{24}' | head -1 | cut -d= -f2 || true)"
+  case "$action" in
+    post|comment|like|follow|unfollow|delete|nothing)
+      _lab_event "memory" "memory" "success" "$action" "$note" "" "$target_id" "{}"
+      ;;
+    *)
+      _lab_event "memory" "memory" "success" "" "$note" "" "$target_id" "{}"
+      ;;
+  esac
+}
+
+_lab_event() {
+  local type="$1" phase="$2" outcome="$3" action="${4:-}" summary="${5:-}" reason="${6:-}" target_id="${7:-}" metrics="${8:-{}}"
+  local pfile username key_file body
+  pfile=$(_personality_file)
+  username=$(_get_field "$pfile" "Username")
+  key_file="$(dirname "$pfile")/api_key.txt"
+  [[ -n "$username" ]] || return 0
+  if ! printf '%s' "$metrics" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    metrics="{}"
+  fi
+  body="$(jq -n \
+    --arg type "$type" \
+    --arg phase "$phase" \
+    --arg outcome "$outcome" \
+    --arg action "$action" \
+    --arg summary "$summary" \
+    --arg reason "$reason" \
+    --arg targetId "$target_id" \
+    --argjson metrics "$metrics" \
+    '{
+      type: $type,
+      phase: $phase,
+      outcome: $outcome,
+      summary: $summary,
+      metrics: $metrics
+    }
+    + (if $action != "" and $action != "-" then {action: $action} else {} end)
+    + (if $reason != "" then {reason: $reason} else {} end)
+    + (if $targetId != "" then {targetId: $targetId} else {} end)')"
+
+  local -a auth_args
+  if [[ -f "$key_file" ]]; then
+    auth_args=(-H "Authorization: Bearer $(cat "$key_file")")
+  else
+    auth_args=(-b "$(_cookie)" -c "$(_cookie)")
+  fi
+  curl -sS --max-time 8 -X POST \
+    "${auth_args[@]}" \
+    -H "content-type: application/json" \
+    -H "accept: application/json" \
+    -d "$body" \
+    "$BASE_URL/agents/$username/events" >/dev/null 2>&1 || true
 }
 
 case "$COMMAND" in
@@ -169,8 +237,12 @@ case "$COMMAND" in
       echo "Error: could not find Username in $PERSONALITY" >&2; exit 1
     fi
 
-    # Always set the active agent first (needed for _curl to resolve key/cookie path)
-    echo "$PERSONALITY" > "$ACTIVE_FILE"
+    # When SWIL_AGENT is set in the environment, _personality_file() reads it
+    # directly — skip writing the shared ACTIVE_FILE so parallel processes
+    # don't trample each other. Otherwise (manual CLI), persist it.
+    if [[ -z "${SWIL_AGENT:-}" ]]; then
+      echo "$PERSONALITY" > "$ACTIVE_FILE"
+    fi
 
     KEY_FILE="$(dirname "$PFILE")/api_key.txt"
 
@@ -397,6 +469,18 @@ EOF
     _curl -X POST "$BASE_URL/notifications/read" -d "{\"ids\":$IDS}" | jq . || true
     ;;
 
+  lab-event)
+    TYPE="${2:?Usage: swil.sh lab-event <type> <phase> <outcome> <action|-> <summary> [reason] [targetId] [metricsJson]}"
+    PHASE="${3:?Usage: swil.sh lab-event <type> <phase> <outcome> <action|-> <summary> [reason] [targetId] [metricsJson]}"
+    OUTCOME="${4:?Usage: swil.sh lab-event <type> <phase> <outcome> <action|-> <summary> [reason] [targetId] [metricsJson]}"
+    ACTION="${5:-}"
+    SUMMARY="${6:-}"
+    REASON="${7:-}"
+    TARGET_ID="${8:-}"
+    METRICS="${9:-{}}"
+    _lab_event "$TYPE" "$PHASE" "$OUTCOME" "$ACTION" "$SUMMARY" "$REASON" "$TARGET_ID" "$METRICS"
+    ;;
+
   follow)
     USERNAME="${2:?Usage: swil.sh follow <username>}"
     _curl -X POST "$BASE_URL/users/$USERNAME/follow" | jq .
@@ -411,12 +495,17 @@ EOF
 
   logout)
     _curl -X POST "$BASE_URL/auth/logout" | jq . || true
-    rm -f "$(_cookie)" "$ACTIVE_FILE"
+    rm -f "$(_cookie)"
+    # Only clear the shared ACTIVE_FILE in CLI mode — when SWIL_AGENT is set,
+    # we never wrote it and it may belong to another concurrent session.
+    if [[ -z "${SWIL_AGENT:-}" ]]; then
+      rm -f "$ACTIVE_FILE"
+    fi
     echo "Logged out."
     ;;
 
   *)
-    echo "Commands: login | me | post | delete | comment | like | unlike | update-profile | set-tags | tag-presets | feed | follow | unfollow | create-api-key | list-api-keys | notifications | mark-notifications-read | mark-notifications-read-ids | logout"
+    echo "Commands: login | me | post | delete | comment | like | unlike | update-profile | set-tags | tag-presets | feed | follow | unfollow | create-api-key | list-api-keys | notifications | mark-notifications-read | mark-notifications-read-ids | lab-event | logout"
     exit 1
     ;;
 

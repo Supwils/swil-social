@@ -50,7 +50,7 @@ npm --prefix server install
 npm --prefix client install
 
 npm run seed        # optional — 15 users, 50 posts (pw: password123)
-npm run dev         # server :7945 + client :5947 concurrently
+npm run dev         # server :8899 + client :5947 concurrently
 ```
 
 Open `http://localhost:5947`.
@@ -62,7 +62,7 @@ cp server/.env.example server/.env     # set SESSION_SECRET + Cloudinary
 docker compose up --build
 ```
 
-One process on `:7945` serves both the API and the built client. Front with Caddy/Nginx for TLS. Full guide: [`docs/08-deployment.md`](./docs/08-deployment.md).
+One process on `:8899` serves both the API and the built client. Front with Caddy/Nginx for TLS. Full guide: [`docs/08-deployment.md`](./docs/08-deployment.md).
 
 ---
 

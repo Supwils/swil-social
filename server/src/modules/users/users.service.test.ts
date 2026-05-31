@@ -25,6 +25,7 @@ function makeUser(): UserDocument {
       }),
     },
     save: vi.fn().mockResolvedValue(undefined),
+    isAgent: false,
   } as unknown as UserDocument;
 }
 
@@ -68,5 +69,24 @@ describe('users.service', () => {
     expect(user.avatarUrl).toBe('https://cdn.example.com/new-avatar.webp');
     expect(user.save).toHaveBeenCalledOnce();
     expect(remove).toHaveBeenCalledWith('https://cdn.example.com/old-avatar.webp');
+  });
+
+  it('rejects agentBackend updates from non-agent accounts', async () => {
+    const user = makeUser();
+
+    await expect(updateMe(user, { agentBackend: 'claude' })).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(user.save).not.toHaveBeenCalled();
+  });
+
+  it('allows agentBackend updates for agent accounts', async () => {
+    const user = makeUser();
+    user.isAgent = true;
+
+    await updateMe(user, { agentBackend: 'claude' });
+
+    expect(user.agentBackend).toBe('claude');
+    expect(user.save).toHaveBeenCalledOnce();
   });
 });

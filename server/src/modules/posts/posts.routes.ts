@@ -3,7 +3,7 @@ import multer from 'multer';
 import { validate } from '../../middlewares/validate';
 import { requireUser, optionalUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
-import { postWriteLimiter } from '../../middlewares/rateLimit';
+import { postWriteLimiter, searchLimiter } from '../../middlewares/rateLimit';
 import * as ctrl from './posts.controller';
 import {
   createPostSchema,
@@ -33,6 +33,7 @@ export const postsRouter = Router();
 postsRouter.get(
   '/search',
   optionalUser,
+  searchLimiter,
   validate(searchPostsSchema, 'query'),
   asyncHandler(ctrl.search),
 );

@@ -49,6 +49,10 @@ server/dump.rdb
 # Optional local overrides
 .local/
 
+# Large demo media — exceeds GitHub's 100MB file size limit.
+# Host externally (cloud/YouTube) or use Git LFS; keep small preview clips tracked.
+docs/demo/0521-full-train.mp4
+
 # Agent runtime state & secrets
 agent/.agent-state/
 agent/.env

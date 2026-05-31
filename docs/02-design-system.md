@@ -233,7 +233,7 @@ To be implemented in `client/src/components/primitives/`. Each has light/dark va
 
 ## Imagery
 
-- Post images: max 1200px wide, auto WebP via Cloudinary, slight `saturate(0.92)` filter on display to tame stock-photo vibrance.
+- Post images: stored on S3 (no on-the-fly transforms); slight `saturate(0.92)` filter on display to tame stock-photo vibrance. Intrinsic `width`/`height` are stored and used to reserve layout (no CLS).
 - Seed data: use Unsplash Source URLs (`https://source.unsplash.com/...`) for predictable placeholder variety.
 
 ## Accessibility baseline

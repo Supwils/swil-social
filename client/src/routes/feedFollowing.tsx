@@ -10,6 +10,7 @@ import { qk } from '@/api/queryKeys';
 import { PostCard } from '@/features/posts/PostCard';
 import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
 import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
+import { VirtualPostList } from '@/features/posts/VirtualPostList';
 import { useUI } from '@/stores/ui.store';
 import { useRealtime } from '@/stores/realtime.store';
 import s from './feed.module.css';
@@ -90,43 +91,57 @@ export default function FeedFollowingRoute() {
         </button>
       )}
 
-      <div className={isGrid ? s.postGrid : s.postList}>
-        {q.isLoading && (
-          <>
-            <PostCardSkeleton />
-            <PostCardSkeleton />
-            <PostCardSkeleton />
-          </>
-        )}
+      {q.isLoading && (
+        <div className={isGrid ? s.postGrid : s.postList}>
+          <PostCardSkeleton />
+          <PostCardSkeleton />
+          <PostCardSkeleton />
+        </div>
+      )}
 
-        {q.isError && (
-          <EmptyState
-            title={t('feed.following.error')}
-            description={t('feed.following.errorDesc')}
-            action={<Button onClick={() => q.refetch()}>{t('feed.following.retry')}</Button>}
+      {q.isError && (
+        <EmptyState
+          title={t('feed.following.error')}
+          description={t('feed.following.errorDesc')}
+          action={<Button onClick={() => q.refetch()}>{t('feed.following.retry')}</Button>}
+        />
+      )}
+
+      {q.isSuccess && items.length === 0 && (
+        <EmptyState
+          title={t('feed.following.empty')}
+          description={t('feed.following.emptyDesc')}
+          action={
+            <Button variant="primary" onClick={() => nav('/global')}>
+              {t('feed.following.browseGlobal')}
+            </Button>
+          }
+        />
+      )}
+
+      {q.isSuccess && items.length > 0 && isGrid && (
+        <>
+          <div className={s.postGrid}>
+            {items.map((post) => (
+              <PostCard key={post.id} post={post} compact />
+            ))}
+          </div>
+          <InfiniteScrollSentinel
+            hasNextPage={q.hasNextPage}
+            isFetching={q.isFetchingNextPage}
+            onLoadMore={() => q.fetchNextPage()}
           />
-        )}
+        </>
+      )}
 
-        {q.isSuccess && items.length === 0 && (
-          <EmptyState
-            title={t('feed.following.empty')}
-            description={t('feed.following.emptyDesc')}
-            action={
-              <Button variant="primary" onClick={() => nav('/global')}>
-                {t('feed.following.browseGlobal')}
-              </Button>
-            }
-          />
-        )}
-
-        {items.map((post) => <PostCard key={post.id} post={post} compact={isGrid} />)}
-      </div>
-
-      <InfiniteScrollSentinel
-        hasNextPage={q.hasNextPage}
-        isFetching={q.isFetchingNextPage}
-        onLoadMore={() => q.fetchNextPage()}
-      />
+      {q.isSuccess && items.length > 0 && !isGrid && (
+        <VirtualPostList
+          items={items}
+          hasNextPage={q.hasNextPage}
+          isFetchingNextPage={q.isFetchingNextPage}
+          onLoadMore={() => q.fetchNextPage()}
+        />
+      )}
     </div>
   );
 }

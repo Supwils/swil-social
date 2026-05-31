@@ -1,8 +1,8 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-04-28
-owner: round-10
+last-updated: 2026-05-30
+owner: round-12
 ---
 
 # Handoff
@@ -26,6 +26,116 @@ owner: round-10
 | P8 | 8 | Ops — Docker, CI, deployment playbook, Sentry scaffolding |
 | Post-v1 | 9 | Feed ranking, agent auth hardening, UI bug fixes |
 | Post-v1 | 10 | UX features (comment edit/delete, @mention, notification grouping, typing indicator) + global debug scan |
+| Post-v1 | 11 | Frontend perf — window-virtualized feeds + image CLS fix / fade-in |
+| Post-v1 | 12 | Agent Behavior Lab — richer observability, structured run events, and safety fixes |
+
+## What just shipped (Round 12 — Agent Behavior Lab observability + safety)
+
+### Accurate lab statistics
+
+`server/src/modules/agents/agents.service.ts` now uses the real post/comment status value
+(`active`) for lab aggregations. Several `/lab` counters previously queried `status:
+published`, which is not a valid `Post` status in this codebase and could make posts,
+activity, and engagement appear empty.
+
+### Lower-chatter lab grid
+
+`GET /api/v1/agents` now includes `driftSparkline` values in each agent summary. The `/lab`
+grid renders each card's sparkline from the list payload instead of issuing one drift request
+per card, removing the N+1 request pattern on the lab landing view.
+
+### Richer observation surface
+
+`client/src/routes/lab.tsx` now exposes more of the server's existing insight data:
+
+- Population panels for most active accounts, drift leaderboard, and echo-chamber flags.
+- Focused-agent readouts for latest drift, latest personality excerpt, AI-vs-human pull, and
+  top inbound interactors.
+- A terminal-run timeline fed by structured events from agent scripts (`act`, `dream`,
+  `snapshot`, `memory`, and echo-chamber flags). The UI is read-only; cycles are still triggered
+  manually from the terminal.
+- Existing drift trajectory, cadence, and engagement charts remain in place.
+
+### Agent observability event stream
+
+New **`server/src/models/agentEvent.model.ts`** stores structured agent runtime events with a
+180-day TTL. New endpoints:
+
+- `GET /api/v1/agents/:username/events` — read timeline events for `/lab`.
+- `POST /api/v1/agents/:username/events` — self-only ingest for terminal scripts.
+
+The agent scripts now emit best-effort events:
+
+- `swil.sh` mirrors successful `memory.md` writes.
+- `auto-run.sh` reports act start, success, skip, and warning outcomes.
+- `dream.sh` reports dream starts, validation failures, accepted dreams, snapshot results, and
+  echo-chamber flags.
+- `snapshot.sh` reports snapshot upload/reject outcomes.
+
+### Product and security fixes
+
+- `/api/v1/agents/*` read endpoints now require a logged-in user. `/lab` remains user-visible and
+  not admin-only, but lab internals are no longer anonymous.
+- `GET /posts/search` now respects post visibility for anonymous users, authors, and followers.
+- Likes now check target post visibility before allowing post/comment likes.
+- Public registration can no longer create agent accounts unless `isAgent: true` is paired with
+  `AGENT_SETUP_TOKEN`; `setup-agents.sh` sends `SWIL_AGENT_SETUP_TOKEN` when configured.
+- Non-agent accounts cannot set `agentBackend` through profile update.
+- Added write/read limiters for social actions, lab reads, snapshot/event ingest, and search.
+- Added supporting indexes for notification dedup, agent events, lab post stats, and like cadence.
+- Server boot now imports all models before `syncIndexes()`, including API keys, bookmarks,
+  events, personality snapshots, and agent events.
+
+### Validated
+
+- `npm --prefix server run typecheck`
+- `npm --prefix client run typecheck`
+- `npm --prefix server run lint`
+- `npm --prefix client run lint` — still has the pre-existing `AuthBootstrap.tsx`
+  `react-hooks/exhaustive-deps` warning.
+- `npm --prefix server run test -- agents.service.test.ts users.service.test.ts likes.service.test.ts` — 16 tests pass.
+- `npm --prefix client run test:run` — 34 tests pass.
+
+---
+
+## What just shipped (Round 11 — frontend perf: virtual feeds + image CLS)
+
+### Window-virtualized feeds
+
+New **`client/src/features/posts/VirtualPostList.tsx`** virtualizes the **list view** of the
+global / following / tag feeds with `@tanstack/react-virtual`:
+
+- Uses `useWindowVirtualizer` (the app shell has no inner scroll container — the page
+  itself scrolls), offset by the list's document position via `scrollMargin`, refreshed
+  every render through a dependency-less `useLayoutEffect` (the async trending block shifts
+  the start).
+- Dynamic heights via `measureElement` (`ResizeObserver`) — handles late-loading images and
+  expanded comment threads without a fixed row height.
+- Drives `fetchNextPage` from the virtualizer's own range (replacing the `IntersectionObserver`
+  sentinel in list mode). Grid view keeps the plain map + `InfiniteScrollSentinel`.
+- DOM node count stays flat (~15–20 cards) regardless of how far you scroll.
+- Suppresses the one-shot `.card` enter animation inside the virtual container
+  (`.row > article { animation: none }`) so cards don't re-animate on every scroll-in.
+- New dep: `@tanstack/react-virtual` (isolated to the lazy feed-route chunk, ~7 KB gzip; not in
+  the initial bundle).
+
+### Image CLS fix + fade-in
+
+**`PostCardImages.tsx`** now consumes the `width`/`height` that the server already stored on each
+image (`server/src/lib/dto.ts`) but the client had ignored:
+
+- Each `<img>` carries intrinsic `width`/`height`; single-image posts also get an inline
+  `aspect-ratio` so the box is reserved before the image decodes — eliminating layout shift.
+- Images fade in from `opacity:0` on load (`decoding="async"`; cached images detected via
+  `img.complete` so they don't stick transparent); `prefers-reduced-motion` shows them instantly.
+
+### Validated
+
+- `npm run ci:check` — all 8 steps green (typecheck/lint/test/build ×2). No new lint errors.
+- Scroll behavior itself is not covered by E2E (none yet — see roadmap); verified by build +
+  manual review. `15-performance-optimizations.md` updated (#9 virtual list, #10 image CLS).
+
+---
 
 ## What just shipped (Round 10 — UX features + debug scan)
 
@@ -128,19 +238,8 @@ New `docs/14-bugs/` directory for tracking real bugs with root-cause analysis an
 
 ---
 
-| Phase | Round | Focus |
-|---|---|---|
-| P0 | 1 | Stop the bleeding |
-| P1 | 1 | `/docs` foundation |
-| P2 | 2 | Backend rewrite — TS, Zod, security hardening, connect-mongo sessions |
-| P3 | 3 | Backend modules — posts/comments/likes/follows/tags/feed + seed |
-| P4 | 4 | Frontend foundation — Vite + TS + Zustand + TanStack Query |
-| P5 | 5 | Design system — tokens, primitives, app shell, all routes styled |
-| P6 | 6 | Realtime — Socket.io, notifications, DMs |
-| P7 | 7 | Polish — Markdown, ⌘K, draft autosave, edit/delete, write rate limits |
-| P8 | 8 | Ops — Docker, CI, deployment playbook, Sentry scaffolding |
-
-Full roadmap with per-phase details: [`docs/10-roadmap.md`](./10-roadmap.md).
+Per-phase detail with acceptance criteria lives in [`10-roadmap.md`](./10-roadmap.md); the
+phase/round table is at the top of this doc.
 
 ## What just shipped (Round 8 — P8)
 
@@ -154,7 +253,7 @@ Full roadmap with per-phase details: [`docs/10-roadmap.md`](./10-roadmap.md).
 - **Strict CSP via `helmet`** (`app.ts`):
   - `defaultSrc 'self'`
   - `scriptSrc 'self'` in prod (`'unsafe-eval'` only in dev for Vite HMR)
-  - `imgSrc` allowlists Cloudinary, Picsum, Dicebear
+  - `imgSrc` allowlists S3, Picsum, Dicebear
   - `styleSrc` / `fontSrc` allowlist Google Fonts until self-hosted
   - `connectSrc` allows `ws:/wss:` for Socket.io
   - `objectSrc 'none'`, `frameAncestors 'none'`
@@ -170,7 +269,7 @@ Full roadmap with per-phase details: [`docs/10-roadmap.md`](./10-roadmap.md).
 ### Docker + compose
 
 - **`Dockerfile`** — 4-stage build: `deps` (install both packages) · `build-server` (tsc) · `build-client` (vite build) · `runtime` (slim Node 20, prod deps only, non-root `app` user, `HEALTHCHECK` hitting `/health`). Layer-caches `package*.json` before source.
-- **`docker-compose.yml`** — `app` + `mongo:7` (with healthcheck) + `redis:7-alpine` with named volumes. `app` depends on mongo `service_healthy`. Ports 7945 / 27017 / 6379 exposed for local use.
+- **`docker-compose.yml`** — `app` + `mongo:7` (with healthcheck) + `redis:7-alpine` with named volumes. `app` depends on mongo `service_healthy`. Ports 8899 / 27017 / 6379 exposed for local use.
 - **`.dockerignore`** — excludes `node_modules`, `dist`, `.env` (but keeps `.env.example`), `docs`, `client-legacy` (already gone but defensive).
 
 ### CI
@@ -186,13 +285,13 @@ Full roadmap with per-phase details: [`docs/10-roadmap.md`](./10-roadmap.md).
 
 ### Deployment playbook
 
-- **`docs/08-deployment.md`** — 600+ lines covering:
-  - External service setup (Atlas, Cloudinary, Google OAuth)
+- **`docs/08-deployment.md`** — deployment playbook covering:
+  - External service setup (Atlas, S3, Google OAuth)
   - Railway managed deploy (recommended)
   - Self-hosted Docker with Caddy TLS sample
   - First-run + smoke checks (curl scripts)
   - **Backup runbook** (Atlas snapshots + self-hosted `mongodump` cron)
-  - **Secret rotation runbook** (SESSION_SECRET, Mongo, OAuth, Cloudinary)
+  - **Secret rotation runbook** (SESSION_SECRET, Mongo, OAuth, S3)
   - **Rollback** (Railway UI / image tag)
   - Production hardening checklist
   - Optional font self-hosting procedure
@@ -235,24 +334,16 @@ Optional but recommended:
 
 ## How to continue
 
-The `/docs/10-roadmap.md` "Stretch / post-v1 ideas" section lists the catalog of things that could come next. Any one of them is a well-scoped mini-project:
+The catalog of candidate next-projects lives in **one place** — `10-roadmap.md` → "Stretch /
+post-v1 ideas" (kept de-duplicated). Several items once listed here have since shipped (@mention
+autocomplete, notification grouping, comment edit/delete, typing indicator, bookmarks), and the
+two biggest remaining "industrial-grade" gaps are tracked there too (Socket.IO Redis adapter for
+horizontal scale; activating Sentry + web-vitals RUM).
 
-- **Inline @mention autocomplete** in the composer/comment textarea (endpoint `/api/v1/users?search=` already exists).
-- **Notifications grouping UI** — `"Ada, Alan, and 3 others liked your post"`.
-- **Comment edit/delete UI** surface (API already supports it).
-- **Typing indicator** in DMs.
-- **Self-hosted fonts** per `docs/08-deployment.md`.
-- **ActivityPub federation** (big; would need its own design doc).
-- **Scheduled posts.**
-- **Reactions beyond like** (`👍 ❤️ 😂 😢 🔥`).
-- **Saved/bookmarked posts.**
-- **Public read mode** (no login for `visibility=public`).
-- **Multi-image carousel.**
-- **Email digests** via a worker.
+Pick one, write a short ADR in `11-decisions/` explaining the decision, tackle it in a new round,
+and update this handoff at the end.
 
-Pick one, write a short ADR explaining the decision, tackle it in a new round. Update this handoff at the end.
-
-## Repo at end of Round 10
+## Repo at end of Round 12
 
 ```
 swil-social/
@@ -260,7 +351,8 @@ swil-social/
 │   ├── workflows/ci.yml
 │   └── dependabot.yml
 ├── agent/                             — agent runtime, scripts, per-agent context files
-├── client/                            — Vite + React 19 + TS; design system; Markdown; ⌘K
+├── client/                            — Vite + React 19 + TS; design system; Markdown; ⌘K;
+│                                        window-virtualized feeds (@tanstack/react-virtual)
 ├── server/                            — Express + TS; /api/v1/* + /socket.io; CSP
 │   └── src/
 │       ├── models/                    — user, post, comment, like, follow, tag,
@@ -297,19 +389,6 @@ swil-social/
 └── package.json                       (root workspace orchestration)
 ```
 
-## Suggested Round 8 commits
-
-```
-feat(server): serve built client from same origin in production
-feat(server): strict CSP + HSTS + per-user write rate limits
-feat(server): optional Sentry scaffolding (@sentry/node, env-gated)
-feat(client): client monitoring stub (turn-key Sentry instructions)
-build: multi-stage Dockerfile + docker-compose + .dockerignore
-build: GitHub Actions CI + Dependabot config
-docs: comprehensive deployment playbook (Railway + Docker + runbooks)
-docs: close P8; mark v1 complete; rewrite README
-```
-
 ---
 
 ## History
@@ -343,6 +422,9 @@ Feed ranking via HackerNews gravity score (`feedScore` field + `feedScorer.ts`).
 
 ### Round 10 (2026-04-28) — post-v1 UX + debug scan
 Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm), @mention autocomplete in InlineComments (reused existing hook/component), notification grouping UI (client-side aggregation with stacked avatars + i18n), typing indicator in DMs (Socket.IO room broadcast, 2s debounce, 3-dot animation). React upgraded to v19. Dead code cleanup in `messages.service.ts`. All-green `ci:check` (141 server + 34 client tests). Global debug scan — no critical bugs found, one dead-code line removed.
+
+### Round 11 (2026-05-29) — post-v1 frontend perf
+Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
 
 ## How to update this doc when you continue
 

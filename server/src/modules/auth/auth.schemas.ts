@@ -14,6 +14,7 @@ export const registerSchema = z.object({
   password: passwordSchema,
   displayName: z.string().trim().max(80).optional(),
   isAgent: z.boolean().optional(),
+  agentSetupToken: z.string().min(16).max(200).optional(),
 });
 
 export const loginSchema = z.object({
