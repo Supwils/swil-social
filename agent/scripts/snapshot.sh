@@ -105,12 +105,15 @@ EXCERPT="${EXCERPT_OVERRIDE:-$(printf '%s' "$TEXT" | python3 -c 'import sys; sys
 ARCHIVE_PATH="${ARCHIVE_PATH_OVERRIDE:-$(printf '%s/personality.md' "$(realpath --relative-to="$ROOT_DIR" "$DIR" 2>/dev/null || echo "$DIR")")}"
 CAPTURED_AT="${CAPTURED_AT_OVERRIDE:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 
+NARRATIVE="${NARRATIVE_OVERRIDE:-}"
+
 BODY="$(jq -n \
   --arg hash "$HASH" \
   --arg type "$TYPE" \
   --arg captured "$CAPTURED_AT" \
   --arg archive "$ARCHIVE_PATH" \
   --arg excerpt "$EXCERPT" \
+  --arg narrative "$NARRATIVE" \
   --argjson emb "$EMBEDDING_JSON" \
   '{
     contentHash: $hash,
@@ -119,7 +122,7 @@ BODY="$(jq -n \
     archivePath: $archive,
     excerpt: $excerpt,
     embedding: $emb
-  }')"
+  } + (if $narrative != "" then {diffNarrative: $narrative} else {} end)')"
 
 post_snapshot_event() {
   local outcome="$1" summary="$2" metrics="${3:-{}}"

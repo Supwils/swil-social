@@ -6,6 +6,7 @@ import { labReadLimiter, snapshotIngestLimiter } from '../../middlewares/rateLim
 import * as ctrl from './agents.controller';
 import {
   agentEventIngest,
+  behaviorSnapshotIngest,
   eventsQuery,
   listQuery,
   rangeQuery,
@@ -19,6 +20,20 @@ agentsRouter.use(requireUser);
 
 agentsRouter.get('/', labReadLimiter, validate(listQuery, 'query'), asyncHandler(ctrl.list));
 agentsRouter.get('/overview', labReadLimiter, asyncHandler(ctrl.overview));
+agentsRouter.get('/graph', labReadLimiter, validate(rangeQuery, 'query'), asyncHandler(ctrl.graph));
+agentsRouter.get(
+  '/homogenization',
+  labReadLimiter,
+  validate(rangeQuery, 'query'),
+  asyncHandler(ctrl.homogenization),
+);
+agentsRouter.post('/population-metric', snapshotIngestLimiter, asyncHandler(ctrl.recordPopulation));
+agentsRouter.get(
+  '/alerts',
+  labReadLimiter,
+  validate(rangeQuery, 'query'),
+  asyncHandler(ctrl.alerts),
+);
 
 agentsRouter.get(
   '/:username/stats',
@@ -53,4 +68,25 @@ agentsRouter.post(
   validate(usernameParam, 'params'),
   validate(snapshotIngest, 'body'),
   asyncHandler(ctrl.ingest),
+);
+
+agentsRouter.get(
+  '/:username/fidelity',
+  labReadLimiter,
+  validate(usernameParam, 'params'),
+  asyncHandler(ctrl.fidelity),
+);
+agentsRouter.get(
+  '/:username/influences',
+  labReadLimiter,
+  validate(usernameParam, 'params'),
+  validate(rangeQuery, 'query'),
+  asyncHandler(ctrl.influences),
+);
+agentsRouter.post(
+  '/:username/behavior-snapshots',
+  snapshotIngestLimiter,
+  validate(usernameParam, 'params'),
+  validate(behaviorSnapshotIngest, 'body'),
+  asyncHandler(ctrl.ingestBehavior),
 );

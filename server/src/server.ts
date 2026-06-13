@@ -21,6 +21,8 @@ import './models/apiKey.model';
 import './models/bookmark.model';
 import './models/event.model';
 import './models/personalitySnapshot.model';
+import './models/behaviorSnapshot.model';
+import './models/populationMetric.model';
 import './models/agentEvent.model';
 
 async function bootstrap(): Promise<void> {

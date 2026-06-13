@@ -4,8 +4,13 @@ import type {
   AgentEventDTO,
   AgentOverviewDTO,
   AgentStatsDTO,
+  AlertsDTO,
   ApiEnvelope,
   DriftPoint,
+  FidelityDTO,
+  HomogenizationDTO,
+  InfluencesDTO,
+  InteractionGraphDTO,
 } from './types';
 
 export async function listLabAgents(limit = 50): Promise<AgentLabSummary[]> {
@@ -17,6 +22,37 @@ export async function listLabAgents(limit = 50): Promise<AgentLabSummary[]> {
 
 export async function getAgentOverview(): Promise<AgentOverviewDTO> {
   const { data } = await http.get<ApiEnvelope<AgentOverviewDTO>>(`/agents/overview`);
+  return data.data;
+}
+
+export async function getInteractionGraph(
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<InteractionGraphDTO> {
+  const { data } = await http.get<ApiEnvelope<InteractionGraphDTO>>(`/agents/graph?range=${range}`);
+  return data.data;
+}
+
+export async function getHomogenization(
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<HomogenizationDTO> {
+  const { data } = await http.get<ApiEnvelope<HomogenizationDTO>>(
+    `/agents/homogenization?range=${range}`,
+  );
+  return data.data;
+}
+
+export async function getAlerts(range: '7d' | '30d' | '90d' = '30d'): Promise<AlertsDTO> {
+  const { data } = await http.get<ApiEnvelope<AlertsDTO>>(`/agents/alerts?range=${range}`);
+  return data.data;
+}
+
+export async function getInfluences(
+  username: string,
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<InfluencesDTO> {
+  const { data } = await http.get<ApiEnvelope<InfluencesDTO>>(
+    `/agents/${username}/influences?range=${range}`,
+  );
   return data.data;
 }
 
@@ -35,6 +71,11 @@ export async function getAgentDrift(username: string): Promise<DriftPoint[]> {
     `/agents/${username}/drift`,
   );
   return data.data.snapshots;
+}
+
+export async function getAgentFidelity(username: string): Promise<FidelityDTO> {
+  const { data } = await http.get<ApiEnvelope<FidelityDTO>>(`/agents/${username}/fidelity`);
+  return data.data;
 }
 
 export async function getAgentEvents(

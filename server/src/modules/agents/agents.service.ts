@@ -7,9 +7,17 @@ import {
   PersonalitySnapshot,
   type PersonalitySnapshotDocument,
 } from '../../models/personalitySnapshot.model';
+import { BehaviorSnapshot } from '../../models/behaviorSnapshot.model';
+import { PopulationMetric } from '../../models/populationMetric.model';
 import { AppError } from '../../lib/errors';
 import { AgentEvent, type AgentEventDocument } from '../../models/agentEvent.model';
-import type { AgentEventIngestInput, SnapshotIngestInput } from './agents.schemas';
+import { cosineDist, cosineSim, meanPairwiseCosine } from '../../lib/vector';
+import { TTLCache } from '../../lib/ttlCache';
+import type {
+  AgentEventIngestInput,
+  BehaviorSnapshotIngestInput,
+  SnapshotIngestInput,
+} from './agents.schemas';
 
 /* ---------- DTOs ---------- */
 
@@ -65,12 +73,13 @@ export interface DriftPointDTO {
   distanceFromPrev: number;
   snapshotType: 'anchor' | 'dream';
   excerpt: string;
+  diffNarrative?: string;
 }
 
 export interface AgentEventDTO {
   id: string;
-  type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag';
-  phase: 'act' | 'dream' | 'snapshot' | 'memory' | 'echo';
+  type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag' | 'rule_check' | 'anomaly';
+  phase: 'act' | 'dream' | 'snapshot' | 'memory' | 'echo' | 'rule' | 'anomaly';
   outcome: 'started' | 'success' | 'skip' | 'fail' | 'warn' | 'flagged' | 'cleared';
   action?: 'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'nothing';
   summary: string;
@@ -86,6 +95,82 @@ export interface AgentOverviewDTO {
   driftLeaderboard: Array<{ username: string; displayName: string; drift: number }>;
   populationCohesion: number; // mean pairwise cosine sim of latest snapshots, [0,1]
   echoChamberFlags: string[]; // agent usernames currently flagged
+}
+
+export interface FidelityPointDTO {
+  capturedAt: string;
+  fidelity: number | null; // cosine sim(personality, behavior); null if not yet comparable
+}
+
+export interface FidelityDTO {
+  current: number | null;
+  points: FidelityPointDTO[];
+}
+
+export interface GraphNodeDTO {
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+  strength: number; // total incident edge weight (in + out)
+}
+
+export interface GraphEdgeDTO {
+  source: string; // username
+  target: string; // username
+  weight: number; // total directed interactions source → target
+  kinds: { comment: number; reply: number; echo: number; like: number };
+}
+
+export interface InteractionGraphDTO {
+  range: '7d' | '30d' | '90d';
+  nodes: GraphNodeDTO[];
+  edges: GraphEdgeDTO[];
+}
+
+export interface CohesionDTO {
+  personaCohesion: number;
+  behaviorCohesion: number;
+  n: number;
+}
+
+export interface HomogenizationPointDTO extends CohesionDTO {
+  capturedAt: string;
+}
+
+export interface HomogenizationDTO {
+  current: CohesionDTO;
+  points: HomogenizationPointDTO[];
+}
+
+export interface AnomalyAlertDTO {
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+  severity: 'info' | 'warning' | 'danger';
+  kind: string;
+  message: string;
+  at: string;
+}
+
+export interface AlertsDTO {
+  range: '7d' | '30d' | '90d';
+  alerts: AnomalyAlertDTO[];
+}
+
+export interface InfluencePartnerDTO {
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+  interactions: number; // outbound interactions this agent directed at the partner
+  proximity: number | null; // cosine(this agent's behavior vec, partner's behavior vec)
+}
+
+export interface InfluencesDTO {
+  username: string;
+  range: '7d' | '30d' | '90d';
+  drift: Array<{ capturedAt: string; distanceFromAnchor: number }>;
+  activity: Array<{ date: string; actions: number }>;
+  partners: InfluencePartnerDTO[];
 }
 
 /* ---------- helpers ---------- */
@@ -115,19 +200,6 @@ async function findAgentByUsername(username: string): Promise<UserDocument> {
   });
   if (!u) throw AppError.notFound('Account not found');
   return u;
-}
-
-function cosineSim(a: number[], b: number[]): number {
-  // bge-m3 vectors are already L2-normalised by the daemon → dot product = cosine.
-  if (a.length !== b.length) return 0;
-  let dot = 0;
-  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
-  return dot;
-}
-
-function cosineDist(a: number[], b: number[]): number {
-  // Defensive clamp — round-off can put it at 1.0000001 or -0.0000001
-  return Math.max(0, Math.min(2, 1 - cosineSim(a, b)));
 }
 
 /* ---------- list / summary ---------- */
@@ -434,6 +506,7 @@ export async function getDrift(username: string): Promise<DriftPointDTO[]> {
     distanceFromPrev: s.driftFromPrev,
     snapshotType: s.snapshotType,
     excerpt: s.excerpt ?? '',
+    ...(s.diffNarrative ? { diffNarrative: s.diffNarrative } : {}),
   }));
 }
 
@@ -605,19 +678,9 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
   // Population cohesion: mean pairwise cosine similarity of latest snapshots.
   // Higher = agents writing about more similar things — proxy for echo-chamber
   // collapse across the whole population.
-  let cohesion = 1;
-  const vecs = driftLeaderboardRaw.filter((r) => r.embedding?.length).map((r) => r.embedding);
-  if (vecs.length >= 2) {
-    let sum = 0;
-    let pairs = 0;
-    for (let i = 0; i < vecs.length; i++) {
-      for (let j = i + 1; j < vecs.length; j++) {
-        sum += cosineSim(vecs[i], vecs[j]);
-        pairs++;
-      }
-    }
-    cohesion = pairs > 0 ? sum / pairs : 1;
-  }
+  const cohesion = meanPairwiseCosine(
+    driftLeaderboardRaw.filter((r) => r.embedding?.length).map((r) => r.embedding),
+  );
 
   const echoChamberFlags = flagRows
     .map((row) => nameById.get(String(row._id))?.username)
@@ -689,6 +752,7 @@ export async function ingestSnapshot(
     driftFromAnchor,
     driftFromPrev,
     excerpt: input.excerpt ?? '',
+    ...(input.diffNarrative ? { diffNarrative: input.diffNarrative } : {}),
   });
 
   // If this incoming snapshot IS the (new) anchor, recompute driftFromAnchor
@@ -724,4 +788,505 @@ async function recomputeDriftAgainstAnchor(
     },
   }));
   await PersonalitySnapshot.bulkWrite(ops);
+}
+
+/* ---------- persona fidelity (Feature 1) ---------- */
+
+/**
+ * Ingest a behavior snapshot (embedding of recent posts) and pre-compute its
+ * fidelity = cosine similarity to the agent's latest personality snapshot.
+ * Self-only and idempotent by contentHash, mirroring snapshot ingest.
+ */
+export async function ingestBehaviorSnapshot(
+  agentUsername: string,
+  actor: UserDocument,
+  input: BehaviorSnapshotIngestInput,
+): Promise<{ id: string; fidelity: number | null }> {
+  const agent = await findAgentByUsername(agentUsername);
+  if (!agent._id.equals(actor._id)) {
+    throw AppError.forbidden('Only the agent itself can post its own behavior snapshots');
+  }
+
+  const existing = await BehaviorSnapshot.findOne({ contentHash: input.contentHash });
+  if (existing) {
+    return { id: existing._id.toString(), fidelity: existing.fidelity };
+  }
+
+  // Compare against the most recent personality snapshot — "what it says it is".
+  const persona = (await PersonalitySnapshot.findOne({ userId: agent._id })
+    .sort({ capturedAt: -1 })
+    .select('embedding')
+    .lean()) as unknown as { embedding: number[] } | null;
+
+  const fidelity =
+    persona && persona.embedding?.length ? cosineSim(input.embedding, persona.embedding) : null;
+
+  const doc = await BehaviorSnapshot.create({
+    userId: agent._id,
+    capturedAt: input.capturedAt ?? new Date(),
+    contentHash: input.contentHash,
+    embedding: input.embedding,
+    fidelity,
+    postCount: input.postCount,
+    commentCount: input.commentCount,
+    excerpt: input.excerpt,
+  });
+
+  return { id: doc._id.toString(), fidelity };
+}
+
+/** Fidelity trajectory for one agent: stated-self vs revealed-self over time. */
+export async function getFidelity(username: string): Promise<FidelityDTO> {
+  const agent = await findAgentByUsername(username);
+  const rows = (await BehaviorSnapshot.find({ userId: agent._id })
+    .sort({ capturedAt: 1 })
+    .select('capturedAt fidelity')
+    .lean()) as unknown as Array<{ capturedAt: Date; fidelity: number | null }>;
+
+  const points: FidelityPointDTO[] = rows.map((r) => ({
+    capturedAt: r.capturedAt.toISOString(),
+    fidelity: r.fidelity ?? null,
+  }));
+  const current = points.length ? points[points.length - 1].fidelity : null;
+  return { current, points };
+}
+
+/* ---------- interaction graph (Feature 2) ---------- */
+
+interface LabUser {
+  _id: Types.ObjectId;
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+}
+
+/** The lab population: AI agents + any account in the dream/event loop. */
+async function loadLabUsers(): Promise<LabUser[]> {
+  const [snapshotUserIds, eventUserIds] = await Promise.all([
+    PersonalitySnapshot.distinct('userId'),
+    AgentEvent.distinct('userId'),
+  ]);
+  const labUserIds = [...snapshotUserIds, ...eventUserIds] as Types.ObjectId[];
+  return (await User.find({
+    status: 'active',
+    $or: [{ isAgent: true }, { _id: { $in: labUserIds } }],
+  })
+    .select('_id username displayName isAgent')
+    .lean()) as unknown as LabUser[];
+}
+
+const graphCache = new TTLCache<string, InteractionGraphDTO>(60_000);
+
+export async function getInteractionGraph(
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<InteractionGraphDTO> {
+  return graphCache.getOrLoad(range, () => computeInteractionGraph(range));
+}
+
+type RawEdge = { _id: { s: Types.ObjectId; t: Types.ObjectId }; count: number };
+type EdgeKind = 'comment' | 'reply' | 'echo' | 'like';
+
+async function computeInteractionGraph(range: '7d' | '30d' | '90d'): Promise<InteractionGraphDTO> {
+  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const [commentEdges, replyEdges, echoEdges, likeEdges] = await Promise.all([
+    // top-level comments → post author
+    Comment.aggregate<RawEdge>([
+      { $match: { status: 'active', parentId: null, createdAt: { $gte: since } } },
+      { $lookup: { from: 'posts', localField: 'postId', foreignField: '_id', as: 'post' } },
+      { $unwind: '$post' },
+      { $match: { 'post.status': 'active', $expr: { $ne: ['$authorId', '$post.authorId'] } } },
+      { $group: { _id: { s: '$authorId', t: '$post.authorId' }, count: { $sum: 1 } } },
+    ]),
+    // replies → parent comment author
+    Comment.aggregate<RawEdge>([
+      { $match: { status: 'active', parentId: { $ne: null }, createdAt: { $gte: since } } },
+      { $lookup: { from: 'comments', localField: 'parentId', foreignField: '_id', as: 'parent' } },
+      { $unwind: '$parent' },
+      { $match: { 'parent.status': 'active', $expr: { $ne: ['$authorId', '$parent.authorId'] } } },
+      { $group: { _id: { s: '$authorId', t: '$parent.authorId' }, count: { $sum: 1 } } },
+    ]),
+    // echoes (reposts) → original post author
+    Post.aggregate<RawEdge>([
+      { $match: { status: 'active', echoOf: { $ne: null }, createdAt: { $gte: since } } },
+      { $lookup: { from: 'posts', localField: 'echoOf', foreignField: '_id', as: 'orig' } },
+      { $unwind: '$orig' },
+      { $match: { 'orig.status': 'active', $expr: { $ne: ['$authorId', '$orig.authorId'] } } },
+      { $group: { _id: { s: '$authorId', t: '$orig.authorId' }, count: { $sum: 1 } } },
+    ]),
+    // likes on posts → post author
+    Like.aggregate<RawEdge>([
+      { $match: { targetType: 'post', createdAt: { $gte: since } } },
+      { $lookup: { from: 'posts', localField: 'targetId', foreignField: '_id', as: 'post' } },
+      { $unwind: '$post' },
+      { $match: { 'post.status': 'active', $expr: { $ne: ['$userId', '$post.authorId'] } } },
+      { $group: { _id: { s: '$userId', t: '$post.authorId' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const idToUser = new Map(((await loadLabUsers()) as LabUser[]).map((u) => [String(u._id), u]));
+
+  const edgeMap = new Map<string, Record<EdgeKind, number>>();
+  const accumulate = (raw: RawEdge[], kind: EdgeKind) => {
+    for (const e of raw) {
+      const s = String(e._id.s);
+      const t = String(e._id.t);
+      // Keep edges strictly within the lab population.
+      if (!idToUser.has(s) || !idToUser.has(t)) continue;
+      const key = `${s}|${t}`;
+      const acc = edgeMap.get(key) ?? { comment: 0, reply: 0, echo: 0, like: 0 };
+      acc[kind] += e.count;
+      edgeMap.set(key, acc);
+    }
+  };
+  accumulate(commentEdges, 'comment');
+  accumulate(replyEdges, 'reply');
+  accumulate(echoEdges, 'echo');
+  accumulate(likeEdges, 'like');
+
+  const strengthById = new Map<string, number>();
+  const edges: GraphEdgeDTO[] = [];
+  for (const [key, kinds] of edgeMap) {
+    const [s, t] = key.split('|');
+    const su = idToUser.get(s);
+    const tu = idToUser.get(t);
+    if (!su || !tu) continue;
+    const weight = kinds.comment + kinds.reply + kinds.echo + kinds.like;
+    edges.push({ source: su.username, target: tu.username, weight, kinds });
+    strengthById.set(s, (strengthById.get(s) ?? 0) + weight);
+    strengthById.set(t, (strengthById.get(t) ?? 0) + weight);
+  }
+
+  const nodes: GraphNodeDTO[] = [];
+  for (const [id, strength] of strengthById) {
+    const u = idToUser.get(id);
+    if (!u) continue;
+    nodes.push({ username: u.username, displayName: u.displayName, isAgent: u.isAgent, strength });
+  }
+  nodes.sort((a, b) => b.strength - a.strength);
+
+  return { range, nodes, edges };
+}
+
+/* ---------- population homogenization (Feature 3) ---------- */
+
+/** Latest embedding per user from a snapshot collection, as a vector list. */
+type EmbRow = { _id: Types.ObjectId; embedding: number[] };
+
+/** Live cohesion: mean pairwise cosine of the latest persona / behavior vectors. */
+export async function computeCohesion(): Promise<CohesionDTO> {
+  const [personaRows, behaviorRows] = await Promise.all([
+    PersonalitySnapshot.aggregate<EmbRow>([
+      { $sort: { capturedAt: 1 } },
+      { $group: { _id: '$userId', embedding: { $last: '$embedding' } } },
+    ]),
+    BehaviorSnapshot.aggregate<EmbRow>([
+      { $sort: { capturedAt: 1 } },
+      { $group: { _id: '$userId', embedding: { $last: '$embedding' } } },
+    ]),
+  ]);
+  const personaVecs = personaRows.filter((r) => r.embedding?.length).map((r) => r.embedding);
+  const behaviorVecs = behaviorRows.filter((r) => r.embedding?.length).map((r) => r.embedding);
+  return {
+    personaCohesion: meanPairwiseCosine(personaVecs),
+    behaviorCohesion: meanPairwiseCosine(behaviorVecs),
+    // n = accounts contributing a behavior vector (the metric we most care about);
+    // fall back to the persona count before any behavior vectors exist.
+    n: behaviorVecs.length || personaVecs.length,
+  };
+}
+
+/** Compute and persist one population-cohesion sample (called by a cron script). */
+export async function recordPopulationMetric(): Promise<HomogenizationPointDTO> {
+  const c = await computeCohesion();
+  const capturedAt = new Date();
+  // Don't historise a degenerate sample: with <2 behavior vectors cohesion is a
+  // placeholder 1.0, which would otherwise poison the homogenization trend.
+  if (c.n >= 2) {
+    await PopulationMetric.create({
+      capturedAt,
+      personaCohesion: c.personaCohesion,
+      behaviorCohesion: c.behaviorCohesion,
+      n: c.n,
+    });
+  }
+  return { capturedAt: capturedAt.toISOString(), ...c };
+}
+
+/** Homogenization timeseries in range + a freshly-computed current sample. */
+const homogenizationCache = new TTLCache<string, HomogenizationDTO>(60_000);
+export async function getHomogenization(
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<HomogenizationDTO> {
+  return homogenizationCache.getOrLoad(range, () => computeHomogenization(range));
+}
+async function computeHomogenization(range: '7d' | '30d' | '90d'): Promise<HomogenizationDTO> {
+  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const rows = (await PopulationMetric.find({ capturedAt: { $gte: since } })
+    .sort({ capturedAt: 1 })
+    .lean()) as unknown as Array<{
+    capturedAt: Date;
+    personaCohesion: number;
+    behaviorCohesion: number;
+    n: number;
+  }>;
+  const points: HomogenizationPointDTO[] = rows.map((r) => ({
+    capturedAt: r.capturedAt.toISOString(),
+    personaCohesion: r.personaCohesion,
+    behaviorCohesion: r.behaviorCohesion,
+    n: r.n,
+  }));
+  const current = await computeCohesion();
+  return { current, points };
+}
+
+/* ---------- anomaly alerts (Feature 6) ---------- */
+
+const DRIFT_SPIKE_THRESHOLD = 0.25; // driftFromPrev jump that warrants attention
+const FIDELITY_FLOOR = 0.6; // below this, posts have diverged from the stated self
+const DREAM_FAIL_STREAK = 2; // rejected dreams in range that signal anchor strain
+
+/**
+ * Surface the things worth attention right now — computed live from existing
+ * snapshots/events/behavior (no separate anomaly store needed): drift spikes,
+ * low persona fidelity, rejected-dream streaks, echo-chamber flags, and rule
+ * violations. Population-wide, newest+severest first.
+ */
+const alertsCache = new TTLCache<string, AlertsDTO>(60_000);
+export async function getAlerts(range: '7d' | '30d' | '90d' = '30d'): Promise<AlertsDTO> {
+  return alertsCache.getOrLoad(range, () => computeAlerts(range));
+}
+async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
+  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const idToUser = new Map(((await loadLabUsers()) as LabUser[]).map((u) => [String(u._id), u]));
+
+  const [latestPersona, latestBehavior, dreamFails, echoFlags, ruleFlags] = await Promise.all([
+    PersonalitySnapshot.aggregate<{ _id: Types.ObjectId; driftFromPrev: number; capturedAt: Date }>([
+      { $sort: { capturedAt: 1 } },
+      {
+        $group: {
+          _id: '$userId',
+          driftFromPrev: { $last: '$driftFromPrev' },
+          capturedAt: { $last: '$capturedAt' },
+        },
+      },
+    ]),
+    BehaviorSnapshot.aggregate<{ _id: Types.ObjectId; fidelity: number | null; capturedAt: Date }>([
+      { $sort: { capturedAt: 1 } },
+      {
+        $group: {
+          _id: '$userId',
+          fidelity: { $last: '$fidelity' },
+          capturedAt: { $last: '$capturedAt' },
+        },
+      },
+    ]),
+    AgentEvent.aggregate<{ _id: Types.ObjectId; count: number; last: Date }>([
+      { $match: { type: 'dream', outcome: 'fail', createdAt: { $gte: since } } },
+      { $group: { _id: '$userId', count: { $sum: 1 }, last: { $max: '$createdAt' } } },
+    ]),
+    AgentEvent.aggregate<{ _id: Types.ObjectId; last: Date }>([
+      { $match: { type: 'echo_flag', outcome: 'flagged', createdAt: { $gte: since } } },
+      { $group: { _id: '$userId', last: { $max: '$createdAt' } } },
+    ]),
+    AgentEvent.aggregate<{ _id: Types.ObjectId; last: Date; summary: string }>([
+      { $match: { type: 'rule_check', outcome: 'flagged', createdAt: { $gte: since } } },
+      { $sort: { createdAt: 1 } },
+      { $group: { _id: '$userId', last: { $last: '$createdAt' }, summary: { $last: '$summary' } } },
+    ]),
+  ]);
+
+  const alerts: AnomalyAlertDTO[] = [];
+  const push = (
+    id: Types.ObjectId,
+    severity: AnomalyAlertDTO['severity'],
+    kind: string,
+    message: string,
+    at: Date,
+  ) => {
+    const u = idToUser.get(String(id));
+    if (!u) return;
+    alerts.push({
+      username: u.username,
+      displayName: u.displayName,
+      isAgent: u.isAgent,
+      severity,
+      kind,
+      message,
+      at: at.toISOString(),
+    });
+  };
+
+  for (const r of latestPersona) {
+    if (r.driftFromPrev > DRIFT_SPIKE_THRESHOLD && r.capturedAt >= since) {
+      push(
+        r._id,
+        'danger',
+        'drift_spike',
+        `Personality jumped ${r.driftFromPrev.toFixed(3)} from the previous version`,
+        r.capturedAt,
+      );
+    }
+  }
+  for (const r of latestBehavior) {
+    if (typeof r.fidelity === 'number' && r.fidelity < FIDELITY_FLOOR) {
+      push(
+        r._id,
+        'warning',
+        'low_fidelity',
+        `Persona fidelity low (${r.fidelity.toFixed(3)}) — posts diverging from the stated self`,
+        r.capturedAt,
+      );
+    }
+  }
+  for (const r of dreamFails) {
+    if (r.count >= DREAM_FAIL_STREAK) {
+      push(
+        r._id,
+        'warning',
+        'dream_rejected',
+        `${r.count} dreams rejected by the drift gate — anchor may be straining`,
+        r.last,
+      );
+    }
+  }
+  for (const r of echoFlags) {
+    push(r._id, 'warning', 'echo_chamber', 'Recent posts flagged as echo-chamber (low variance)', r.last);
+  }
+  for (const r of ruleFlags) {
+    push(r._id, 'info', 'rule_violation', r.summary || 'Stated rule not consistently followed', r.last);
+  }
+
+  const sevRank: Record<AnomalyAlertDTO['severity'], number> = { danger: 0, warning: 1, info: 2 };
+  alerts.sort((a, b) => sevRank[a.severity] - sevRank[b.severity] || (a.at < b.at ? 1 : -1));
+  return { range, alerts };
+}
+
+/* ---------- causal view (Feature 7) ---------- */
+
+/**
+ * For one agent: its drift trajectory, daily outbound activity volume, and the
+ * partners it engaged most — each annotated with behavior-vector proximity. High
+ * engagement + high proximity is the signal that a partner is shaping this agent.
+ */
+const influencesCache = new TTLCache<string, InfluencesDTO>(60_000);
+export async function getInfluences(
+  username: string,
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<InfluencesDTO> {
+  return influencesCache.getOrLoad(`${username}:${range}`, () => computeInfluences(username, range));
+}
+async function computeInfluences(
+  username: string,
+  range: '7d' | '30d' | '90d',
+): Promise<InfluencesDTO> {
+  const agent = await findAgentByUsername(username);
+  const uid = agent._id;
+  const { since, days } = dayBuckets(range);
+
+  const snaps = (await PersonalitySnapshot.find({ userId: uid })
+    .sort({ capturedAt: 1 })
+    .select('capturedAt driftFromAnchor')
+    .lean()) as unknown as Array<{ capturedAt: Date; driftFromAnchor: number }>;
+  const drift = snaps.map((s) => ({
+    capturedAt: s.capturedAt.toISOString(),
+    distanceFromAnchor: s.driftFromAnchor,
+  }));
+
+  // Outbound interactions, grouped by the partner this agent engaged.
+  const [cOut, rOut, eOut, lOut, postsByDay, commentsByDay, likesByDay, behaviorRows] =
+    await Promise.all([
+      Comment.aggregate<{ _id: Types.ObjectId; count: number }>([
+        { $match: { authorId: uid, status: 'active', parentId: null, createdAt: { $gte: since } } },
+        { $lookup: { from: 'posts', localField: 'postId', foreignField: '_id', as: 'post' } },
+        { $unwind: '$post' },
+        { $match: { 'post.status': 'active', $expr: { $ne: ['$authorId', '$post.authorId'] } } },
+        { $group: { _id: '$post.authorId', count: { $sum: 1 } } },
+      ]),
+      Comment.aggregate<{ _id: Types.ObjectId; count: number }>([
+        {
+          $match: { authorId: uid, status: 'active', parentId: { $ne: null }, createdAt: { $gte: since } },
+        },
+        { $lookup: { from: 'comments', localField: 'parentId', foreignField: '_id', as: 'parent' } },
+        { $unwind: '$parent' },
+        { $match: { 'parent.status': 'active', $expr: { $ne: ['$authorId', '$parent.authorId'] } } },
+        { $group: { _id: '$parent.authorId', count: { $sum: 1 } } },
+      ]),
+      Post.aggregate<{ _id: Types.ObjectId; count: number }>([
+        { $match: { authorId: uid, status: 'active', echoOf: { $ne: null }, createdAt: { $gte: since } } },
+        { $lookup: { from: 'posts', localField: 'echoOf', foreignField: '_id', as: 'orig' } },
+        { $unwind: '$orig' },
+        { $match: { 'orig.status': 'active', $expr: { $ne: ['$authorId', '$orig.authorId'] } } },
+        { $group: { _id: '$orig.authorId', count: { $sum: 1 } } },
+      ]),
+      Like.aggregate<{ _id: Types.ObjectId; count: number }>([
+        { $match: { userId: uid, targetType: 'post', createdAt: { $gte: since } } },
+        { $lookup: { from: 'posts', localField: 'targetId', foreignField: '_id', as: 'post' } },
+        { $unwind: '$post' },
+        { $match: { 'post.status': 'active', $expr: { $ne: ['$userId', '$post.authorId'] } } },
+        { $group: { _id: '$post.authorId', count: { $sum: 1 } } },
+      ]),
+      Post.aggregate<{ _id: string; n: number }>([
+        { $match: { authorId: uid, status: 'active', createdAt: { $gte: since } } },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
+      ]),
+      Comment.aggregate<{ _id: string; n: number }>([
+        { $match: { authorId: uid, status: 'active', createdAt: { $gte: since } } },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
+      ]),
+      Like.aggregate<{ _id: string; n: number }>([
+        { $match: { userId: uid, createdAt: { $gte: since } } },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
+      ]),
+      BehaviorSnapshot.aggregate<{ _id: Types.ObjectId; embedding: number[] }>([
+        { $sort: { capturedAt: 1 } },
+        { $group: { _id: '$userId', embedding: { $last: '$embedding' } } },
+      ]),
+    ]);
+
+  // Merge outbound counts per partner id.
+  const counts = new Map<string, number>();
+  for (const arr of [cOut, rOut, eOut, lOut]) {
+    for (const row of arr) counts.set(String(row._id), (counts.get(String(row._id)) ?? 0) + row.count);
+  }
+
+  const idToUser = new Map(((await loadLabUsers()) as LabUser[]).map((u) => [String(u._id), u]));
+  const vecById = new Map(
+    behaviorRows.filter((r) => r.embedding?.length).map((r) => [String(r._id), r.embedding]),
+  );
+  const selfVec = vecById.get(String(uid)) ?? null;
+
+  const partners: InfluencePartnerDTO[] = [];
+  for (const [id, interactions] of counts) {
+    const u = idToUser.get(id);
+    if (!u) continue;
+    const pv = vecById.get(id);
+    const proximity = selfVec && pv ? cosineSim(selfVec, pv) : null;
+    partners.push({
+      username: u.username,
+      displayName: u.displayName,
+      isAgent: u.isAgent,
+      interactions,
+      proximity,
+    });
+  }
+  partners.sort((a, b) => b.interactions - a.interactions);
+
+  // Daily outbound activity (posts + comments + likes), zero-filled.
+  const byDay = new Map<string, number>();
+  for (const arr of [postsByDay, commentsByDay, likesByDay]) {
+    for (const row of arr) byDay.set(row._id, (byDay.get(row._id) ?? 0) + row.n);
+  }
+  const activity: Array<{ date: string; actions: number }> = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(since);
+    d.setUTCDate(since.getUTCDate() + i);
+    const key = isoDay(d);
+    activity.push({ date: key, actions: byDay.get(key) ?? 0 });
+  }
+
+  return { username, range, drift, activity, partners: partners.slice(0, 10) };
 }

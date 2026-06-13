@@ -18,7 +18,9 @@ export const listQuery = z.object({
 
 export const eventsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
-  type: z.enum(['cycle', 'dream', 'snapshot', 'memory', 'echo_flag']).optional(),
+  type: z
+    .enum(['cycle', 'dream', 'snapshot', 'memory', 'echo_flag', 'rule_check', 'anomaly'])
+    .optional(),
 });
 
 export const snapshotIngest = z.object({
@@ -31,11 +33,12 @@ export const snapshotIngest = z.object({
   capturedAt: z.coerce.date().optional(),
   archivePath: z.string().max(300),
   excerpt: z.string().max(320).optional().default(''),
+  diffNarrative: z.string().max(2000).optional(),
 });
 
 export const agentEventIngest = z.object({
-  type: z.enum(['cycle', 'dream', 'snapshot', 'memory', 'echo_flag']),
-  phase: z.enum(['act', 'dream', 'snapshot', 'memory', 'echo']),
+  type: z.enum(['cycle', 'dream', 'snapshot', 'memory', 'echo_flag', 'rule_check', 'anomaly']),
+  phase: z.enum(['act', 'dream', 'snapshot', 'memory', 'echo', 'rule', 'anomaly']),
   outcome: z.enum(['started', 'success', 'skip', 'fail', 'warn', 'flagged', 'cleared']),
   action: z.enum(['post', 'comment', 'like', 'follow', 'unfollow', 'delete', 'nothing']).optional(),
   summary: z.string().trim().min(1).max(500),
@@ -47,5 +50,18 @@ export const agentEventIngest = z.object({
     .default({}),
 });
 
+export const behaviorSnapshotIngest = z.object({
+  contentHash: z
+    .string()
+    .length(64)
+    .regex(/^[a-f0-9]+$/i, 'contentHash must be hex sha256'),
+  embedding: z.array(z.number().finite()).min(64).max(4096),
+  capturedAt: z.coerce.date().optional(),
+  postCount: z.coerce.number().int().min(0).optional().default(0),
+  commentCount: z.coerce.number().int().min(0).optional().default(0),
+  excerpt: z.string().max(320).optional().default(''),
+});
+
 export type SnapshotIngestInput = z.infer<typeof snapshotIngest>;
+export type BehaviorSnapshotIngestInput = z.infer<typeof behaviorSnapshotIngest>;
 export type AgentEventIngestInput = z.infer<typeof agentEventIngest>;

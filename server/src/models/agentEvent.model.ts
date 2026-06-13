@@ -1,7 +1,14 @@
 import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 
-export type AgentEventType = 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag';
-export type AgentEventPhase = 'act' | 'dream' | 'snapshot' | 'memory' | 'echo';
+export type AgentEventType =
+  | 'cycle'
+  | 'dream'
+  | 'snapshot'
+  | 'memory'
+  | 'echo_flag'
+  | 'rule_check'
+  | 'anomaly';
+export type AgentEventPhase = 'act' | 'dream' | 'snapshot' | 'memory' | 'echo' | 'rule' | 'anomaly';
 export type AgentEventOutcome =
   | 'started'
   | 'success'
@@ -41,12 +48,12 @@ const AgentEventSchema = new Schema<AgentEventAttrs>(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     type: {
       type: String,
-      enum: ['cycle', 'dream', 'snapshot', 'memory', 'echo_flag'],
+      enum: ['cycle', 'dream', 'snapshot', 'memory', 'echo_flag', 'rule_check', 'anomaly'],
       required: true,
     },
     phase: {
       type: String,
-      enum: ['act', 'dream', 'snapshot', 'memory', 'echo'],
+      enum: ['act', 'dream', 'snapshot', 'memory', 'echo', 'rule', 'anomaly'],
       required: true,
     },
     outcome: {

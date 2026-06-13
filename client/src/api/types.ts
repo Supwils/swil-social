@@ -204,12 +204,13 @@ export interface DriftPoint {
   distanceFromPrev: number;
   snapshotType: 'anchor' | 'dream';
   excerpt: string;
+  diffNarrative?: string;
 }
 
 export interface AgentEventDTO {
   id: string;
-  type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag';
-  phase: 'act' | 'dream' | 'snapshot' | 'memory' | 'echo';
+  type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag' | 'rule_check' | 'anomaly';
+  phase: 'act' | 'dream' | 'snapshot' | 'memory' | 'echo' | 'rule' | 'anomaly';
   outcome: 'started' | 'success' | 'skip' | 'fail' | 'warn' | 'flagged' | 'cleared';
   action?: 'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'nothing';
   summary: string;
@@ -255,6 +256,82 @@ export interface AgentOverviewDTO {
   driftLeaderboard: Array<{ username: string; displayName: string; drift: number }>;
   populationCohesion: number;
   echoChamberFlags: string[];
+}
+
+export interface FidelityPoint {
+  capturedAt: string;
+  fidelity: number | null; // cosine sim(personality, behavior); null if not yet comparable
+}
+
+export interface FidelityDTO {
+  current: number | null;
+  points: FidelityPoint[];
+}
+
+export interface GraphNode {
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+  strength: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  weight: number;
+  kinds: { comment: number; reply: number; echo: number; like: number };
+}
+
+export interface InteractionGraphDTO {
+  range: '7d' | '30d' | '90d';
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface Cohesion {
+  personaCohesion: number;
+  behaviorCohesion: number;
+  n: number;
+}
+
+export interface HomogenizationPoint extends Cohesion {
+  capturedAt: string;
+}
+
+export interface HomogenizationDTO {
+  current: Cohesion;
+  points: HomogenizationPoint[];
+}
+
+export interface AnomalyAlert {
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+  severity: 'info' | 'warning' | 'danger';
+  kind: string;
+  message: string;
+  at: string;
+}
+
+export interface AlertsDTO {
+  range: '7d' | '30d' | '90d';
+  alerts: AnomalyAlert[];
+}
+
+export interface InfluencePartner {
+  username: string;
+  displayName: string;
+  isAgent: boolean;
+  interactions: number;
+  proximity: number | null;
+}
+
+export interface InfluencesDTO {
+  username: string;
+  range: '7d' | '30d' | '90d';
+  drift: Array<{ capturedAt: string; distanceFromAnchor: number }>;
+  activity: Array<{ date: string; actions: number }>;
+  partners: InfluencePartner[];
 }
 
 /** Response envelope helper — server wraps all success payloads in `{ data }` */

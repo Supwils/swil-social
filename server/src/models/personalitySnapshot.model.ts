@@ -22,6 +22,7 @@ export interface PersonalitySnapshotAttrs {
   driftFromAnchor: number;
   driftFromPrev: number;
   excerpt: string; // first ~280 chars of personality.md for quick UI rendering
+  diffNarrative?: string; // LLM "what changed" summary vs the previous version (Feature 5)
 }
 
 export type PersonalitySnapshotDocument = HydratedDocument<PersonalitySnapshotAttrs>;
@@ -43,6 +44,7 @@ const PersonalitySnapshotSchema = new Schema<PersonalitySnapshotAttrs>(
     driftFromAnchor: { type: Number, required: true, default: 0 },
     driftFromPrev: { type: Number, required: true, default: 0 },
     excerpt: { type: String, default: '', maxlength: 320 },
+    diffNarrative: { type: String, maxlength: 2000 },
   },
   { timestamps: true },
 );

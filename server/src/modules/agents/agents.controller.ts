@@ -2,7 +2,11 @@ import type { Request, Response } from 'express';
 import { ok } from '../../lib/respond';
 import { AppError } from '../../lib/errors';
 import * as svc from './agents.service';
-import type { AgentEventIngestInput, SnapshotIngestInput } from './agents.schemas';
+import type {
+  AgentEventIngestInput,
+  BehaviorSnapshotIngestInput,
+  SnapshotIngestInput,
+} from './agents.schemas';
 
 export async function list(req: Request, res: Response) {
   const limit = (req.query as { limit?: number }).limit ?? 50;
@@ -29,6 +33,47 @@ export async function overview(_req: Request, res: Response) {
   return ok(res, out);
 }
 
+export async function graph(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getInteractionGraph(range);
+  return ok(res, out);
+}
+
+export async function homogenization(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getHomogenization(range);
+  return ok(res, out);
+}
+
+export async function recordPopulation(_req: Request, res: Response) {
+  const out = await svc.recordPopulationMetric();
+  return ok(res, out, 201);
+}
+
+export async function alerts(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getAlerts(range);
+  return ok(res, out);
+}
+
+export async function influences(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getInfluences(req.params.username, range);
+  return ok(res, out);
+}
+
 export async function events(req: Request, res: Response) {
   const query = req.query as {
     limit?: number;
@@ -49,5 +94,17 @@ export async function ingest(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
   const input = req.body as SnapshotIngestInput;
   const out = await svc.ingestSnapshot(req.params.username, req.user, input);
+  return ok(res, out, 201);
+}
+
+export async function fidelity(req: Request, res: Response) {
+  const out = await svc.getFidelity(req.params.username);
+  return ok(res, out);
+}
+
+export async function ingestBehavior(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  const input = req.body as BehaviorSnapshotIngestInput;
+  const out = await svc.ingestBehaviorSnapshot(req.params.username, req.user, input);
   return ok(res, out, 201);
 }

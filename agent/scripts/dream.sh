@@ -70,6 +70,29 @@ _embed_text() {
     || echo ""
 }
 
+# _diff_narrative <old_file> <new_file> <backend> → 2-3 sentence Chinese summary
+# of what this dream changed. Best-effort: prints "" on any failure (Feature 5).
+_diff_narrative() {
+  local old_file="$1" new_file="$2" backend="$3"
+  local sys usr out tmp_out
+  sys="你在对比同一个虚拟人格的两个版本（做梦前 / 做梦后）。用中文，2~3 句话，说清楚这次梦把人格往哪个方向塑造了：哪些特质被强化、哪些淡出、有没有新主题冒出来。只输出这段叙述本身，不要标题、不要任何前后缀。"
+  usr="$(printf '【旧版 personality】\n%s\n\n【新版 personality】\n%s' "$(cat "$old_file")" "$(cat "$new_file")")"
+  if [[ "$backend" == "codex" ]]; then
+    tmp_out="$(mktemp)"
+    codex exec --ephemeral --skip-git-repo-check --full-auto --color never -o "$tmp_out" \
+      "$(printf 'System:\n%s\n\n---\n\n%s' "$sys" "$usr")" 2>/dev/null || true
+    out="$(cat "$tmp_out" 2>/dev/null || echo '')"
+    rm -f "$tmp_out"
+  else
+    out="$(printf '%s' "$usr" | claude -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
+  fi
+  # Collapse whitespace + cap at 1500 *characters* via Python — `cut -c`/BSD `tr`
+  # are byte-wise under launchd's C locale and would split a multibyte CJK char,
+  # corrupting the downstream jq --arg (same fix snapshot.sh uses for excerpts).
+  printf '%s' "$out" \
+    | python3 -c 'import sys; sys.stdout.write(" ".join(sys.stdin.buffer.read().decode("utf-8","ignore").split())[:1500])'
+}
+
 # cosine_similarity(JSON_ARR_A, JSON_ARR_B) → float on stdout.
 # Returns 1.0 if either input is malformed (i.e. fail-open: don't reject a dream
 # because the embedder hiccupped — the structural validators are the real safety net).
@@ -506,6 +529,12 @@ PROMPT
     _post_agent_event "$dir" "dream" "dream" "warn" "-" "embedder unreachable, skipped drift check"
   fi
 
+  # ── Dream diff narrative (Feature 5) ─────────────────────────────────────
+  # Capture "what changed" between old ($pfile) and new ($candidate) BEFORE the
+  # mv, while both versions are on disk. Best-effort; empty on failure.
+  local diff_narrative
+  diff_narrative="$(_diff_narrative "$pfile" "$candidate" "$ai_backend" 2>/dev/null || echo '')"
+
   # 通过校验：归档旧版，写入新版
   local stamp old_arch
   stamp="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -536,7 +565,7 @@ PROMPT
   # ── Snapshot ingest (feature A) ──────────────────────────────────────────
   # Push the new personality + its embedding to the server so /lab can show
   # the drift trajectory. Non-fatal: server might be down, network might fail.
-  if bash "$SCRIPT_DIR/snapshot.sh" "$name" >>"$LOG_FILE" 2>&1; then
+  if NARRATIVE_OVERRIDE="$diff_narrative" bash "$SCRIPT_DIR/snapshot.sh" "$name" >>"$LOG_FILE" 2>&1; then
     _log "$name — snapshot uploaded"
     _post_agent_event "$dir" "snapshot" "snapshot" "success" "-" "snapshot uploaded"
   else

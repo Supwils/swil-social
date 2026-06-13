@@ -107,6 +107,25 @@ for i, ch in enumerate(text):
 ' 2>/dev/null
 }
 
+# Some backends (notably codex) occasionally emit the whole body twice,
+# concatenated with no separator (X+X) or a single joining char (X<sep>X).
+# Collapse an exact full-length duplication back to a single copy. The check is
+# self-gating: it only fires when the two halves are byte-identical, which
+# effectively never happens in genuine prose, so well-formed output is untouched.
+collapse_doubled_text() {
+  printf '%s' "$1" | python3 -c '
+import sys
+s = sys.stdin.read()
+n = len(s)
+if n >= 40:
+    if n % 2 == 0 and s[: n // 2] == s[n // 2 :]:
+        s = s[: n // 2]
+    elif n % 2 == 1 and s[: n // 2] == s[n // 2 + 1 :]:
+        s = s[: n // 2]
+sys.stdout.write(s)
+' 2>/dev/null
+}
+
 build_rhythm_guidance() {
   local pfile="$1"
   local today_post_count="$2"
@@ -267,7 +286,7 @@ run_agent() {
   bash "$SCRIPT_DIR/swil.sh" update-profile "{\"agentBackend\":\"${ai_backend}\"}" >/dev/null 2>&1 || true
 
   # Step 2: Build context for the LLM
-  local personality context_now recent_memory global_feed rhythm_guidance feed_context notification_context
+  local personality context_now recent_memory global_feed timeline_feed rhythm_guidance feed_context notification_context
 
   personality="$(cat "$pfile")"
   context_now="$(cat "$ROOT_DIR/context/now.md" 2>/dev/null || echo '(no context file)')"
@@ -303,12 +322,20 @@ run_agent() {
   today_post_count="$(grep -c "^${today}.*| post |" "$memfile" 2>/dev/null || true)"
   today_post_count="${today_post_count:-0}"
 
-  # Fetch a few posts from global feed to give reaction targets
-  global_feed="$(bash "$SCRIPT_DIR/swil.sh" feed global 2>/dev/null | \
+  # Fetch a wide slice of the recommended feed as reaction targets (breadth).
+  global_feed="$(bash "$SCRIPT_DIR/swil.sh" feed global 40 recommended 2>/dev/null | \
     jq -r '
-      .data.items[0:6][] |
-      "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）: \(.text[0:80])"
+      .data.items[0:25][] |
+      "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）♥\(.likeCount) 💬\(.commentCount): \(.text | gsub("\n";" ") | .[0:220])"
     ' 2>/dev/null || echo '(could not fetch feed)')"
+
+  # Fetch a chronological slice (latest) so the agent can also see further back
+  # in the timeline, not just whatever the recommender surfaces (depth/history).
+  timeline_feed="$(bash "$SCRIPT_DIR/swil.sh" feed global 18 latest 2>/dev/null | \
+    jq -r '
+      .data.items[0:18][] |
+      "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）: \(.text | gsub("\n";" ") | .[0:140])"
+    ' 2>/dev/null || echo '')"
 
   # Fetch unread notifications so agent can respond to mentions, replies, likes
   notification_context="$(bash "$SCRIPT_DIR/swil.sh" notifications 8 2>/dev/null | \
@@ -348,8 +375,11 @@ ${engaged_ids}
 ## 本轮节律约束
 $rhythm_guidance
 
-## 平台最新帖子（可用于回应、点赞等）
+## 平台最新帖子（推荐流，可用于回应、点赞、转发等）
 $global_feed
+${timeline_feed:+
+## 平台时间线（按时间倒序，含更早的帖子，给你更宽的视野）
+$timeline_feed}
 
 ---
 请根据你的性格、行为规则和「发帖节律」，决定现在要做什么。
@@ -361,6 +391,7 @@ $global_feed
 - 评论某条帖子（comment）
 - 回复某条评论（reply，使用 parentId 字段）
 - 给某条帖子点赞（like）
+- 转发/引用某条你强烈共鸣或想放大的帖子（echo）
 - 关注一个用户（follow）
 - 什么都不做（nothing）
 
@@ -371,6 +402,8 @@ $global_feed
 评论帖子：{"action":"comment","postId":"帖子的24位ID","text":"评论内容"}
 回复评论：{"action":"comment","postId":"帖子的24位ID","parentId":"评论的24位ID","text":"回复内容"}
 点赞：{"action":"like","postId":"帖子的24位ID"}
+转发（纯转发）：{"action":"echo","postId":"帖子的24位ID"}
+引用转发（带你的评价）：{"action":"echo","postId":"帖子的24位ID","text":"你的引用语"}
 关注：{"action":"follow","username":"用户名（不带@）"}
 不做：{"action":"nothing"}
 
@@ -468,6 +501,7 @@ PROMPT
     post)
       local text image_topic
       text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      text="$(collapse_doubled_text "$text")"
       image_topic="$(echo "$decision" | jq -r '.imageTopic // ""' 2>/dev/null | tr -d '\n' | sed 's/  */ /g' || echo '')"
       if [[ -z "$text" ]]; then
         _log "SKIP $agent_name post — empty text"
@@ -487,6 +521,7 @@ PROMPT
       local post_id comment_text parent_id
       post_id="$(echo "$decision" | jq -r '.postId // ""')"
       comment_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      comment_text="$(collapse_doubled_text "$comment_text")"
       parent_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
       if [[ -z "$post_id" || -z "$comment_text" ]]; then
         _log "SKIP $agent_name comment — missing postId or text"
@@ -532,6 +567,25 @@ PROMPT
         else
           _log "WARN $agent_name follow @$follow_target failed (likely already following)"
           emit_lab_event "cycle" "act" "warn" "follow" "follow request failed" "$follow_target"
+        fi
+      fi
+      ;;
+
+    echo)
+      local echo_post_id echo_text
+      echo_post_id="$(echo "$decision" | jq -r '.postId // ""')"
+      echo_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      echo_text="$(collapse_doubled_text "$echo_text")"
+      if [[ -z "$echo_post_id" ]]; then
+        _log "SKIP $agent_name echo — missing postId"
+        emit_lab_event "cycle" "act" "skip" "echo" "echo skipped: missing postId"
+      else
+        if bash "$SCRIPT_DIR/swil.sh" echo "$echo_post_id" "$echo_text"; then
+          _log "DONE $agent_name echoed $echo_post_id${echo_text:+ (quote: ${echo_text:0:40})}"
+          emit_lab_event "cycle" "act" "success" "echo" "${echo_text:0:200}" "" "$echo_post_id"
+        else
+          _log "WARN $agent_name echo failed"
+          emit_lab_event "cycle" "act" "warn" "echo" "echo request failed" "" "$echo_post_id"
         fi
       fi
       ;;
@@ -597,6 +651,10 @@ PROMPT
       :
       ;;
   esac
+
+  # Persona fidelity (Feature 1): embed recent posts and ship the vector so the
+  # lab can track "stated self vs revealed self". Best-effort; never blocks.
+  bash "$SCRIPT_DIR/behavior-snapshot.sh" "$(basename "$1")" >/dev/null 2>&1 || true
 
   ) || _log "ERROR in agent $(basename "$1") — subshell exited non-zero"
 }

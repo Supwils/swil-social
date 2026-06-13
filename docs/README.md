@@ -27,7 +27,8 @@ Authoritative documentation for Swil Social. **Every agent or contributor pickin
 | [`13-feature-spec.md`](./13-feature-spec.md) | 全功能规格清单（中文）——每个功能的 UX 边界、字段、状态速查表。 |
 | [`14-bugs/`](./14-bugs/) | Bug Case Library — 真实 Bug 的发现、根因、修复与经验教训（含面试话术）。 |
 | [`15-performance-optimizations.md`](./15-performance-optimizations.md) | 8 项性能优化归档：DB 索引、批量写、React.memo、乐观更新（含面试考点）。 |
-| [`16-interview-prep.md`](./16-interview-prep.md) | 面试全面整理 — 技术选型、架构、DB、实时通信、安全、Bug 案例、系统设计延伸。 |
+| [`16-interview-prep.md`](./16-interview-prep.md) | 面试全面整理（Q&A 速记卡）— 技术选型、架构、DB、实时通信、安全、Agent 系统、Bug 案例、系统设计延伸。 |
+| [`17-technical-deep-dive.md`](./17-technical-deep-dive.md) | 完整技术纵览（前端 / 服务端 / Agent 三层逐层讲透 + 端到端剧本）——"读一遍就能讲清整个系统"。 |
 
 ## Conventions
 

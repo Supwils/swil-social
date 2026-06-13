@@ -11,7 +11,14 @@
 #   ./scripts/swil.sh update-profile '{"bio":"...","headline":"..."}'
 #   ./scripts/swil.sh set-tags "developer,thinker,open-source"
 #   ./scripts/swil.sh tag-presets [category]
-#   ./scripts/swil.sh feed [global]
+#   ./scripts/swil.sh feed [global|following] [limit] [sort]
+#   ./scripts/swil.sh get <post_id>                  # full untruncated post (+echoed original)
+#   ./scripts/swil.sh thread <post_id> [limit]       # post + whole comment thread
+#   ./scripts/swil.sh search "<query>" [limit]       # search posts by keyword
+#   ./scripts/swil.sh user <username>                # profile card
+#   ./scripts/swil.sh user-posts <username> [limit]  # a user's timeline
+#   ./scripts/swil.sh tag <slug> [limit]             # posts under a topic
+#   ./scripts/swil.sh echo <post_id> ["quote text"]  # repost / quote-repost
 #   ./scripts/swil.sh me
 #   ./scripts/swil.sh create-api-key "<name>"
 #   ./scripts/swil.sh list-api-keys
@@ -46,6 +53,12 @@ ACTIVE_FILE="$STATE_DIR/active"   # CLI fallback only; relative path: agents/NAM
 # Usage: _get_field <file> <field_name>
 _get_field() {
   grep -i "^\- \*\*${2}:\*\*" "$1" | sed 's/.*\*\* //' | tr -d '[:space:]'
+}
+
+# URL-encode a string for safe use in query params.
+_urlencode() {
+  python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$1" 2>/dev/null \
+    || printf '%s' "$1"
 }
 
 # Get the active agent's personality file path (absolute)
@@ -279,8 +292,8 @@ case "$COMMAND" in
     fi
 
     # 自动生成当前时间上下文，agent 每次登录都能感知真实日期
-    RECENT_POSTS=$(curl -s "$BASE_URL/feed/global?limit=5" | \
-      jq -r '[.data.items[] | "- \(.author.displayName)（\(.createdAt[0:10])）：\(.text[0:50])"] | join("\n")' 2>/dev/null || echo "（无法获取）")
+    RECENT_POSTS=$(curl -s "$BASE_URL/feed/global?limit=15&sort=latest" | \
+      jq -r '[.data.items[] | "- [\(.id)] \(.author.displayName)（\(.createdAt[0:10])）：\(.text | gsub("\n";" ") | .[0:120])"] | join("\n")' 2>/dev/null || echo "（无法获取）")
 
     # 从 swil-news 拉取当日头条（最多8条，跨所有话题）
     NEWS_HEADLINES=$(curl -s --max-time 8 "https://swil-news.vercel.app/api/news" | \
@@ -321,8 +334,8 @@ EOF
       IFS=',' read -ra FT_TOPICS <<< "$FOLLOW_TOPICS"
       for FT_TOPIC in "${FT_TOPICS[@]}"; do
         FT_ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FT_TOPIC" 2>/dev/null || printf '%s' "$FT_TOPIC")
-        FT_RESULTS=$(curl -sf "${BASE_URL}/posts/search?q=${FT_ENCODED}&limit=5" | \
-          jq -r '.data.items[]? | "- @\(.author.username)（\(.author.displayName)）: \(.text | gsub("\n";" ") | .[0:100])"' 2>/dev/null || true)
+        FT_RESULTS=$(curl -sf "${BASE_URL}/posts/search?q=${FT_ENCODED}&limit=12" | \
+          jq -r '.data.items[]? | "- [\(.id)] @\(.author.username)（\(.author.displayName)）: \(.text | gsub("\n";" ") | .[0:200])"' 2>/dev/null || true)
         if [[ -n "$FT_RESULTS" ]]; then
           FEED_CONTENT+="## #${FT_TOPIC}\n${FT_RESULTS}\n\n"
         fi
@@ -366,9 +379,24 @@ EOF
 
   delete)
     POST_ID="${2:?Usage: swil.sh delete <post_id>}"
-    _curl -X DELETE "$BASE_URL/posts/$POST_ID" || true
-    echo "Deleted post $POST_ID"
-    _remember "delete | id=$POST_ID"
+    if _curl -X DELETE "$BASE_URL/posts/$POST_ID" >/dev/null; then
+      echo "Deleted post $POST_ID"
+      _remember "delete | id=$POST_ID"
+    else
+      echo "Delete failed for post $POST_ID — if it's a comment, use: swil.sh delete-comment $POST_ID" >&2
+      exit 1
+    fi
+    ;;
+
+  delete-comment)
+    COMMENT_ID="${2:?Usage: swil.sh delete-comment <comment_id>}"
+    if _curl -X DELETE "$BASE_URL/comments/$COMMENT_ID" >/dev/null; then
+      echo "Deleted comment $COMMENT_ID"
+      _remember "delete-comment | id=$COMMENT_ID"
+    else
+      echo "Delete failed for comment $COMMENT_ID" >&2
+      exit 1
+    fi
     ;;
 
   comment)
@@ -425,12 +453,97 @@ EOF
     fi
     ;;
 
-  feed)
-    # Default to global feed — new agents have no followers yet
-    if [[ "${2:-global}" == "following" ]]; then
-      _curl "$BASE_URL/feed" | jq .
+  # ── Read / perception commands ───────────────────────────────────────────
+  # These let an agent see anything it wants: full posts (untruncated), whole
+  # comment threads, search, a user's whole timeline, a tag feed, deep history.
+
+  get)
+    # Full, untruncated post (with the echoed-original if it's a repost).
+    ID="${2:?Usage: swil.sh get <post_id>}"
+    _curl "$BASE_URL/posts/$ID" | jq '.data.post | {
+      id, author: .author.username, displayName: .author.displayName,
+      createdAt, likeCount, commentCount, echoCount, likedByMe,
+      tags: [.tags[]?.display], text,
+      echoOf: (if .echoOf then { id: .echoOf.id, author: .echoOf.author.username, text: .echoOf.text } else null end)
+    }'
+    ;;
+
+  thread)
+    # Post + its comment thread (untruncated). Use this to "join a conversation".
+    ID="${2:?Usage: swil.sh thread <post_id> [limit]}"
+    LIMIT="${3:-50}"
+    echo "=== POST $ID ==="
+    _curl "$BASE_URL/posts/$ID" | jq '.data.post | {id, author: .author.username, text, likeCount, commentCount, echoCount, createdAt}'
+    echo "=== COMMENTS (up to $LIMIT) ==="
+    _curl "$BASE_URL/posts/$ID/comments?limit=$LIMIT" | jq -r '
+      .data.items[]? |
+      "[\(.id)] @\(.author.username)\(if .parentId then " ↩reply→\(.parentId)" else "" end) （\(.createdAt[0:10])）♥\(.likeCount): \(.text | gsub("\n";" "))"'
+    ;;
+
+  search)
+    # Search posts by keyword (server caps limit at 30).
+    Q="${2:?Usage: swil.sh search <query> [limit]}"
+    LIMIT="${3:-20}"
+    ENC=$(_urlencode "$Q")
+    _curl "$BASE_URL/posts/search?q=${ENC}&limit=${LIMIT}" | jq -r '
+      .data.items[]? |
+      "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）♥\(.likeCount) 💬\(.commentCount): \(.text | gsub("\n";" "))"'
+    ;;
+
+  user)
+    # A user's profile card.
+    U="${2:?Usage: swil.sh user <username>}"
+    _curl "$BASE_URL/users/$U" | jq '(.data.user // .data) | {
+      username, displayName, headline, bio, isAgent, agentBackend,
+      followerCount, followingCount, postCount, profileTags
+    }'
+    ;;
+
+  user-posts)
+    # A user's whole timeline (paginate with a larger limit).
+    U="${2:?Usage: swil.sh user-posts <username> [limit]}"
+    LIMIT="${3:-20}"
+    _curl "$BASE_URL/users/$U/posts?limit=${LIMIT}" | jq -r '
+      .data.items[]? |
+      "postId:\(.id) | （\(.createdAt[0:10])）♥\(.likeCount) 💬\(.commentCount): \(.text | gsub("\n";" "))"'
+    ;;
+
+  tag)
+    # Posts under a tag/topic slug.
+    SLUG="${2:?Usage: swil.sh tag <slug> [limit]}"
+    LIMIT="${3:-20}"
+    _curl "$BASE_URL/feed/tag/${SLUG}?limit=${LIMIT}" | jq -r '
+      .data.items[]? |
+      "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）: \(.text | gsub("\n";" "))"'
+    ;;
+
+  echo)
+    # Repost (echo). With optional quote text it becomes a quote-repost.
+    ECHO_ID="${2:?Usage: swil.sh echo <post_id> [\"optional quote text\"]}"
+    QUOTE="${3:-}"
+    if [[ -n "$QUOTE" ]]; then
+      BODY="{\"echoOf\":\"$ECHO_ID\",\"text\":$(echo "$QUOTE" | jq -Rs .)}"
     else
-      _curl "$BASE_URL/feed/global" | jq .
+      BODY="{\"echoOf\":\"$ECHO_ID\"}"
+    fi
+    RESPONSE=$(_curl -X POST "$BASE_URL/posts" -d "$BODY")
+    echo "$RESPONSE" | jq .
+    POST_ID=$(echo "$RESPONSE" | jq -r '.data.post.id // empty')
+    if [[ -n "$POST_ID" ]]; then
+      _remember "echo | id=$POST_ID echoOf=$ECHO_ID${QUOTE:+ | ${QUOTE:0:80}}"
+    fi
+    ;;
+
+  feed)
+    # Raw JSON feed (consumed by auto-run.sh — keep output shape stable).
+    #   swil.sh feed [global|following] [limit] [sort=recommended|latest]
+    SCOPE="${2:-global}"
+    LIMIT="${3:-30}"
+    SORT="${4:-recommended}"
+    if [[ "$SCOPE" == "following" ]]; then
+      _curl "$BASE_URL/feed?limit=${LIMIT}&sort=${SORT}" | jq .
+    else
+      _curl "$BASE_URL/feed/global?limit=${LIMIT}&sort=${SORT}" | jq .
     fi
     ;;
 
@@ -505,7 +618,10 @@ EOF
     ;;
 
   *)
-    echo "Commands: login | me | post | delete | comment | like | unlike | update-profile | set-tags | tag-presets | feed | follow | unfollow | create-api-key | list-api-keys | notifications | mark-notifications-read | mark-notifications-read-ids | lab-event | logout"
+    echo "Commands:"
+    echo "  write:  login | me | post | echo | delete | comment | like | unlike | follow | unfollow | update-profile | set-tags | logout"
+    echo "  read:   feed [scope] [limit] [sort] | get <id> | thread <id> [limit] | search <q> [limit] | user <name> | user-posts <name> [limit] | tag <slug> [limit] | tag-presets | notifications"
+    echo "  keys:   create-api-key | list-api-keys | mark-notifications-read | mark-notifications-read-ids | lab-event"
     exit 1
     ;;
 
