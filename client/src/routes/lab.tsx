@@ -7,6 +7,7 @@ import {
   Line,
   BarChart,
   Bar,
+  ComposedChart,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -25,11 +26,15 @@ import {
   getHomogenization,
   getAlerts,
   getInfluences,
+  getPopulationPulse,
   listLabAgents,
 } from '@/api/agents';
 import type { AgentEventDTO } from '@/api/types';
 import { Sparkline } from '@/features/lab/Sparkline';
 import { InteractionGraph } from '@/features/lab/InteractionGraph';
+import { PopulationHealth } from '@/features/lab/PopulationHealth';
+import { DistributionPanel } from '@/features/lab/DistributionPanel';
+import { mean, median, zScore } from '@/features/lab/stats';
 import { track } from '@/lib/analytics';
 import s from './lab.module.css';
 
@@ -54,6 +59,16 @@ export default function LabRoute() {
   });
 
   const view = params.get('view') === 'graph' ? 'graph' : 'dashboard';
+  const rangeParam = params.get('range');
+  const range: '7d' | '30d' | '90d' =
+    rangeParam === '7d' || rangeParam === '90d' ? rangeParam : '30d';
+
+  const setRange = (r: '7d' | '30d' | '90d') => {
+    const next = new URLSearchParams(params);
+    if (r === '30d') next.delete('range');
+    else next.set('range', r);
+    setParams(next, { replace: true });
+  };
 
   const setFocused = (u: string | null) => {
     const next = new URLSearchParams(params);
@@ -86,6 +101,19 @@ export default function LabRoute() {
             {t('lab.subtitle', { count: agentsQ.data?.length ?? 0 })}
           </div>
         </div>
+        {view === 'dashboard' && (
+          <div className={s.rangeControl} role="group" aria-label={t('lab.range.label')}>
+            {(['7d', '30d', '90d'] as const).map((r) => (
+              <button
+                key={r}
+                className={`${s.rangeBtn} ${range === r ? s.rangeBtnActive : ''}`}
+                onClick={() => setRange(r)}
+              >
+                {t(`lab.range.${r}`)}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <nav className={s.tabs}>
@@ -108,8 +136,16 @@ export default function LabRoute() {
       ) : (
         <>
           <AlertsStrip onSelect={setFocused} />
-          <Overview overviewQ={overviewQ} />
-          <HomogenizationPanel />
+          <PopulationHealth range={range} agents={agentsQ.data ?? []} />
+          <PopulationInsights
+            overviewQ={overviewQ}
+            agents={agentsQ.data ?? []}
+            range={range}
+            onSelect={setFocused}
+          />
+          <DistributionPanel agents={agentsQ.data ?? []} onSelect={setFocused} />
+          <Overview overviewQ={overviewQ} agents={agentsQ.data ?? []} />
+          <HomogenizationPanel range={range} />
           {focusedUsername && (
             <AgentDetail username={focusedUsername} onClose={() => setFocused(null)} />
           )}
@@ -190,11 +226,241 @@ function AlertsStrip({ onSelect }: { onSelect: (u: string) => void }) {
   );
 }
 
-function HomogenizationPanel() {
+type ConclusionTone = 'good' | 'warn' | 'bad' | 'neutral';
+interface Conclusion {
+  key: string;
+  tone: ConclusionTone;
+  rank: number;
+  tag: string;
+  title: string;
+  detail: string;
+  focus?: string | null;
+}
+
+const TONE_RANK: Record<ConclusionTone, number> = { bad: 4, warn: 3, good: 2, neutral: 1 };
+
+/**
+ * Population Insights — a Watchdog-style insight feed. An auto-generated, ranked
+ * set of typed conclusions (monoculture trend, AI↔human cohort gap, fidelity /
+ * drift outliers via z-score, activity anomalies, rejected-dream clusters, echo
+ * chambers) each phrased as a plain-language verdict with evidence + severity.
+ * The ecosystem verdict (monoculture) is pinned first; the rest sort by severity
+ * and cap so the feed reads as intelligent signal, not noise.
+ */
+function PopulationInsights({
+  overviewQ,
+  agents,
+  range,
+  onSelect,
+}: {
+  overviewQ: ReturnType<typeof useQuery<Awaited<ReturnType<typeof getAgentOverview>>>>;
+  agents: Awaited<ReturnType<typeof listLabAgents>>;
+  range: '7d' | '30d' | '90d';
+  onSelect: (u: string) => void;
+}) {
+  const { t } = useTranslation();
+  const homogQ = useQuery({
+    queryKey: ['lab-homogenization', range],
+    queryFn: () => getHomogenization(range),
+    staleTime: 60_000,
+  });
+  const pulseQ = useQuery({
+    queryKey: ['lab-pulse', range],
+    queryFn: () => getPopulationPulse(range),
+    staleTime: 60_000,
+  });
+  const alertsQ = useQuery({
+    queryKey: ['lab-alerts', range],
+    queryFn: () => getAlerts(range),
+    staleTime: 60_000,
+  });
+
+  const conclusions = useMemo<Conclusion[]>(() => {
+    let mono: Conclusion;
+    const rest: Conclusion[] = [];
+
+    // — Ecosystem verdict: monoculture watch (behavior-cohesion trend), pinned.
+    const pts = homogQ.data?.points ?? [];
+    const monoTag = t('lab.conclusions.monoTag');
+    if (pts.length >= 2) {
+      const first = pts[0].behaviorCohesion;
+      const last = pts[pts.length - 1].behaviorCohesion;
+      const delta = last - first;
+      const deltaStr = `${delta >= 0 ? '▲' : '▼'}${Math.abs(delta).toFixed(3)}`;
+      const detail = t('lab.conclusions.monoDetail', { value: last.toFixed(3), delta: deltaStr });
+      if (delta > 0.01) {
+        mono = { key: 'mono', tone: delta > 0.04 ? 'bad' : 'warn', rank: 5, tag: monoTag, title: t('lab.conclusions.convergingTitle'), detail };
+      } else if (delta < -0.01) {
+        mono = { key: 'mono', tone: 'good', rank: 5, tag: monoTag, title: t('lab.conclusions.divergingTitle'), detail };
+      } else {
+        mono = { key: 'mono', tone: 'neutral', rank: 5, tag: monoTag, title: t('lab.conclusions.steadyTitle'), detail };
+      }
+    } else {
+      mono = { key: 'mono', tone: 'neutral', rank: 5, tag: monoTag, title: t('lab.conclusions.steadyTitle'), detail: t('lab.conclusions.monoWaiting') };
+    }
+
+    const rated = agents.filter(
+      (a): a is typeof a & { currentFidelity: number } => typeof a.currentFidelity === 'number',
+    );
+    const fids = rated.map((a) => a.currentFidelity);
+
+    // — Fidelity outlier / most off-character (z-score against peers).
+    if (rated.length > 0) {
+      const worst = rated.reduce((m, a) => (a.currentFidelity < m.currentFidelity ? a : m));
+      const z = zScore(worst.currentFidelity, fids);
+      const isOutlier = z <= -1.5;
+      rest.push({
+        key: 'fidelity',
+        tone: worst.currentFidelity < 0.7 ? 'bad' : worst.currentFidelity < 0.8 ? 'warn' : 'good',
+        rank: isOutlier ? 4 : 3,
+        tag: t('lab.conclusions.fidelityTag'),
+        title: isOutlier
+          ? t('lab.conclusions.fidOutlierTitle', { username: worst.username, sigma: Math.abs(z).toFixed(1) })
+          : t('lab.conclusions.offCharTitle', { username: worst.username }),
+        detail: t('lab.conclusions.offCharDetail', { value: worst.currentFidelity.toFixed(3) }),
+        focus: worst.username,
+      });
+    }
+
+    // — AI ↔ human cohort fidelity gap.
+    const aiFids = rated.filter((a) => a.isAgent).map((a) => a.currentFidelity);
+    const humanFids = rated.filter((a) => !a.isAgent).map((a) => a.currentFidelity);
+    if (aiFids.length >= 2 && humanFids.length >= 2) {
+      const ma = median(aiFids);
+      const mh = median(humanFids);
+      const gap = ma - mh;
+      if (Math.abs(gap) >= 0.03) {
+        rest.push({
+          key: 'cohort',
+          tone: Math.abs(gap) >= 0.08 ? 'warn' : 'neutral',
+          rank: Math.abs(gap) >= 0.08 ? 3 : 2,
+          tag: t('lab.conclusions.cohortTag'),
+          title: gap < 0 ? t('lab.conclusions.cohortAiLower') : t('lab.conclusions.cohortAiHigher'),
+          detail: t('lab.conclusions.cohortDetail', { ai: ma.toFixed(3), human: mh.toFixed(3) }),
+        });
+      }
+    }
+
+    // — Drift outlier / biggest mover (z-score against peers).
+    const driftRated = agents
+      .map((a) => ({ a, d: a.currentDriftFromAnchor }))
+      .filter((x): x is { a: (typeof agents)[number]; d: number } => typeof x.d === 'number');
+    if (driftRated.length > 0) {
+      const top = driftRated.reduce((m, x) => (x.d > m.d ? x : m));
+      const z = zScore(top.d, driftRated.map((x) => x.d));
+      const isOutlier = z >= 1.5;
+      rest.push({
+        key: 'drift',
+        tone: isOutlier ? 'warn' : top.d > 0.15 ? 'warn' : 'neutral',
+        rank: isOutlier ? 4 : 2,
+        tag: t('lab.conclusions.driftTag'),
+        title: isOutlier
+          ? t('lab.conclusions.driftOutlierTitle', { username: top.a.username, sigma: z.toFixed(1) })
+          : t('lab.conclusions.drifterTitle', { username: top.a.username }),
+        detail: t('lab.conclusions.drifterDetail', { value: top.d.toFixed(3) }),
+        focus: top.a.username,
+      });
+    }
+
+    // — Activity anomaly (recent day vs trailing baseline).
+    const acts = (pulseQ.data?.points ?? []).map((p) => p.actions);
+    const nonZero = acts.filter((x) => x > 0);
+    if (nonZero.length >= 4) {
+      const recent = acts[acts.length - 1];
+      const baseline = mean(acts.slice(0, -1).filter((x) => x > 0));
+      if (baseline > 0 && recent >= baseline * 1.5) {
+        rest.push({
+          key: 'activity',
+          tone: 'neutral',
+          rank: 2,
+          tag: t('lab.conclusions.activityTag'),
+          title: t('lab.conclusions.activityUp', { pct: Math.round((recent / baseline - 1) * 100) }),
+          detail: t('lab.conclusions.activityDetail', { recent, baseline: Math.round(baseline) }),
+        });
+      } else if (baseline > 0 && recent > 0 && recent <= baseline * 0.5) {
+        rest.push({
+          key: 'activity',
+          tone: 'neutral',
+          rank: 2,
+          tag: t('lab.conclusions.activityTag'),
+          title: t('lab.conclusions.activityDown', { pct: Math.round((1 - recent / baseline) * 100) }),
+          detail: t('lab.conclusions.activityDetail', { recent, baseline: Math.round(baseline) }),
+        });
+      }
+    }
+
+    // — Rejected-dream cluster (anchor strain across the population).
+    const dreamFails = (alertsQ.data?.alerts ?? []).filter((a) => a.kind === 'dream_rejected');
+    if (dreamFails.length >= 3) {
+      rest.push({
+        key: 'dreams',
+        tone: 'warn',
+        rank: 3,
+        tag: t('lab.conclusions.dreamTag'),
+        title: t('lab.conclusions.dreamTitle', { count: dreamFails.length }),
+        detail: dreamFails.slice(0, 4).map((a) => `@${a.username}`).join(' · '),
+        focus: dreamFails[0].username,
+      });
+    }
+
+    // — Echo-chamber roll-up.
+    const flags = overviewQ.data?.echoChamberFlags ?? [];
+    if (flags.length > 0) {
+      rest.push({
+        key: 'echo',
+        tone: 'warn',
+        rank: 3,
+        tag: t('lab.conclusions.echoTag'),
+        title: t('lab.conclusions.echoTitle', { count: flags.length }),
+        detail: flags.map((u) => `@${u}`).join(' · '),
+        focus: flags[0],
+      });
+    } else {
+      rest.push({
+        key: 'echo',
+        tone: 'good',
+        rank: 2,
+        tag: t('lab.conclusions.echoTag'),
+        title: t('lab.conclusions.echoNone'),
+        detail: '',
+      });
+    }
+
+    rest.sort((a, b) => b.rank - a.rank || TONE_RANK[b.tone] - TONE_RANK[a.tone]);
+    return [mono, ...rest].slice(0, 6);
+  }, [homogQ.data, pulseQ.data, alertsQ.data, overviewQ.data, agents, t]);
+
+  if (overviewQ.isLoading) {
+    return <Skeleton height={96} width="100%" />;
+  }
+
+  return (
+    <section className={s.conclusions}>
+      {conclusions.map((c) => {
+        const clickable = Boolean(c.focus);
+        return (
+          <button
+            key={c.key}
+            type="button"
+            className={`${s.conclusion} ${s[`conc_${c.tone}`] ?? ''} ${clickable ? s.concClickable : ''}`}
+            onClick={() => c.focus && onSelect(c.focus)}
+            disabled={!clickable}
+          >
+            <span className={s.concTag}>{c.tag}</span>
+            <span className={s.concTitle}>{c.title}</span>
+            {c.detail && <span className={s.concDetail}>{c.detail}</span>}
+          </button>
+        );
+      })}
+    </section>
+  );
+}
+
+function HomogenizationPanel({ range }: { range: '7d' | '30d' | '90d' }) {
   const { t } = useTranslation();
   const q = useQuery({
-    queryKey: ['lab-homogenization', '90d'],
-    queryFn: () => getHomogenization('90d'),
+    queryKey: ['lab-homogenization', range],
+    queryFn: () => getHomogenization(range),
     staleTime: 60_000,
   });
   const series = useMemo(
@@ -271,11 +537,25 @@ function HomogenizationPanel() {
 
 function Overview({
   overviewQ,
+  agents,
 }: {
   overviewQ: ReturnType<typeof useQuery<Awaited<ReturnType<typeof getAgentOverview>>>>;
+  agents: Awaited<ReturnType<typeof listLabAgents>>;
 }) {
   const { t } = useTranslation();
   const d = overviewQ.data;
+  // Population persona-fidelity ranking — lowest first (stated self ≠ revealed self).
+  const offCharacter = useMemo(
+    () =>
+      agents
+        .filter(
+          (a): a is typeof a & { currentFidelity: number } =>
+            typeof a.currentFidelity === 'number',
+        )
+        .sort((a, b) => a.currentFidelity - b.currentFidelity)
+        .slice(0, 8),
+    [agents],
+  );
   return (
     <>
       <div className={s.overview}>
@@ -336,6 +616,17 @@ function Overview({
             ) : (
               <div className={s.emptyMini}>{t('lab.insights.flagsEmpty')}</div>
             )}
+          </Card>
+          <Card className={s.insightCard}>
+            <div className={s.chartTitle}>{t('lab.insights.offChar')}</div>
+            <RankList
+              items={offCharacter.map((a) => ({
+                username: a.username,
+                label: a.displayName,
+                value: a.currentFidelity.toFixed(3),
+              }))}
+              empty={t('lab.insights.offCharEmpty')}
+            />
           </Card>
         </div>
       )}
@@ -416,6 +707,9 @@ function AgentCard({
   const { t } = useTranslation();
   const sparkData = agent.driftSparkline.map((v) => ({ v }));
   const drift = agent.currentDriftFromAnchor;
+  const fidelity = agent.currentFidelity;
+  const fidelityTone =
+    fidelity === null ? '' : fidelity < 0.7 ? s.statBad : fidelity < 0.8 ? s.statWarn : s.statGood;
   return (
     <Card
       className={`${s.card} ${isFocused ? s.cardActive : ''}`}
@@ -443,6 +737,12 @@ function AgentCard({
         <div className={s.cardStat}>
           <span className={s.cardStatValue}>{drift !== null ? drift.toFixed(3) : '—'}</span>
           <span>{t('lab.card.drift')}</span>
+        </div>
+        <div className={s.cardStat}>
+          <span className={`${s.cardStatValue} ${fidelityTone}`}>
+            {fidelity !== null ? fidelity.toFixed(2) : '—'}
+          </span>
+          <span>{t('lab.card.fidelity')}</span>
         </div>
         <div className={s.cardStat}>
           <span className={s.cardStatValue}>{agent.postsLast7d}</span>
@@ -494,6 +794,23 @@ function AgentDetail({ username, onClose }: { username: string; onClose: () => v
   });
   const partners = influencesQ.data?.partners ?? [];
   const totalActions = (influencesQ.data?.activity ?? []).reduce((sum, p) => sum + p.actions, 0);
+
+  // Causal overlay: merge daily activity (bars) with drift-from-anchor (line) on
+  // a shared date axis so activity spikes can be read against drift movement.
+  const causalSeries = useMemo(() => {
+    const inf = influencesQ.data;
+    if (!inf) return [];
+    const byDate = new Map<string, { date: string; actions: number; drift: number | null }>();
+    for (const a of inf.activity) byDate.set(a.date, { date: a.date, actions: a.actions, drift: null });
+    for (const d of inf.drift) {
+      const day = d.capturedAt.slice(0, 10);
+      const row = byDate.get(day) ?? { date: day, actions: 0, drift: null };
+      row.drift = d.distanceFromAnchor;
+      byDate.set(day, row);
+    }
+    return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  }, [influencesQ.data]);
+  const causalHasDrift = causalSeries.some((p) => p.drift !== null);
 
   // Keep only the most recent rule_check per rule (events arrive newest-first).
   const adherence = useMemo(() => {
@@ -808,6 +1125,64 @@ function AgentDetail({ username, onClose }: { username: string; onClose: () => v
           </section>
         </section>
       )}
+
+      <section className={s.chartBlock}>
+        <div className={s.chartTitle}>{t('lab.detail.causal')}</div>
+        <p className={s.blockSub}>{t('lab.detail.causalSub')}</p>
+        <div className={s.chartHeight}>
+          {causalSeries.length < 2 ? (
+            <div className={s.emptyState}>{t('lab.detail.causalEmpty')}</div>
+          ) : (
+            <ResponsiveContainer>
+              <ComposedChart data={causalSeries} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
+                <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" stroke="var(--color-text-muted)" fontSize={10} interval="preserveStartEnd" />
+                <YAxis
+                  yAxisId="actions"
+                  stroke="var(--color-text-muted)"
+                  fontSize={11}
+                  allowDecimals={false}
+                />
+                <YAxis
+                  yAxisId="drift"
+                  orientation="right"
+                  stroke="var(--color-text-muted)"
+                  fontSize={11}
+                  domain={[0, 'auto']}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: 'var(--color-surface)',
+                    border: '1px solid var(--color-border)',
+                    fontSize: 12,
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar
+                  yAxisId="actions"
+                  dataKey="actions"
+                  name={t('lab.detail.causalActions')}
+                  fill="var(--color-border-strong)"
+                  isAnimationActive={false}
+                />
+                {causalHasDrift && (
+                  <Line
+                    yAxisId="drift"
+                    type="monotone"
+                    dataKey="drift"
+                    name={t('lab.detail.causalDrift')}
+                    stroke="var(--color-accent)"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                    connectNulls
+                    isAnimationActive={false}
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </section>
 
       {partners.length > 0 && (
         <section className={s.chartBlock}>

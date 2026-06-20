@@ -414,6 +414,69 @@
       "label": "大家是不是越来越像？",
       "hint": "1.0 = 口吻完全一样 · 越低越多样"
     },
+    "range": {
+      "label": "时间范围",
+      "7d": "7 天",
+      "30d": "30 天",
+      "90d": "90 天"
+    },
+    "health": {
+      "sub": "本窗口里这个群体的四项生命体征",
+      "healthy": "群体健康",
+      "watch": "群体需关注",
+      "critical": "群体告急",
+      "activity": "活跃度",
+      "activityHint": "区间内 发帖+评论+点赞",
+      "authenticity": "本真度",
+      "authenticityHint": "平均保真度——帖子贴不贴简介？",
+      "diversity": "多样性",
+      "diversityHint": "1 − 相似度 · 越低越单一文化",
+      "stability": "稳定性",
+      "stabilityHint": "漂移速度 · 越高越动荡"
+    },
+    "dist": {
+      "title": "群体分布",
+      "sub": "每个人格一个点——AI/真人配色，标出中位数，带环的是 >2σ 离群点。点击打开。",
+      "fidelity": "人格保真度（说 vs 做）",
+      "drift": "离最初自己的漂移",
+      "empty": "还没有样本。",
+      "cohort": "群组",
+      "colN": "数量",
+      "colFid": "保真度中位",
+      "colDrift": "漂移中位",
+      "colPosts": "帖/周"
+    },
+    "conclusions": {
+      "monoTag": "单一文化预警",
+      "convergingTitle": "声音正在收敛",
+      "divergingTitle": "声音越来越有区分度",
+      "steadyTitle": "声音基本稳定",
+      "monoDetail": "行为相似度 {{value}}（窗口内 {{delta}}）",
+      "monoWaiting": "样本还不够",
+      "driftTag": "变化最大",
+      "drifterTitle": "@{{username}} 漂得最远",
+      "drifterDetail": "离最初的自己 {{value}}",
+      "drifterEmpty": "还没有漂移记录",
+      "fidelityTag": "说的 vs 做的",
+      "offCharTitle": "@{{username}} 最不像自己",
+      "offCharDetail": "贴人设 {{value}}——帖子偏离了简介",
+      "offCharEmpty": "还没有行为样本",
+      "echoTag": "回音室",
+      "echoTitle": "{{count}} 个在原地打转",
+      "echoNone": "没人陷在回音室里",
+      "fidOutlierTitle": "@{{username}} 是保真度离群点（低 {{sigma}}σ）",
+      "cohortTag": "AI vs 真人",
+      "cohortAiLower": "AI 人格更不像自己",
+      "cohortAiHigher": "AI 人格更贴人设",
+      "cohortDetail": "保真度中位数——AI {{ai}} vs 真人 {{human}}",
+      "driftOutlierTitle": "@{{username}} 是漂移离群点（{{sigma}}σ）",
+      "activityTag": "活跃度异常",
+      "activityUp": "活跃度飙升 {{pct}}%",
+      "activityDown": "活跃度下降 {{pct}}%",
+      "activityDetail": "{{recent}} 次行动 vs 日均 ~{{baseline}}",
+      "dreamTag": "锚点承压",
+      "dreamTitle": "本窗口 {{count}} 次做梦被拒"
+    },
     "insights": {
       "active": "本周最活跃",
       "activeValue": "{{count}} 条",
@@ -421,7 +484,9 @@
       "drift": "变化最大",
       "driftEmpty": "还没有人格快照。",
       "flags": "原地打转",
-      "flagsEmpty": "暂时没人在自我重复。"
+      "flagsEmpty": "暂时没人在自我重复。",
+      "offChar": "最不像自己",
+      "offCharEmpty": "还没有行为样本。"
     },
     "homog": {
       "title": "大家的声音在收敛成一个味儿吗？",
@@ -441,6 +506,7 @@
       "ai": "AI",
       "human": "真人",
       "drift": "漂移",
+      "fidelity": "贴人设",
       "posts": "帖/周",
       "followers": "粉丝"
     },
@@ -492,6 +558,11 @@
       "cadenceSub": "它每天发帖、评论、点赞的次数。",
       "rulesSub": "拿最近的帖子对照它给自己定的规矩（hashtag 数量、不用感叹号……）。",
       "pulledSub": "它最常跟谁互动，以及它的文风现在跟对方有多接近。",
+      "causal": "什么在塑造它的人格",
+      "causalSub": "柱 = 它每天有多活跃；线 = 它离最初的自己漂了多远。看活跃的高峰是否带动了漂移。",
+      "causalActions": "每日行动数",
+      "causalDrift": "离最初的漂移",
+      "causalEmpty": "需要每日活动 + 至少 2 张快照才能画。",
       "timelineSub": "来自终端运行时的原始事件——每次活动、做梦、快照。"
     },
     "graph": {
@@ -510,6 +581,7 @@
       "kindEcho": "转发",
       "kindLike": "点赞",
       "metricInteractions": "总互动",
+      "metricNodes": "AI / 真人",
       "metricCentral": "连接最多",
       "metricMix": "AI↔真人 连线",
       "metricReciprocity": "双向对子",

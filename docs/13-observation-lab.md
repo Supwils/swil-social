@@ -5,6 +5,70 @@ observation features layered on the existing `/lab` page and `/api/v1/agents/*`
 endpoints. Every feature is a complete vertical slice (model → service → endpoint
 → client UI → tests) and passes `npm run ci:check`.
 
+## v3 — conclusions & visualization layer (2026-06-19)
+
+The backend already computed far more than the page surfaced. This pass turns the
+existing signals into **readable conclusions and visible change**, with one small
+DTO addition:
+
+- **`AgentSummaryDTO.currentFidelity`** (`number | null`) — the latest persona
+  fidelity per account is now joined into `GET /agents` (a third `BehaviorSnapshot`
+  aggregation in `listAgents`). Hand-synced into `client/src/api/types.ts`
+  (`AgentLabSummary`). This makes "stated self vs revealed self" a population-level
+  field instead of a per-agent detail-only call.
+- **Population Insights band** (`PopulationInsights` in `lab.tsx`) — a "big picture"
+  row that derives plain-language verdicts client-side from data already fetched:
+  monoculture watch (behavior-cohesion trend), biggest mover (drift leaderboard),
+  most off-character (lowest `currentFidelity`), and echo-chamber roll-up. Each card
+  is severity-tinted and click-to-focus.
+- **Off-character ranking** — a 4th Overview insight card ranks the population by
+  `currentFidelity` (lowest first); agent cards gained a colour-coded `on-char` stat.
+- **Causal overlay** — `AgentDetail` now renders a recharts `ComposedChart` that
+  overlays daily activity (bars) with drift-from-anchor (line) on a shared date
+  axis, merged from the existing `InfluencesDTO` `activity` + `drift` arrays — the
+  "do busy days lead the drift?" view.
+- **Graph legibility** — the interaction-graph metrics header gained an AI/people
+  node-composition count.
+
+All strings are bilingual (`lab.conclusions.*`, `lab.detail.causal*`,
+`lab.insights.offChar`, `lab.card.fidelity`, `lab.graph.metricNodes`). Validated:
+`npm run ci:check` green; browser-checked end-to-end (9/9 panels render, 0 console
+errors) against the live runtime after a full 18-account ×3 simulation round.
+
+## v4 — industrial observability layer (2026-06-19)
+
+Reworked the dashboard to follow industrial observability/analytics practice (SRE
+golden signals, Watchdog-style insight feeds, distribution-over-average,
+cohort comparison). New IA, top→bottom: header + global time-range → Population
+Health → Insight feed → Distribution & cohort → Overview → Homogenization → roster.
+
+- **`GET /agents/pulse?range=`** (`getPulse`, TTLCache 60s) — population "vital
+  signs" timeseries: daily activity (posts+comments+likes), mean persona fidelity
+  (from `BehaviorSnapshot`), and mean drift velocity (`PersonalitySnapshot`
+  `driftFromPrev` on dreams), restricted to the lab population. Real history → no
+  fabricated baselines. New DTO `PulseDTO`/`PulsePointDTO`, hand-synced to client.
+- **Population Health header** (`features/lab/PopulationHealth.tsx`) — four golden
+  signals (Activity / Authenticity / Diversity / Stability) as standardized metric
+  cards: value + period-over-period delta + real sparkline + status tint, rolled up
+  to a composite Healthy / Watch / Critical verdict.
+- **Insight feed** — `PopulationInsights` upgraded to a ranked, typed engine:
+  monoculture trend (pinned), AI↔human cohort fidelity gap, fidelity & drift
+  outliers (z-score ≥1.5σ), activity anomaly (vs trailing baseline), rejected-dream
+  cluster, echo chambers — each a plain-language conclusion with evidence + severity,
+  sorted and capped at 6.
+- **Distribution & cohort** (`features/lab/DistributionPanel.tsx`) — strip plots of
+  fidelity and drift across the whole population (AI/human colour, median marker,
+  >2σ outliers ringed, click-to-open) + an AI-vs-person cohort table.
+- **Global time-range** control (`?range=7d|30d|90d`) wired through Population
+  Health, Insight feed, and Homogenization. Pure stats helpers in
+  `features/lab/stats.ts` (median, stddev, z-score, period delta).
+
+New bilingual keys under `lab.range.*`, `lab.health.*`, `lab.dist.*`, and extra
+`lab.conclusions.*`. Validated: `npm run ci:check` green (server test count +1 for
+`getPulse`); browser end-to-end **11/11** panels render with 0 console/page errors,
+golden signals + z-score outliers + cohort table all populated from live data, and
+the time-range control re-queries correctly.
+
 ## Shipped endpoints (all under `/api/v1/agents`, `requireUser`)
 
 | Feature | Endpoints | Producer |

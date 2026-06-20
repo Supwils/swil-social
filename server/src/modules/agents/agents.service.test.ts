@@ -20,6 +20,7 @@ import {
   getHomogenization,
   getAlerts,
   getInfluences,
+  getPulse,
 } from './agents.service';
 
 function makeAgent(id = new Types.ObjectId(), username = 'zenith'): UserDocument {
@@ -164,6 +165,49 @@ describe('agents.service.getDrift', () => {
   });
 });
 
+describe('agents.service.getPulse', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('builds a population pulse with activity, fidelity and drift velocity per day', async () => {
+    const id = new Types.ObjectId();
+    vi.spyOn(PersonalitySnapshot, 'distinct').mockResolvedValue([id] as never);
+    vi.spyOn(AgentEvent, 'distinct').mockResolvedValue([] as never);
+    const userChain = {
+      select: () => userChain,
+      lean: () =>
+        Promise.resolve([{ _id: id, username: 'zenith', displayName: 'Zenith', isAgent: true }]),
+    };
+    vi.spyOn(User, 'find').mockReturnValue(userChain as never);
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const day = today.toISOString().slice(0, 10);
+
+    vi.spyOn(Post, 'aggregate').mockResolvedValue([{ _id: day, n: 2 }] as never);
+    vi.spyOn(Comment, 'aggregate').mockResolvedValue([{ _id: day, n: 3 }] as never);
+    vi.spyOn(Like, 'aggregate').mockResolvedValue([{ _id: day, n: 5 }] as never);
+    vi.spyOn(BehaviorSnapshot, 'aggregate').mockResolvedValue([{ _id: day, avg: 0.8 }] as never);
+    vi.spyOn(PersonalitySnapshot, 'aggregate').mockResolvedValue([{ _id: day, avg: 0.12 }] as never);
+
+    const out = await getPulse('7d');
+
+    expect(out.range).toBe('7d');
+    expect(out.points).toHaveLength(7);
+    const todayPoint = out.points.find((p) => p.date === day);
+    expect(todayPoint).toMatchObject({
+      posts: 2,
+      comments: 3,
+      likes: 5,
+      actions: 10,
+      meanFidelity: 0.8,
+      meanDriftVelocity: 0.12,
+    });
+    // days with no activity stay zero-filled with null means (no fabricated trend)
+    const empties = out.points.filter((p) => p.date !== day);
+    expect(empties.every((p) => p.actions === 0 && p.meanFidelity === null)).toBe(true);
+  });
+});
+
 describe('agents.service.listAgents', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -196,6 +240,9 @@ describe('agents.service.listAgents', () => {
         driftSparkline: [0, 0.1, 0.22],
       },
     ] as never);
+    vi.spyOn(BehaviorSnapshot, 'aggregate').mockResolvedValue([
+      { _id: id, fidelity: 0.81 },
+    ] as never);
 
     const out = await listAgents(10);
     const postPipeline = postAggregate.mock.calls[0][0];
@@ -206,6 +253,7 @@ describe('agents.service.listAgents', () => {
       postsLast7d: 3,
       currentDriftFromAnchor: 0.22,
       driftSparkline: [0, 0.1, 0.22],
+      currentFidelity: 0.81,
     });
   });
 });

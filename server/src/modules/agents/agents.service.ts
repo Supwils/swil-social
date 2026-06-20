@@ -35,6 +35,8 @@ export interface AgentSummaryDTO {
   currentDriftFromAnchor: number | null;
   driftSparkline: number[];
   postsLast7d: number;
+  /** Latest persona-fidelity (cosine sim of stated self vs revealed behavior); null until a behavior sample exists. */
+  currentFidelity: number | null;
 }
 
 export interface CadencePointDTO {
@@ -142,6 +144,22 @@ export interface HomogenizationDTO {
   points: HomogenizationPointDTO[];
 }
 
+export interface PulsePointDTO {
+  date: string; // YYYY-MM-DD (UTC)
+  posts: number;
+  comments: number;
+  likes: number;
+  actions: number; // posts + comments + likes
+  meanFidelity: number | null; // avg behavior-snapshot fidelity captured that day
+  meanDriftVelocity: number | null; // avg personality driftFromPrev (dreams) that day
+}
+
+/** Population "vital signs" timeseries — powers the golden-signal header. */
+export interface PulseDTO {
+  range: '7d' | '30d' | '90d';
+  points: PulsePointDTO[];
+}
+
 export interface AnomalyAlertDTO {
   username: string;
   displayName: string;
@@ -221,7 +239,7 @@ export async function listAgents(limit = 50): Promise<AgentSummaryDTO[]> {
   const userIds = users.map((u) => u._id);
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [postsByAuthor, snapshotRows] = await Promise.all([
+  const [postsByAuthor, snapshotRows, fidelityRows] = await Promise.all([
     Post.aggregate([
       {
         $match: { authorId: { $in: userIds }, status: 'active', createdAt: { $gte: sevenDaysAgo } },
@@ -239,10 +257,21 @@ export async function listAgents(limit = 50): Promise<AgentSummaryDTO[]> {
         },
       },
     ]),
+    // Latest persona fidelity per account (stated self vs revealed behavior).
+    BehaviorSnapshot.aggregate<{ _id: Types.ObjectId; fidelity: number | null }>([
+      { $match: { userId: { $in: userIds } } },
+      { $sort: { capturedAt: 1 } },
+      { $group: { _id: '$userId', fidelity: { $last: '$fidelity' } } },
+    ]),
   ]);
 
   const postCountById = new Map<string, number>();
   for (const row of postsByAuthor) postCountById.set(String(row._id), row.count);
+
+  const fidelityById = new Map<string, number | null>();
+  for (const row of fidelityRows) {
+    fidelityById.set(String(row._id), typeof row.fidelity === 'number' ? row.fidelity : null);
+  }
 
   const snapById = new Map<
     string,
@@ -274,6 +303,7 @@ export async function listAgents(limit = 50): Promise<AgentSummaryDTO[]> {
       currentDriftFromAnchor: snap ? snap.driftFromAnchor : null,
       driftSparkline: snap?.driftSparkline ?? [],
       postsLast7d: postCountById.get(id) ?? 0,
+      currentFidelity: fidelityById.has(id) ? (fidelityById.get(id) ?? null) : null,
     };
   });
 }
@@ -1040,6 +1070,95 @@ async function computeHomogenization(range: '7d' | '30d' | '90d'): Promise<Homog
   }));
   const current = await computeCohesion();
   return { current, points };
+}
+
+/* ---------- population pulse (golden-signal timeseries) ---------- */
+
+/**
+ * Population "vital signs" over time: daily activity volume, mean persona
+ * fidelity, and mean drift velocity across the whole lab population. This is the
+ * real history behind the golden-signal header's period-over-period deltas and
+ * sparklines — no fabricated baselines. Restricted to the lab population and
+ * cached like the other analytics reads.
+ */
+const pulseCache = new TTLCache<string, PulseDTO>(60_000);
+export async function getPulse(range: '7d' | '30d' | '90d' = '30d'): Promise<PulseDTO> {
+  return pulseCache.getOrLoad(range, () => computePulse(range));
+}
+async function computePulse(range: '7d' | '30d' | '90d'): Promise<PulseDTO> {
+  const { since } = dayBuckets(range);
+  const labIds = (await loadLabUsers()).map((u) => u._id) as Types.ObjectId[];
+
+  const dayGroup = (dateField: string) => ({
+    _id: { $dateToString: { format: '%Y-%m-%d', date: `$${dateField}` } },
+  });
+
+  const [posts, comments, likes, fidelity, drift] = await Promise.all([
+    Post.aggregate([
+      { $match: { authorId: { $in: labIds }, status: 'active', createdAt: { $gte: since } } },
+      { $group: { ...dayGroup('createdAt'), n: { $sum: 1 } } },
+    ]),
+    Comment.aggregate([
+      { $match: { authorId: { $in: labIds }, status: 'active', createdAt: { $gte: since } } },
+      { $group: { ...dayGroup('createdAt'), n: { $sum: 1 } } },
+    ]),
+    Like.aggregate([
+      { $match: { userId: { $in: labIds }, createdAt: { $gte: since } } },
+      { $group: { ...dayGroup('createdAt'), n: { $sum: 1 } } },
+    ]),
+    BehaviorSnapshot.aggregate([
+      { $match: { userId: { $in: labIds }, capturedAt: { $gte: since } } },
+      { $group: { ...dayGroup('capturedAt'), avg: { $avg: '$fidelity' } } },
+    ]),
+    PersonalitySnapshot.aggregate([
+      {
+        $match: {
+          userId: { $in: labIds },
+          snapshotType: 'dream',
+          capturedAt: { $gte: since },
+        },
+      },
+      { $group: { ...dayGroup('capturedAt'), avg: { $avg: '$driftFromPrev' } } },
+    ]),
+  ]);
+
+  const byDay = new Map<string, PulsePointDTO>();
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  for (let d = new Date(since); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+    const key = isoDay(d);
+    byDay.set(key, {
+      date: key,
+      posts: 0,
+      comments: 0,
+      likes: 0,
+      actions: 0,
+      meanFidelity: null,
+      meanDriftVelocity: null,
+    });
+  }
+  const bump = (rows: Array<{ _id: string; n: number }>, field: 'posts' | 'comments' | 'likes') => {
+    for (const r of rows) {
+      const row = byDay.get(String(r._id));
+      if (row) {
+        row[field] = r.n;
+        row.actions += r.n;
+      }
+    }
+  };
+  bump(posts as Array<{ _id: string; n: number }>, 'posts');
+  bump(comments as Array<{ _id: string; n: number }>, 'comments');
+  bump(likes as Array<{ _id: string; n: number }>, 'likes');
+  for (const r of fidelity as Array<{ _id: string; avg: number | null }>) {
+    const row = byDay.get(String(r._id));
+    if (row && typeof r.avg === 'number') row.meanFidelity = r.avg;
+  }
+  for (const r of drift as Array<{ _id: string; avg: number | null }>) {
+    const row = byDay.get(String(r._id));
+    if (row && typeof r.avg === 'number') row.meanDriftVelocity = r.avg;
+  }
+
+  return { range, points: Array.from(byDay.values()) };
 }
 
 /* ---------- anomaly alerts (Feature 6) ---------- */

@@ -11,6 +11,7 @@ import type {
   HomogenizationDTO,
   InfluencesDTO,
   InteractionGraphDTO,
+  PulseDTO,
 } from './types';
 
 export async function listLabAgents(limit = 50): Promise<AgentLabSummary[]> {
@@ -43,6 +44,13 @@ export async function getHomogenization(
 
 export async function getAlerts(range: '7d' | '30d' | '90d' = '30d'): Promise<AlertsDTO> {
   const { data } = await http.get<ApiEnvelope<AlertsDTO>>(`/agents/alerts?range=${range}`);
+  return data.data;
+}
+
+export async function getPopulationPulse(
+  range: '7d' | '30d' | '90d' = '30d',
+): Promise<PulseDTO> {
+  const { data } = await http.get<ApiEnvelope<PulseDTO>>(`/agents/pulse?range=${range}`);
   return data.data;
 }
 

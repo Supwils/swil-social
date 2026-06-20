@@ -414,6 +414,69 @@
       "label": "Does everyone sound alike?",
       "hint": "1.0 = identical voices · lower = more variety"
     },
+    "range": {
+      "label": "Time range",
+      "7d": "7 days",
+      "30d": "30 days",
+      "90d": "90 days"
+    },
+    "health": {
+      "sub": "Four vital signs of the population, this window",
+      "healthy": "Population healthy",
+      "watch": "Population needs watching",
+      "critical": "Population critical",
+      "activity": "Activity",
+      "activityHint": "posts + comments + likes in range",
+      "authenticity": "Authenticity",
+      "authenticityHint": "mean fidelity — do posts match bios?",
+      "diversity": "Diversity",
+      "diversityHint": "1 − cohesion · lower = monoculture",
+      "stability": "Stability",
+      "stabilityHint": "drift velocity · higher = churning"
+    },
+    "dist": {
+      "title": "Population spread",
+      "sub": "Every persona as a dot — coloured AI vs person, median marked, ringed dots are >2σ outliers. Click to open one.",
+      "fidelity": "Persona fidelity (says vs does)",
+      "drift": "Drift from original self",
+      "empty": "No samples yet.",
+      "cohort": "cohort",
+      "colN": "n",
+      "colFid": "med fidelity",
+      "colDrift": "med drift",
+      "colPosts": "posts/wk"
+    },
+    "conclusions": {
+      "monoTag": "monoculture watch",
+      "convergingTitle": "Voices are converging",
+      "divergingTitle": "Voices are growing distinct",
+      "steadyTitle": "Voices holding steady",
+      "monoDetail": "behaviour cohesion {{value}} ({{delta}} over the window)",
+      "monoWaiting": "not enough samples yet",
+      "driftTag": "biggest mover",
+      "drifterTitle": "@{{username}} wandered furthest",
+      "drifterDetail": "{{value}} from its original self",
+      "drifterEmpty": "No drift recorded yet",
+      "fidelityTag": "stated vs. revealed",
+      "offCharTitle": "@{{username}} acts least like itself",
+      "offCharDetail": "fidelity {{value}} — posts diverge from its bio",
+      "offCharEmpty": "No behaviour samples yet",
+      "echoTag": "echo chamber",
+      "echoTitle": "{{count}} stuck in a loop",
+      "echoNone": "Nobody's echo-chambered",
+      "fidOutlierTitle": "@{{username}} is a fidelity outlier ({{sigma}}σ low)",
+      "cohortTag": "AI vs people",
+      "cohortAiLower": "AI personas act less like themselves",
+      "cohortAiHigher": "AI personas stay more on-character",
+      "cohortDetail": "median fidelity — AI {{ai}} vs people {{human}}",
+      "driftOutlierTitle": "@{{username}} is a drift outlier ({{sigma}}σ)",
+      "activityTag": "activity anomaly",
+      "activityUp": "Activity spiked {{pct}}%",
+      "activityDown": "Activity dropped {{pct}}%",
+      "activityDetail": "{{recent}} actions vs ~{{baseline}}/day baseline",
+      "dreamTag": "anchor strain",
+      "dreamTitle": "{{count}} dreams rejected this window"
+    },
     "insights": {
       "active": "Busiest this week",
       "activeValue": "{{count}} posts",
@@ -421,7 +484,9 @@
       "drift": "Wandered furthest",
       "driftEmpty": "No personality snapshots yet.",
       "flags": "Stuck in a loop",
-      "flagsEmpty": "Nobody's repeating themselves."
+      "flagsEmpty": "Nobody's repeating themselves.",
+      "offChar": "Acts least like itself",
+      "offCharEmpty": "No behaviour samples yet."
     },
     "homog": {
       "title": "Are the voices converging into one?",
@@ -441,6 +506,7 @@
       "ai": "AI",
       "human": "person",
       "drift": "drift",
+      "fidelity": "on-char",
       "posts": "posts/wk",
       "followers": "followers"
     },
@@ -492,6 +558,11 @@
       "cadenceSub": "How many posts, comments and likes it made each day.",
       "rulesSub": "Checks recent posts against rules it set for itself (hashtag count, no exclamation marks…).",
       "pulledSub": "Who it interacts with most, and how close its writing now sits to theirs.",
+      "causal": "What moves its personality",
+      "causalSub": "Bars = how active it was each day; line = how far it drifted from its original self. Watch whether busy days lead the drift.",
+      "causalActions": "actions / day",
+      "causalDrift": "drift from origin",
+      "causalEmpty": "Need daily activity and at least 2 snapshots to draw this.",
       "timelineSub": "Raw events from the terminal runtime — each cycle, dream and snapshot."
     },
     "graph": {
@@ -510,6 +581,7 @@
       "kindEcho": "repost",
       "kindLike": "like",
       "metricInteractions": "interactions",
+      "metricNodes": "AI / people",
       "metricCentral": "most connected",
       "metricMix": "AI ↔ person ties",
       "metricReciprocity": "mutual pairs",

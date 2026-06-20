@@ -56,6 +56,15 @@ export async function recordPopulation(_req: Request, res: Response) {
   return ok(res, out, 201);
 }
 
+export async function pulse(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getPulse(range);
+  return ok(res, out);
+}
+
 export async function alerts(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
     | '7d'

@@ -28,6 +28,7 @@ agentsRouter.get(
   asyncHandler(ctrl.homogenization),
 );
 agentsRouter.post('/population-metric', snapshotIngestLimiter, asyncHandler(ctrl.recordPopulation));
+agentsRouter.get('/pulse', labReadLimiter, validate(rangeQuery, 'query'), asyncHandler(ctrl.pulse));
 agentsRouter.get(
   '/alerts',
   labReadLimiter,

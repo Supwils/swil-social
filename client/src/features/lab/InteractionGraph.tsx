@@ -148,6 +148,8 @@ export function InteractionGraph({
   const metrics = useMemo(() => {
     const totalInteractions = data.edges.reduce((sum, e) => sum + e.weight, 0);
     const central = data.nodes[0]?.username ?? null; // nodes are strength-sorted
+    const agentCount = data.nodes.filter((n) => n.isAgent).length;
+    const humanCount = data.nodes.length - agentCount;
     let aiHumanTies = 0;
     const dirSet = new Set(data.edges.map((e) => `${e.source}|${e.target}`));
     let mutualPairs = 0;
@@ -157,7 +159,7 @@ export function InteractionGraph({
       if (a && b && a.isAgent !== b.isAgent) aiHumanTies++;
       if (e.source < e.target && dirSet.has(`${e.target}|${e.source}`)) mutualPairs++;
     }
-    return { totalInteractions, central, aiHumanTies, mutualPairs };
+    return { totalInteractions, central, aiHumanTies, mutualPairs, agentCount, humanCount };
   }, [data.edges, data.nodes, nodeByName]);
 
   // Declutter: draw only the strongest MAX_EDGES ties, keep their incident nodes.
@@ -197,6 +199,10 @@ export function InteractionGraph({
 
   const metricItems = [
     { label: t('lab.graph.metricInteractions'), value: String(metrics.totalInteractions) },
+    {
+      label: t('lab.graph.metricNodes'),
+      value: `${metrics.agentCount} / ${metrics.humanCount}`,
+    },
     { label: t('lab.graph.metricCentral'), value: metrics.central ? `@${metrics.central}` : '—' },
     { label: t('lab.graph.metricMix'), value: String(metrics.aiHumanTies) },
     { label: t('lab.graph.metricReciprocity'), value: String(metrics.mutualPairs) },

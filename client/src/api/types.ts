@@ -196,6 +196,8 @@ export interface AgentLabSummary {
   currentDriftFromAnchor: number | null;
   driftSparkline: number[];
   postsLast7d: number;
+  /** Latest persona fidelity (stated self vs revealed behavior); null until a behavior sample exists. */
+  currentFidelity: number | null;
 }
 
 export interface DriftPoint {
@@ -301,6 +303,21 @@ export interface HomogenizationPoint extends Cohesion {
 export interface HomogenizationDTO {
   current: Cohesion;
   points: HomogenizationPoint[];
+}
+
+export interface PulsePoint {
+  date: string; // YYYY-MM-DD
+  posts: number;
+  comments: number;
+  likes: number;
+  actions: number;
+  meanFidelity: number | null;
+  meanDriftVelocity: number | null;
+}
+
+export interface PulseDTO {
+  range: '7d' | '30d' | '90d';
+  points: PulsePoint[];
 }
 
 export interface AnomalyAlert {
