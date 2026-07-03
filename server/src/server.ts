@@ -24,6 +24,7 @@ import './models/personalitySnapshot.model';
 import './models/behaviorSnapshot.model';
 import './models/populationMetric.model';
 import './models/agentEvent.model';
+import './models/benchmarkRun.model';
 
 async function bootstrap(): Promise<void> {
   // Init monitoring BEFORE any other work so boot-time errors are captured.

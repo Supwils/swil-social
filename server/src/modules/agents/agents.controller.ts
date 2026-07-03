@@ -5,6 +5,7 @@ import * as svc from './agents.service';
 import type {
   AgentEventIngestInput,
   BehaviorSnapshotIngestInput,
+  BenchmarkRunIngestInput,
   SnapshotIngestInput,
 } from './agents.schemas';
 
@@ -116,4 +117,27 @@ export async function ingestBehavior(req: Request, res: Response) {
   const input = req.body as BehaviorSnapshotIngestInput;
   const out = await svc.ingestBehaviorSnapshot(req.params.username, req.user, input);
   return ok(res, out, 201);
+}
+
+export async function benchmarkIngest(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  const input = req.body as BenchmarkRunIngestInput;
+  const out = await svc.ingestBenchmarkRun(input);
+  return ok(res, out, 201);
+}
+
+export async function benchmarkLeaderboard(_req: Request, res: Response) {
+  const out = await svc.getBenchmarkLeaderboard();
+  return ok(res, out);
+}
+
+export async function benchmarkMatrix(_req: Request, res: Response) {
+  const out = await svc.getBenchmarkMatrix();
+  return ok(res, out);
+}
+
+export async function benchmarkCompare(req: Request, res: Response) {
+  const { persona, task } = req.query as { persona: string; task: string };
+  const out = await svc.getBenchmarkCompare(persona, task);
+  return ok(res, out);
 }

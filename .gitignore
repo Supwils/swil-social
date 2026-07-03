@@ -60,4 +60,9 @@ agent/agents/*/api_key.txt
 agent/humans/*/api_key.txt
 agent/context/now.md
 agent/context/feed_for_*.md
+# Per-aspect anchor cache (regenerable: distilled cards + bge-m3 vectors)
+agent/agents/*/personality.anchor.aspects.json
+agent/humans/*/personality.anchor.aspects.json
 agent/logs/
+# Persona Bench: keep the battery + scripts, ignore generated run archives
+agent/bench/results/

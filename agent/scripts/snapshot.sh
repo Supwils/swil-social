@@ -107,6 +107,13 @@ CAPTURED_AT="${CAPTURED_AT_OVERRIDE:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 
 NARRATIVE="${NARRATIVE_OVERRIDE:-}"
 
+# Per-aspect drift block (set by dream.sh in shadow/aspect mode). Only forwarded
+# when it parses as a JSON object; empty/garbage is silently dropped.
+ASPECT_DRIFT="${ASPECT_DRIFT_OVERRIDE:-}"
+if [[ -n "$ASPECT_DRIFT" ]] && ! printf '%s' "$ASPECT_DRIFT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  ASPECT_DRIFT=""
+fi
+
 BODY="$(jq -n \
   --arg hash "$HASH" \
   --arg type "$TYPE" \
@@ -115,6 +122,7 @@ BODY="$(jq -n \
   --arg excerpt "$EXCERPT" \
   --arg narrative "$NARRATIVE" \
   --argjson emb "$EMBEDDING_JSON" \
+  --argjson aspect "${ASPECT_DRIFT:-null}" \
   '{
     contentHash: $hash,
     snapshotType: $type,
@@ -122,7 +130,9 @@ BODY="$(jq -n \
     archivePath: $archive,
     excerpt: $excerpt,
     embedding: $emb
-  } + (if $narrative != "" then {diffNarrative: $narrative} else {} end)')"
+  }
+  + (if $narrative != "" then {diffNarrative: $narrative} else {} end)
+  + (if $aspect != null then {aspectDrift: $aspect} else {} end)')"
 
 post_snapshot_event() {
   local outcome="$1" summary="$2" metrics="${3:-{}}"

@@ -23,6 +23,16 @@ export const eventsQuery = z.object({
     .optional(),
 });
 
+export const aspectDriftIngest = z.object({
+  mode: z.enum(['shadow', 'aspect']),
+  promptVersion: z.number().int().nonnegative(),
+  // cosine sims of normalized bge-m3 vectors, in [-1, 1]
+  values: z.number().min(-1).max(1),
+  style: z.number().min(-1).max(1),
+  topic: z.number().min(-1).max(1),
+  breached: z.array(z.enum(['values', 'style', 'topic'])).default([]),
+});
+
 export const snapshotIngest = z.object({
   contentHash: z
     .string()
@@ -34,6 +44,7 @@ export const snapshotIngest = z.object({
   archivePath: z.string().max(300),
   excerpt: z.string().max(320).optional().default(''),
   diffNarrative: z.string().max(2000).optional(),
+  aspectDrift: aspectDriftIngest.optional(),
 });
 
 export const agentEventIngest = z.object({
@@ -62,6 +73,37 @@ export const behaviorSnapshotIngest = z.object({
   excerpt: z.string().max(320).optional().default(''),
 });
 
+export const benchmarkRunIngest = z.object({
+  batchId: z.string().trim().min(1).max(80),
+  persona: z
+    .string()
+    .min(2)
+    .max(24)
+    .regex(/^[a-zA-Z0-9_]+$/),
+  personaDisplay: z.string().max(80).optional().default(''),
+  model: z.string().trim().min(1).max(40),
+  taskId: z.string().trim().min(1).max(60),
+  taskKind: z.string().trim().max(40).optional().default(''),
+  runIndex: z.coerce.number().int().min(0).max(64).optional().default(0),
+  output: z.string().max(8000).optional().default(''),
+  vectorFidelity: z.number().min(-1).max(1).nullable().optional().default(null),
+  judgeScore: z.number().min(0).max(100).nullable().optional().default(null),
+  ruleScore: z.number().min(0).max(1).nullable().optional().default(null),
+  ruleDetail: z.string().max(500).optional().default(''),
+  latencyMs: z.coerce.number().int().min(0).nullable().optional().default(null),
+  capturedAt: z.coerce.date().optional(),
+});
+
+export const benchmarkCompareQuery = z.object({
+  persona: z
+    .string()
+    .min(2)
+    .max(24)
+    .regex(/^[a-zA-Z0-9_]+$/),
+  task: z.string().trim().min(1).max(60),
+});
+
 export type SnapshotIngestInput = z.infer<typeof snapshotIngest>;
 export type BehaviorSnapshotIngestInput = z.infer<typeof behaviorSnapshotIngest>;
 export type AgentEventIngestInput = z.infer<typeof agentEventIngest>;
+export type BenchmarkRunIngestInput = z.infer<typeof benchmarkRunIngest>;

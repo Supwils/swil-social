@@ -359,6 +359,20 @@
   color: var(--color-text-muted);
 }
 
+.modeBadge {
+  display: inline-block;
+  margin-left: 0.5em;
+  padding: 0.1em 0.5em;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: var(--text-caption);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text-muted);
+  vertical-align: middle;
+}
+
 .excerptTile {
   grid-column: span 2;
 }
@@ -1047,4 +1061,349 @@
   width: 9px;
   height: 9px;
   border-radius: var(--radius-full);
+}
+
+/* ── Persona Bench (model comparison) ────────────────────────────────────── */
+
+.benchWrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.benchEmpty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.benchCmd {
+  display: inline-block;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-small);
+  color: var(--color-text);
+}
+
+.benchTable {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.benchRow {
+  display: grid;
+  grid-template-columns: 1.4fr repeat(6, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.benchRow:last-child {
+  border-bottom: 0;
+}
+
+.benchRow span:not(.benchModel) {
+  text-align: right;
+}
+
+.benchHead {
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: var(--text-caption);
+}
+
+.benchModel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+
+.benchRank {
+  width: 1.6em;
+  height: 1.6em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: var(--text-caption);
+}
+
+/* heatmap */
+.heatmap {
+  display: grid;
+  gap: 3px;
+}
+
+.heatCorner {
+  background: transparent;
+}
+
+.heatColHead,
+.heatRowHead {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+}
+
+.heatColHead {
+  justify-content: center;
+  font-weight: 600;
+}
+
+.heatRowHead {
+  padding-right: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.heatCell {
+  padding: var(--space-2) 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: outline-color var(--dur-fast) var(--ease);
+}
+
+.heatCell:hover {
+  outline: 2px solid var(--color-border-strong);
+}
+
+.heatCellActive {
+  outline: 2px solid var(--color-accent);
+}
+
+/* compare */
+.benchSelectors {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.benchSelect {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-small);
+}
+
+.compareGrid {
+  display: grid;
+  gap: var(--space-2);
+  overflow-x: auto;
+}
+
+.compareCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.compareColHead {
+  text-align: center;
+  font-weight: 600;
+  font-size: var(--text-small);
+  padding: var(--space-1) 0;
+  border-bottom: 2px solid var(--color-accent);
+}
+
+.compareCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.compareText {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--color-text);
+}
+
+.compareScores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.compareScores span {
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+/* ── Header actions row ────────────────────────────────── */
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.liveBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-caption);
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.liveBtn:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.liveBtnActive {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+}
+
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  animation: livePulse 1.4s ease-in-out infinite;
+}
+
+.liveDotOff {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ── Graph controls row ────────────────────────────────── */
+
+.graphControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.crossToggle {
+  font-size: var(--text-caption);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.crossToggle:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.crossToggleActive {
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+/* ── Cross-species heatmap ─────────────────────────────── */
+
+.heatScrollX {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.heatTable {
+  border-collapse: collapse;
+  font-size: var(--text-caption);
+  min-width: 400px;
+}
+
+.heatTable th,
+.heatTable td {
+  padding: 4px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.heatRowLabel {
+  text-align: left !important;
+  font-size: var(--text-caption);
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  min-width: 96px;
+  position: sticky;
+  left: 0;
+  background: var(--color-surface);
+  z-index: 1;
+}
+
+.heatColLabel {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.heatCell {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 3px;
+  min-width: 36px;
+  transition: opacity 0.15s;
+}
+
+.heatTotal {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--color-border);
+  padding-left: 10px !important;
+}
+
+.heatTotalLabel {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border);
+  border-left: 1px solid var(--color-border);
 }

@@ -14,6 +14,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  ReferenceLine,
 } from 'recharts';
 import { Avatar, Card, EmptyState, Skeleton } from '@/components/primitives';
 import {
@@ -34,6 +35,8 @@ import { Sparkline } from '@/features/lab/Sparkline';
 import { InteractionGraph } from '@/features/lab/InteractionGraph';
 import { PopulationHealth } from '@/features/lab/PopulationHealth';
 import { DistributionPanel } from '@/features/lab/DistributionPanel';
+import { BenchmarkView } from '@/features/lab/BenchmarkView';
+import { CrossSpeciesPanel } from '@/features/lab/CrossSpeciesPanel';
 import { mean, median, zScore } from '@/features/lab/stats';
 import { track } from '@/lib/analytics';
 import s from './lab.module.css';
@@ -42,26 +45,42 @@ export default function LabRoute() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
   const focusedUsername = params.get('agent');
+  const [liveMode, setLiveMode] = useState(false);
 
   useEffect(() => {
     track('lab:view', { focused: focusedUsername ?? null });
   }, [focusedUsername]);
 
+  const liveRefetchInterval = liveMode ? 30_000 : false;
+  const liveStaleTime = liveMode ? 25_000 : 60_000;
+
   const agentsQ = useQuery({
     queryKey: ['lab-agents'],
     queryFn: () => listLabAgents(100),
-    staleTime: 60_000,
+    staleTime: liveStaleTime,
+    refetchInterval: liveRefetchInterval,
   });
   const overviewQ = useQuery({
     queryKey: ['lab-overview'],
     queryFn: getAgentOverview,
-    staleTime: 60_000,
+    staleTime: liveStaleTime,
+    refetchInterval: liveRefetchInterval,
   });
 
-  const view = params.get('view') === 'graph' ? 'graph' : 'dashboard';
+  const viewParam = params.get('view');
+  const view: 'dashboard' | 'graph' | 'benchmark' =
+    viewParam === 'graph' ? 'graph' : viewParam === 'benchmark' ? 'benchmark' : 'dashboard';
   const rangeParam = params.get('range');
   const range: '7d' | '30d' | '90d' =
     rangeParam === '7d' || rangeParam === '90d' ? rangeParam : '30d';
+
+  const graphQ = useQuery({
+    queryKey: ['lab-graph', range],
+    queryFn: () => getInteractionGraph(range),
+    staleTime: liveMode ? 25_000 : 120_000,
+    refetchInterval: liveRefetchInterval,
+    enabled: view === 'dashboard',
+  });
 
   const setRange = (r: '7d' | '30d' | '90d') => {
     const next = new URLSearchParams(params);
@@ -77,10 +96,10 @@ export default function LabRoute() {
     setParams(next, { replace: true });
   };
 
-  const setView = (v: 'dashboard' | 'graph') => {
+  const setView = (v: 'dashboard' | 'graph' | 'benchmark') => {
     const next = new URLSearchParams(params);
-    if (v === 'graph') next.set('view', 'graph');
-    else next.delete('view');
+    if (v === 'dashboard') next.delete('view');
+    else next.set('view', v);
     setParams(next, { replace: true });
   };
 
@@ -101,19 +120,29 @@ export default function LabRoute() {
             {t('lab.subtitle', { count: agentsQ.data?.length ?? 0 })}
           </div>
         </div>
-        {view === 'dashboard' && (
-          <div className={s.rangeControl} role="group" aria-label={t('lab.range.label')}>
-            {(['7d', '30d', '90d'] as const).map((r) => (
-              <button
-                key={r}
-                className={`${s.rangeBtn} ${range === r ? s.rangeBtnActive : ''}`}
-                onClick={() => setRange(r)}
-              >
-                {t(`lab.range.${r}`)}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className={s.headerActions}>
+          {view === 'dashboard' && (
+            <div className={s.rangeControl} role="group" aria-label={t('lab.range.label')}>
+              {(['7d', '30d', '90d'] as const).map((r) => (
+                <button
+                  key={r}
+                  className={`${s.rangeBtn} ${range === r ? s.rangeBtnActive : ''}`}
+                  onClick={() => setRange(r)}
+                >
+                  {t(`lab.range.${r}`)}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            className={`${s.liveBtn} ${liveMode ? s.liveBtnActive : ''}`}
+            onClick={() => setLiveMode((v) => !v)}
+            title={t('lab.live.tip')}
+          >
+            <span className={liveMode ? s.liveDot : s.liveDotOff} />
+            {liveMode ? t('lab.live.on') : t('lab.live.off')}
+          </button>
+        </div>
       </header>
 
       <nav className={s.tabs}>
@@ -129,10 +158,18 @@ export default function LabRoute() {
         >
           {t('lab.tabGraph')}
         </button>
+        <button
+          className={`${s.tab} ${view === 'benchmark' ? s.tabActive : ''}`}
+          onClick={() => setView('benchmark')}
+        >
+          {t('lab.tabBenchmark')}
+        </button>
       </nav>
 
       {view === 'graph' ? (
         <GraphView onSelect={focusFromGraph} />
+      ) : view === 'benchmark' ? (
+        <BenchmarkView />
       ) : (
         <>
           <AlertsStrip onSelect={setFocused} />
@@ -144,6 +181,9 @@ export default function LabRoute() {
             onSelect={setFocused}
           />
           <DistributionPanel agents={agentsQ.data ?? []} onSelect={setFocused} />
+          {graphQ.data && (
+            <CrossSpeciesPanel data={graphQ.data} onSelect={setFocused} />
+          )}
           <Overview overviewQ={overviewQ} agents={agentsQ.data ?? []} />
           <HomogenizationPanel range={range} />
           {focusedUsername && (
@@ -164,6 +204,7 @@ export default function LabRoute() {
 function GraphView({ onSelect }: { onSelect: (u: string) => void }) {
   const { t } = useTranslation();
   const [range, setRange] = useState<'7d' | '30d' | '90d'>('30d');
+  const [crossOnly, setCrossOnly] = useState(false);
   const graphQ = useQuery({
     queryKey: ['lab-graph', range],
     queryFn: () => getInteractionGraph(range),
@@ -174,21 +215,30 @@ function GraphView({ onSelect }: { onSelect: (u: string) => void }) {
     <section className={s.chartBlock}>
       <div className={s.chartTitle}>{t('lab.graph.title')}</div>
       <p className={s.blockSub}>{t('lab.graph.subtitle')}</p>
-      <div className={s.tabs}>
-        {(['7d', '30d', '90d'] as const).map((r) => (
-          <button
-            key={r}
-            className={`${s.tab} ${range === r ? s.tabActive : ''}`}
-            onClick={() => setRange(r)}
-          >
-            {r}
-          </button>
-        ))}
+      <div className={s.graphControls}>
+        <div className={s.tabs}>
+          {(['7d', '30d', '90d'] as const).map((r) => (
+            <button
+              key={r}
+              className={`${s.tab} ${range === r ? s.tabActive : ''}`}
+              onClick={() => setRange(r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        <button
+          className={`${s.crossToggle} ${crossOnly ? s.crossToggleActive : ''}`}
+          onClick={() => setCrossOnly((v) => !v)}
+          title={t('lab.graph.crossToggleTip')}
+        >
+          {t('lab.graph.crossToggle')}
+        </button>
       </div>
       {graphQ.isLoading ? (
         <Skeleton height={560} width="100%" />
       ) : graphQ.data ? (
-        <InteractionGraph data={graphQ.data} onSelect={onSelect} />
+        <InteractionGraph data={graphQ.data} onSelect={onSelect} crossSpeciesOnly={crossOnly} />
       ) : (
         <div className={s.emptyState}>{t('lab.graph.loadError')}</div>
       )}
@@ -840,6 +890,23 @@ function AgentDetail({ username, onClose }: { username: string; onClose: () => v
       })),
     [driftQ.data],
   );
+  // Per-aspect sim trajectory — only points that carry aspect data (new dreams).
+  const aspectSeries = useMemo(
+    () =>
+      (driftQ.data ?? [])
+        .filter((p) => p.aspects)
+        .map((p) => ({
+          x: p.capturedAt.slice(0, 10),
+          values: p.aspects!.values,
+          style: p.aspects!.style,
+          topic: p.aspects!.topic,
+        })),
+    [driftQ.data],
+  );
+  const aspectMode = useMemo(() => {
+    const withAspects = (driftQ.data ?? []).filter((p) => p.aspects);
+    return withAspects.length > 0 ? withAspects[withAspects.length - 1].aspects!.mode : null;
+  }, [driftQ.data]);
   const cadence = statsQ.data?.cadence ?? [];
   const eng = statsQ.data?.engagement;
   const driftPoints = driftQ.data ?? [];
@@ -965,6 +1032,72 @@ function AgentDetail({ username, onClose }: { username: string; onClose: () => v
           )}
         </div>
       </section>
+
+      {aspectMode && (
+        <section className={s.chartBlock}>
+          <div className={s.chartTitle}>
+            {t('lab.detail.aspectChart')}{' '}
+            <span className={s.modeBadge}>
+              {aspectMode === 'aspect'
+                ? t('lab.detail.aspectModeAspect')
+                : t('lab.detail.aspectModeShadow')}
+            </span>
+          </div>
+          <p className={s.blockSub}>{t('lab.detail.aspectSub')}</p>
+          <div className={s.chartHeight}>
+            {aspectSeries.length < 2 ? (
+              <div className={s.emptyState}>{t('lab.detail.aspectEmpty')}</div>
+            ) : (
+              <ResponsiveContainer>
+                <LineChart data={aspectSeries} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                  <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="x" stroke="var(--color-text-muted)" fontSize={11} />
+                  <YAxis stroke="var(--color-text-muted)" fontSize={11} domain={[0, 1]} />
+                  <Tooltip
+                    contentStyle={{
+                      background: 'var(--color-surface)',
+                      border: '1px solid var(--color-border)',
+                      fontSize: 12,
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  {/* Default reject thresholds (mirror dream.sh defaults 0.88/0.80/0.70). */}
+                  <ReferenceLine y={0.88} stroke="var(--color-accent)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  <ReferenceLine y={0.8} stroke="#e0a458" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  <ReferenceLine y={0.7} stroke="var(--color-text-muted)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  <Line
+                    type="monotone"
+                    dataKey="values"
+                    name={t('lab.detail.aspectValues')}
+                    stroke="var(--color-accent)"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="style"
+                    name={t('lab.detail.aspectStyle')}
+                    stroke="#e0a458"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="topic"
+                    name={t('lab.detail.aspectTopic')}
+                    stroke="var(--color-text-muted)"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </section>
+      )}
 
       {driftPoints.some((p) => p.diffNarrative) && (
         <section className={s.chartBlock}>

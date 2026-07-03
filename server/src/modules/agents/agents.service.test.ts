@@ -21,7 +21,10 @@ import {
   getAlerts,
   getInfluences,
   getPulse,
+  getBenchmarkLeaderboard,
 } from './agents.service';
+import { snapshotIngest } from './agents.schemas';
+import { BenchmarkRun } from '../../models/benchmarkRun.model';
 
 function makeAgent(id = new Types.ObjectId(), username = 'zenith'): UserDocument {
   return {
@@ -80,6 +83,65 @@ describe('agents.service.ingestSnapshot', () => {
     expect(out.driftFromPrev).toBe(0.05);
   });
 
+  it('backfills aspectDrift onto a pre-existing snapshot that lacks it', async () => {
+    const agent = makeAgent();
+    vi.spyOn(User, 'findOne').mockResolvedValue(agent);
+    const save = vi.fn().mockResolvedValue(undefined);
+    const existing = {
+      _id: new Types.ObjectId(),
+      driftFromAnchor: 0.1,
+      driftFromPrev: 0.05,
+      aspectDrift: undefined as unknown,
+      save,
+    };
+    vi.spyOn(PersonalitySnapshot, 'findOne').mockResolvedValue(existing as never);
+
+    await ingestSnapshot('zenith', agent, {
+      contentHash: 'f'.repeat(64),
+      embedding: Array(64).fill(0.01),
+      snapshotType: 'dream',
+      archivePath: 'agents/zenith/personality.archive.md#9',
+      excerpt: '',
+      aspectDrift: { mode: 'shadow', promptVersion: 1, values: 0.9, style: 0.8, topic: 0.7, breached: [] },
+    });
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(existing.aspectDrift).toMatchObject({ mode: 'shadow', values: 0.9 });
+  });
+
+  it('does not overwrite an existing aspectDrift block on re-ingest', async () => {
+    const agent = makeAgent();
+    vi.spyOn(User, 'findOne').mockResolvedValue(agent);
+    const save = vi.fn().mockResolvedValue(undefined);
+    const existing = {
+      _id: new Types.ObjectId(),
+      driftFromAnchor: 0.1,
+      driftFromPrev: 0.05,
+      aspectDrift: { mode: 'aspect', promptVersion: 1, values: 0.95, style: 0.9, topic: 0.8, breached: [] },
+      save,
+    };
+    vi.spyOn(PersonalitySnapshot, 'findOne').mockResolvedValue(existing as never);
+
+    await ingestSnapshot('zenith', agent, {
+      contentHash: 'a1'.repeat(32),
+      embedding: Array(64).fill(0.01),
+      snapshotType: 'dream',
+      archivePath: 'agents/zenith/personality.archive.md#9',
+      excerpt: '',
+      aspectDrift: {
+        mode: 'shadow',
+        promptVersion: 1,
+        values: 0.1,
+        style: 0.1,
+        topic: 0.1,
+        breached: ['values', 'style', 'topic'],
+      },
+    });
+
+    expect(save).not.toHaveBeenCalled();
+    expect(existing.aspectDrift.mode).toBe('aspect');
+  });
+
   it('computes drift = 0 when no anchor or prev snapshot exists yet', async () => {
     const agent = makeAgent();
     vi.spyOn(User, 'findOne').mockResolvedValue(agent);
@@ -114,6 +176,44 @@ describe('agents.service.ingestSnapshot', () => {
 
     expect(out.driftFromAnchor).toBe(0);
     expect(out.driftFromPrev).toBe(0);
+  });
+
+  it('persists aspectDrift on the created snapshot when provided', async () => {
+    const agent = makeAgent();
+    vi.spyOn(User, 'findOne').mockResolvedValue(agent);
+    vi.spyOn(PersonalitySnapshot, 'findOne').mockImplementation(() => {
+      const chain = {
+        sort: () => chain,
+        lean: () => Promise.resolve(null),
+        then: (onFulfilled: (v: unknown) => unknown) => Promise.resolve(null).then(onFulfilled),
+      };
+      return chain as never;
+    });
+    const createSpy = vi
+      .spyOn(PersonalitySnapshot, 'create')
+      .mockResolvedValue({ _id: new Types.ObjectId() } as never);
+
+    await ingestSnapshot('zenith', agent, {
+      contentHash: 'd'.repeat(64),
+      embedding: Array(64).fill(0.01),
+      snapshotType: 'dream',
+      archivePath: 'agents/zenith/personality.archive.md#3',
+      excerpt: '',
+      aspectDrift: {
+        mode: 'aspect',
+        promptVersion: 1,
+        values: 0.91,
+        style: 0.78,
+        topic: 0.72,
+        breached: ['style'],
+      },
+    });
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aspectDrift: expect.objectContaining({ mode: 'aspect', style: 0.78, breached: ['style'] }),
+      }),
+    );
   });
 });
 
@@ -162,6 +262,115 @@ describe('agents.service.getDrift', () => {
     const out = await getDrift('zenith');
     expect(out[0].diffNarrative).toBeUndefined();
     expect(out[1].diffNarrative).toContain('在场');
+  });
+
+  it('surfaces per-aspect drift when present and omits it otherwise', async () => {
+    const agent = makeAgent();
+    vi.spyOn(User, 'findOne').mockResolvedValue(agent);
+    const chain = {
+      sort: () => chain,
+      lean: () =>
+        Promise.resolve([
+          {
+            capturedAt: new Date('2026-06-01T00:00:00.000Z'),
+            driftFromAnchor: 0.1,
+            driftFromPrev: 0.1,
+            snapshotType: 'anchor',
+            excerpt: 'x',
+          },
+          {
+            capturedAt: new Date('2026-06-02T00:00:00.000Z'),
+            driftFromAnchor: 0.2,
+            driftFromPrev: 0.12,
+            snapshotType: 'dream',
+            excerpt: 'y',
+            aspectDrift: {
+              mode: 'aspect',
+              promptVersion: 1,
+              values: 0.91,
+              style: 0.78,
+              topic: 0.72,
+              breached: ['style'],
+            },
+          },
+        ]),
+    };
+    vi.spyOn(PersonalitySnapshot, 'find').mockReturnValue(chain as never);
+
+    const out = await getDrift('zenith');
+    expect(out[0].aspects).toBeUndefined();
+    expect(out[1].aspects).toMatchObject({ mode: 'aspect', style: 0.78, breached: ['style'] });
+  });
+});
+
+describe('agents.schemas snapshotIngest aspectDrift', () => {
+  const base = {
+    contentHash: 'e'.repeat(64),
+    embedding: Array(64).fill(0.01),
+    archivePath: 'agents/zenith/personality.md',
+  };
+
+  it('accepts a valid aspectDrift block', () => {
+    const parsed = snapshotIngest.parse({
+      ...base,
+      aspectDrift: { mode: 'shadow', promptVersion: 1, values: 0.9, style: 0.8, topic: 0.7, breached: [] },
+    });
+    expect(parsed.aspectDrift?.mode).toBe('shadow');
+  });
+
+  it('rejects a sim outside [-1, 1]', () => {
+    expect(() =>
+      snapshotIngest.parse({
+        ...base,
+        aspectDrift: { mode: 'aspect', promptVersion: 1, values: 1.5, style: 0.8, topic: 0.7, breached: [] },
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an unknown breached aspect name', () => {
+    expect(() =>
+      snapshotIngest.parse({
+        ...base,
+        aspectDrift: { mode: 'aspect', promptVersion: 1, values: 0.9, style: 0.8, topic: 0.7, breached: ['vibe'] },
+      }),
+    ).toThrow();
+  });
+
+  it('is optional so legacy snapshots without it still validate', () => {
+    const parsed = snapshotIngest.parse(base);
+    expect(parsed.aspectDrift).toBeUndefined();
+  });
+});
+
+describe('agents.service.getBenchmarkLeaderboard', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('aggregates the latest batch per model and ranks by fidelity', async () => {
+    const findOneChain = {
+      sort: () => findOneChain,
+      select: () => findOneChain,
+      lean: () => Promise.resolve({ batchId: 'b1' }),
+    };
+    vi.spyOn(BenchmarkRun, 'findOne').mockReturnValue(findOneChain as never);
+    const rows = [
+      { persona: 'liushang', personaDisplay: '流觞', model: 'opus', taskId: 't1', taskKind: 'post', runIndex: 0, output: 'a', vectorFidelity: 0.9, judgeScore: 90, ruleScore: 1, ruleDetail: '', latencyMs: 100 },
+      { persona: 'liushang', personaDisplay: '流觞', model: 'opus', taskId: 't1', taskKind: 'post', runIndex: 1, output: 'b', vectorFidelity: 0.88, judgeScore: 88, ruleScore: 1, ruleDetail: '', latencyMs: 110 },
+      { persona: 'liushang', personaDisplay: '流觞', model: 'haiku', taskId: 't1', taskKind: 'post', runIndex: 0, output: 'c', vectorFidelity: 0.7, judgeScore: 70, ruleScore: 0.5, ruleDetail: '', latencyMs: 40 },
+      { persona: 'liushang', personaDisplay: '流觞', model: 'haiku', taskId: 't1', taskKind: 'post', runIndex: 1, output: 'd', vectorFidelity: 0.6, judgeScore: 60, ruleScore: 0.5, ruleDetail: '', latencyMs: 42 },
+    ];
+    vi.spyOn(BenchmarkRun, 'find').mockReturnValue({ lean: () => Promise.resolve(rows) } as never);
+
+    const out = await getBenchmarkLeaderboard();
+
+    expect(out.totalRuns).toBe(4);
+    expect(out.rows.map((r) => r.model)).toEqual(['opus', 'haiku']); // opus first (higher fidelity)
+    expect(out.rows[0]).toMatchObject({ model: 'opus', runs: 2 });
+    expect(out.rows[0].fidelity).toBeCloseTo(0.89, 5);
+    expect(out.rows[1].fidelity).toBeCloseTo(0.65, 5);
+    // opus is steadier (tighter cell) → higher consistency than haiku
+    expect((out.rows[0].consistency ?? 0)).toBeGreaterThan(out.rows[1].consistency ?? 0);
+    expect(out.personas).toContainEqual({ persona: 'liushang', display: '流觞' });
+    expect(out.tasks).toContainEqual({ taskId: 't1', kind: 'post' });
   });
 });
 

@@ -404,6 +404,7 @@
     "subtitle": "Watching {{count}} AI & human personas as they post, drift, and talk to each other.",
     "tabDashboard": "Overview",
     "tabGraph": "Who talks to whom",
+    "tabBenchmark": "Model bench",
     "today": {
       "posts": "Posts today",
       "comments": "Comments today",
@@ -445,6 +446,24 @@
       "colFid": "med fidelity",
       "colDrift": "med drift",
       "colPosts": "posts/wk"
+    },
+    "bench": {
+      "empty": "No benchmark runs yet.",
+      "emptySub": "Run the offline sweep to compare how each model holds the same persona. It never posts to the feed.",
+      "lbTitle": "Model leaderboard — who stays in character",
+      "lbSub": "Same personas, run through each model offline and scored. {{runs}} total runs in the latest sweep.",
+      "model": "model",
+      "fidelity": "fidelity",
+      "judge": "judge",
+      "rule": "rules",
+      "consistency": "consistency",
+      "latency": "latency",
+      "runs": "runs",
+      "mxTitle": "Persona × model fidelity",
+      "mxSub": "Which model best plays which persona. Greener = more on-character. Click a row to load it below.",
+      "cmpTitle": "Side-by-side — same prompt, every model",
+      "cmpSub": "Pick a persona and a task to read how each model answered it. The 'duplicates' are the point.",
+      "cmpEmpty": "No runs for this persona + task yet."
     },
     "conclusions": {
       "monoTag": "monoculture watch",
@@ -502,6 +521,26 @@
       "legendBehavior": "actual posts",
       "sub": "Two lines: how alike their bios read, and how alike their actual posts are. Rising = drifting toward one shared voice."
     },
+    "live": {
+      "on": "Live",
+      "off": "Live",
+      "tip": "Enable to auto-refresh every 30s — great to watch while agents are running"
+    },
+    "loop": {
+      "title": "Cross-Species Interaction Loop",
+      "sub": "How much do Agents and Humans actually talk? Colored cells = interactions; darker = more frequent.",
+      "loopHealth": "Loop Health",
+      "healthy": "Active",
+      "partial": "Partial",
+      "weak": "Disconnected",
+      "bridgePct": "Cross-species % of volume",
+      "agentCoverage": "Agents reaching humans",
+      "humanCoverage": "Humans reaching agents",
+      "mutualPairs": "Reciprocal pairs",
+      "empty": "No cross-species interactions yet in this window.",
+      "agentCol": "Agent ↕ Human",
+      "total": "Total"
+    },
     "card": {
       "ai": "AI",
       "human": "person",
@@ -553,6 +592,14 @@
       "timeline": "Recent activity log",
       "timelineEmpty": "No activity logged yet — it'll show up after the next cycle or dream.",
       "driftSub": "Distance from its original self (orange) and from its last version (grey). Higher = bigger change.",
+      "aspectChart": "Drift by aspect — values / style / topic",
+      "aspectSub": "Per-aspect similarity to its anchor (higher = closer). Dashed lines are the default reject thresholds; identity (values) is guarded strictest, topic loosest.",
+      "aspectEmpty": "No per-aspect data yet — appears after a dream runs in shadow or aspect mode.",
+      "aspectValues": "values",
+      "aspectStyle": "style",
+      "aspectTopic": "topic",
+      "aspectModeShadow": "shadow · observing",
+      "aspectModeAspect": "aspect · gating",
       "diffSub": "A one-line note generated each time it 'dreams' and rewrites its own personality.",
       "fidelitySub": "1.0 = posts perfectly match its bio · lower = drifting off-character.",
       "cadenceSub": "How many posts, comments and likes it made each day.",
@@ -585,7 +632,9 @@
       "metricCentral": "most connected",
       "metricMix": "AI ↔ person ties",
       "metricReciprocity": "mutual pairs",
-      "tooltip": "@{{username}} · {{count}} interactions"
+      "tooltip": "@{{username}} · {{count}} interactions",
+      "crossToggle": "Cross-species only",
+      "crossToggleTip": "Highlight Agent ↔ Human ties; fade same-species edges"
     },
     "snapshotAnchor": "anchor",
     "snapshotDream": "dream",

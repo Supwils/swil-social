@@ -132,9 +132,11 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[]): Positioned[] {
 export function InteractionGraph({
   data,
   onSelect,
+  crossSpeciesOnly = false,
 }: {
   data: InteractionGraphDTO;
   onSelect: (username: string) => void;
+  crossSpeciesOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const [hover, setHover] = useState<string | null>(null);
@@ -244,9 +246,15 @@ export function InteractionGraph({
           const a = byName.get(e.source);
           const b = byName.get(e.target);
           if (!a || !b) return null;
+          const isCrossSpecies = a.isAgent !== b.isAgent;
           const highlighted = neighbours ? neighbours.has(e.source) && neighbours.has(e.target) : false;
-          const dimmed = neighbours ? !highlighted : false;
-          const color = KIND_COLOR[dominantKind(e)];
+          const dimmedByHover = neighbours ? !highlighted : false;
+          const dimmedByCross = crossSpeciesOnly && !isCrossSpecies;
+          const dimmed = dimmedByHover || dimmedByCross;
+          const boosted = crossSpeciesOnly && isCrossSpecies && !dimmedByHover;
+          const color = isCrossSpecies && crossSpeciesOnly
+            ? 'var(--color-warning)'
+            : KIND_COLOR[dominantKind(e)];
           return (
             <line
               key={`${e.source}-${e.target}`}
@@ -255,9 +263,19 @@ export function InteractionGraph({
               x2={b.x}
               y2={b.y}
               stroke={color}
-              strokeWidth={0.6 + (e.weight / maxWeight) * 3.4}
-              strokeOpacity={dimmed ? 0.05 : highlighted ? 0.85 : 0.22 + (e.weight / maxWeight) * 0.4}
-              markerEnd={highlighted ? 'url(#lab-arrow)' : undefined}
+              strokeWidth={
+                boosted
+                  ? 1.2 + (e.weight / maxWeight) * 4.8
+                  : 0.6 + (e.weight / maxWeight) * 3.4
+              }
+              strokeOpacity={
+                dimmed
+                  ? 0.04
+                  : highlighted || boosted
+                    ? 0.9
+                    : 0.22 + (e.weight / maxWeight) * 0.4
+              }
+              markerEnd={highlighted || boosted ? 'url(#lab-arrow)' : undefined}
             />
           );
         })}

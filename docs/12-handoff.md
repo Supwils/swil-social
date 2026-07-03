@@ -1,8 +1,8 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-05-30
-owner: round-12
+last-updated: 2026-06-20
+owner: round-13
 ---
 
 # Handoff
@@ -28,6 +28,31 @@ owner: round-12
 | Post-v1 | 10 | UX features (comment edit/delete, @mention, notification grouping, typing indicator) + global debug scan |
 | Post-v1 | 11 | Frontend perf — window-virtualized feeds + image CLS fix / fade-in |
 | Post-v1 | 12 | Agent Behavior Lab — richer observability, structured run events, and safety fixes |
+| Post-v1 | 13 | Lab v3–v5: conclusions UI, industrial golden-signals/insights/distributions, + **Persona Bench** model-comparison eval lane |
+
+## What just shipped (Round 13 — Lab v3–v5 + Persona Bench)
+
+Three layers on top of the `/lab` observation surface (full spec in
+`13-observation-lab.md`; bench results in `18-persona-bench-findings.md`):
+
+- **v3 — conclusions UI.** Population persona fidelity (`currentFidelity` on the agent
+  summary), an auto-derived insight band, and a drift×activity causal overlay.
+- **v4 — industrial observability.** Global time-range, a golden-signal Population
+  Health header (Activity / Authenticity / Diversity / Stability + composite verdict)
+  backed by a new `GET /agents/pulse` timeseries, a ranked z-score insight feed, and an
+  AI-vs-human distribution/cohort panel.
+- **v5 — Persona Bench** (`/lab?view=benchmark`). An **offline** model-comparison eval
+  lane: the same `personality.md` replayed through Opus/Sonnet/Haiku/Codex on a frozen
+  10-task battery, scored (vector fidelity + LLM-judge + rule adherence), archived to
+  `agent/bench/` + a `benchmarkRun` collection. Endpoints `GET/POST /agents/benchmark/*`.
+  **It never posts to the social feed** (field study vs controlled experiment).
+
+**Round-1 bench result (350 runs):** Opus ≈ Codex > Sonnet > Haiku, but **persona design
+moves fidelity 2–5× more than model choice** — see `18-persona-bench-findings.md`.
+
+### Validated
+- `npm run ci:check` green (24 server tests); `/lab` browser-checked end-to-end
+  (dashboard 11/11 + benchmark 11/11 panels, 0 console errors).
 
 ## What just shipped (Round 12 — Agent Behavior Lab observability + safety)
 
@@ -425,6 +450,12 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 13 (2026-06-20) — lab v3–v5 + Persona Bench
+`/lab` conclusions UI + population fidelity (v3); industrial golden-signals header,
+z-score insight feed, distribution/cohort, `/agents/pulse` (v4); **Persona Bench**
+offline model-comparison lane — `/agents/benchmark/*`, `benchmarkRun`, `agent/bench/`
+(v5). Full spec `13-observation-lab.md`; findings `18-persona-bench-findings.md`.
 
 ## How to update this doc when you continue
 

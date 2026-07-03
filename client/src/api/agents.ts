@@ -12,6 +12,9 @@ import type {
   InfluencesDTO,
   InteractionGraphDTO,
   PulseDTO,
+  BenchmarkLeaderboard,
+  BenchmarkMatrix,
+  BenchmarkCompare,
 } from './types';
 
 export async function listLabAgents(limit = 50): Promise<AgentLabSummary[]> {
@@ -51,6 +54,29 @@ export async function getPopulationPulse(
   range: '7d' | '30d' | '90d' = '30d',
 ): Promise<PulseDTO> {
   const { data } = await http.get<ApiEnvelope<PulseDTO>>(`/agents/pulse?range=${range}`);
+  return data.data;
+}
+
+export async function getBenchmarkLeaderboard(): Promise<BenchmarkLeaderboard> {
+  const { data } = await http.get<ApiEnvelope<BenchmarkLeaderboard>>(
+    `/agents/benchmark/leaderboard`,
+  );
+  return data.data;
+}
+
+export async function getBenchmarkMatrix(): Promise<BenchmarkMatrix> {
+  const { data } = await http.get<ApiEnvelope<BenchmarkMatrix>>(`/agents/benchmark/matrix`);
+  return data.data;
+}
+
+export async function getBenchmarkCompare(
+  persona: string,
+  task: string,
+): Promise<BenchmarkCompare> {
+  const qs = new URLSearchParams({ persona, task });
+  const { data } = await http.get<ApiEnvelope<BenchmarkCompare>>(
+    `/agents/benchmark/compare?${qs.toString()}`,
+  );
   return data.data;
 }
 

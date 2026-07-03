@@ -200,6 +200,8 @@ export interface AgentLabSummary {
   currentFidelity: number | null;
 }
 
+export type DriftAspect = 'values' | 'style' | 'topic';
+
 export interface DriftPoint {
   capturedAt: string;
   distanceFromAnchor: number;
@@ -207,6 +209,14 @@ export interface DriftPoint {
   snapshotType: 'anchor' | 'dream';
   excerpt: string;
   diffNarrative?: string;
+  /** Per-aspect drift *sims* in [-1, 1]; absent on snapshots predating the feature. */
+  aspects?: {
+    mode: 'shadow' | 'aspect';
+    values: number;
+    style: number;
+    topic: number;
+    breached: DriftAspect[];
+  };
 }
 
 export interface AgentEventDTO {
@@ -318,6 +328,49 @@ export interface PulsePoint {
 export interface PulseDTO {
   range: '7d' | '30d' | '90d';
   points: PulsePoint[];
+}
+
+// ── Persona Bench (model-comparison eval lane) ──────────────────────────────
+export interface BenchmarkLeaderboardRow {
+  model: string;
+  runs: number;
+  fidelity: number | null;
+  judge: number | null;
+  rule: number | null;
+  consistency: number | null;
+  latencyMs: number | null;
+}
+export interface BenchmarkLeaderboard {
+  rows: BenchmarkLeaderboardRow[];
+  personas: Array<{ persona: string; display: string }>;
+  tasks: Array<{ taskId: string; kind: string }>;
+  totalRuns: number;
+}
+export interface BenchmarkMatrixCell {
+  persona: string;
+  model: string;
+  fidelity: number | null;
+  judge: number | null;
+  n: number;
+}
+export interface BenchmarkMatrix {
+  models: string[];
+  personas: Array<{ persona: string; display: string }>;
+  cells: BenchmarkMatrixCell[];
+}
+export interface BenchmarkCompareItem {
+  model: string;
+  runIndex: number;
+  output: string;
+  vectorFidelity: number | null;
+  judgeScore: number | null;
+  ruleScore: number | null;
+  ruleDetail: string;
+}
+export interface BenchmarkCompare {
+  persona: string;
+  task: string;
+  items: BenchmarkCompareItem[];
 }
 
 export interface AnomalyAlert {

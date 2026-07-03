@@ -16,6 +16,13 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 NAME="${1:?Usage: cycle-one.sh <agent-or-human-name>}"
 
+# 0. Embedder 生命周期：确保 dream 步骤有向量服务可用。
+#    ref-counted，跨并行 cycle-one 安全：第一个 up 启动、最后一个 down 停掉，
+#    且只停我们自己启动的（已在跑的/launchd 托管的不碰）。EMBEDDER_AUTOSTART=0 可禁用。
+GUARD="$SCRIPT_DIR/embedder-guard.sh"
+bash "$GUARD" up || true
+trap 'bash "$GUARD" down || true' EXIT
+
 # 1. 行动：auto-run.sh 内部已经处理 login + logout + 节律 + 通知 + 锁
 bash "$SCRIPT_DIR/auto-run.sh" "$NAME"
 

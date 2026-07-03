@@ -42,6 +42,17 @@ MIN_NEW_MEMORIES="${DREAM_MIN_NEW_MEMORIES:-8}"
 # Constitution（feature B）参数
 # DRIFT_THRESHOLD 是 cosine *similarity* 下限；候选 personality 与 anchor 的余弦相似度低于此值即拒绝。
 DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-0.82}"
+# Per-aspect drift（见 docs/superpowers/specs/2026-07-02-per-aspect-drift-design.md）
+#   DRIFT_MODE=scalar  → 传统单标量 gate（完全向后兼容，env 缺省时的安全值）
+#             =shadow  → 三维照算/照存/照显示，但 gate 仍走单标量（纯观测，用于校准阈值）
+#             =aspect  → 分维阈值决定接受/拒绝（任一维越界即拒）
+DRIFT_MODE="${DRIFT_MODE:-scalar}"
+DRIFT_THRESHOLD_VALUES="${DRIFT_THRESHOLD_VALUES:-0.88}"
+DRIFT_THRESHOLD_STYLE="${DRIFT_THRESHOLD_STYLE:-0.80}"
+DRIFT_THRESHOLD_TOPIC="${DRIFT_THRESHOLD_TOPIC:-0.70}"
+ASPECT_PROMPT_VERSION="${ASPECT_PROMPT_VERSION:-1}"
+# 用固定中立模型蒸馏 aspect 卡，保证「量漂移的尺子」对所有 agent 一致（与 agent 自己的后端无关）
+ASPECT_DISTILL_MODEL="${ASPECT_DISTILL_MODEL:-haiku}"
 # Echo chamber：最近 N 条本人帖子之间的 cosine variance 若低于此值，下一轮 dream 触发"换入口"提示
 ECHO_VARIANCE_THRESHOLD="${ECHO_VARIANCE_THRESHOLD:-0.04}"
 # 本地 embedder daemon
@@ -170,6 +181,95 @@ PY
     return
   fi
   cat "$dir/personality.md"
+}
+
+# ── Per-aspect drift helpers ─────────────────────────────────────────────────
+
+# Distill a personality into 3 aspect cards via a FIXED neutral model, so the
+# drift ruler is identical across agents regardless of their own backend.
+# Prints compact JSON {"values":…,"style":…,"topic":…} on success, "" on failure.
+_distill_aspects() {
+  local text="$1"
+  local sys usr out
+  sys='你是一个人格分析器。把给定的人物设定压缩成三个维度，每个维度一段、每段不超过 80 个字，只描述该维度本身：
+VALUES = 它相信什么、在乎什么、价值取向；
+STYLE = 它怎么说话：语气、句式、节奏、用词习惯；
+TOPICS = 它谈论的主题领域。
+只输出一个 JSON 对象，形如 {"values":"…","style":"…","topic":"…"}，不要任何解释、代码块或前后缀。'
+  usr="$(printf '【人物设定】\n%s' "$text")"
+  out="$(printf '%s' "$usr" | claude --model "$ASPECT_DISTILL_MODEL" -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
+  # Extract the first {...} object and require all 3 non-empty string keys.
+  # NB: pass $out via argv (not a pipe) — `data | python3 - <<HEREDOC` collides
+  # the piped data with the heredoc program. argv+heredoc is the working idiom.
+  python3 - "$out" <<'PY' 2>/dev/null || echo ""
+import sys, json, re
+raw = sys.argv[1]
+m = re.search(r'\{.*\}', raw, re.DOTALL)
+if not m:
+    sys.exit(1)
+try:
+    obj = json.loads(m.group(0))
+except Exception:
+    sys.exit(1)
+keys = ("values", "style", "topic")
+if not all(k in obj and isinstance(obj[k], str) and obj[k].strip() for k in keys):
+    sys.exit(1)
+print(json.dumps({k: obj[k] for k in keys}, ensure_ascii=False))
+PY
+}
+
+# Compute-or-load the anchor's 3 aspect vectors. Prints JSON
+#   {"values":[…],"style":[…],"topic":[…]}  on success; "" on failure.
+# Cached to <dir>/personality.anchor.aspects.json keyed by sha256(anchor):promptVersion.
+_anchor_aspects() {
+  local dir="$1"
+  local anchor_text cache_file key hash
+  anchor_text="$(_anchor_text_for "$dir")"
+  [[ -z "$anchor_text" ]] && { echo ""; return; }
+  cache_file="$dir/personality.anchor.aspects.json"
+  if command -v shasum >/dev/null 2>&1; then
+    hash="$(printf '%s' "$anchor_text" | shasum -a 256 | awk '{print $1}')"
+  else
+    hash="$(printf '%s' "$anchor_text" | sha256sum | awk '{print $1}')"
+  fi
+  key="${hash}:v${ASPECT_PROMPT_VERSION}"
+  if [[ -f "$cache_file" ]]; then
+    local cached_key
+    cached_key="$(jq -r '.key // ""' "$cache_file" 2>/dev/null || echo "")"
+    if [[ "$cached_key" == "$key" ]]; then
+      local cached_vecs
+      cached_vecs="$(jq -c '.vectors // empty' "$cache_file" 2>/dev/null || echo "")"
+      [[ -n "$cached_vecs" ]] && { printf '%s' "$cached_vecs"; return; }
+    fi
+  fi
+  # Cache miss — distill + embed the anchor once.
+  local cards v_vec s_vec t_vec vectors
+  cards="$(_distill_aspects "$anchor_text")"
+  [[ -z "$cards" ]] && { echo ""; return; }
+  v_vec="$(_embed_text "$(printf '%s' "$cards" | jq -r '.values')")"
+  s_vec="$(_embed_text "$(printf '%s' "$cards" | jq -r '.style')")"
+  t_vec="$(_embed_text "$(printf '%s' "$cards" | jq -r '.topic')")"
+  [[ -z "$v_vec" || -z "$s_vec" || -z "$t_vec" ]] && { echo ""; return; }
+  vectors="$(jq -n --argjson v "$v_vec" --argjson s "$s_vec" --argjson t "$t_vec" \
+    '{values:$v, style:$s, topic:$t}')"
+  jq -n --arg key "$key" --argjson cards "$cards" --argjson vectors "$vectors" \
+    '{key:$key, cards:$cards, vectors:$vectors}' > "$cache_file" 2>/dev/null || true
+  printf '%s' "$vectors"
+}
+
+# _aspect_breached <values_sim> <style_sim> <topic_sim> → JSON array of the aspect
+# names whose sim fell below their configured threshold (may be []).
+_aspect_breached() {
+  python3 - "$1" "$2" "$3" \
+    "$DRIFT_THRESHOLD_VALUES" "$DRIFT_THRESHOLD_STYLE" "$DRIFT_THRESHOLD_TOPIC" <<'PY' 2>/dev/null || echo '[]'
+import sys, json
+v, st, tp, tv, tst, ttp = map(float, sys.argv[1:7])
+br = []
+if v < tv: br.append("values")
+if st < tst: br.append("style")
+if tp < ttp: br.append("topic")
+print(json.dumps(br))
+PY
 }
 
 # Build a brief "## 最近与你对话过的人" block by hitting /notifications.
@@ -508,25 +608,95 @@ PROMPT
 
   # ── Constitution: drift check ────────────────────────────────────────────
   # Reject the dream if it has strayed too far from the agent's anchor identity.
-  # Failure to embed (daemon down) is treated as fail-open: log + continue.
-  local anchor_text candidate_text anchor_vec cand_vec sim drift
+  # DRIFT_MODE selects the gate; aspect_drift_json (may stay empty) is forwarded
+  # to snapshot.sh on accept. Failure to embed/distill fail-opens: the structural
+  # validators above remain the real safety net.
+  local anchor_text candidate_text anchor_vec cand_vec scalar_sim scalar_drift
+  local aspect_drift_json="" aspect_ok=0
   anchor_text="$(_anchor_text_for "$dir")"
   candidate_text="$(cat "$candidate")"
+
+  # (1) whole-doc sim — used by the scalar gate (scalar + shadow modes, and as
+  #     the fallback when aspect distill/embed fails).
   anchor_vec="$(_embed_text "$anchor_text" || echo '')"
   cand_vec="$(_embed_text "$candidate_text" || echo '')"
   if [[ -n "$anchor_vec" && -n "$cand_vec" ]]; then
-    sim="$(_cosine_sim "$anchor_vec" "$cand_vec")"
-    drift="$(python3 -c "print(round(1 - float('$sim'), 4))" 2>/dev/null || echo "0")"
-    if python3 -c "import sys; sys.exit(0 if float('$sim') < float('$DRIFT_THRESHOLD') else 1)" 2>/dev/null; then
-      _log "FAIL $name — drift too large (sim=$sim, threshold=$DRIFT_THRESHOLD); keeping original"
-      _post_agent_event "$dir" "dream" "dream" "fail" "-" "drift too large" "$DRIFT_THRESHOLD" "" "$(jq -n --argjson sim "$sim" --argjson drift "$drift" '{similarity: $sim, drift: $drift}')"
-      rm -f "$candidate"
-      return
+    scalar_sim="$(_cosine_sim "$anchor_vec" "$cand_vec")"
+    scalar_drift="$(python3 -c "print(round(1 - float('$scalar_sim'), 4))" 2>/dev/null || echo "0")"
+  fi
+
+  # (2) per-aspect sims — computed in shadow + aspect modes.
+  if [[ "$DRIFT_MODE" != "scalar" ]]; then
+    local anchor_aspects cand_cards
+    anchor_aspects="$(_anchor_aspects "$dir")"
+    cand_cards="$(_distill_aspects "$candidate_text")"
+    if [[ -n "$anchor_aspects" && -n "$cand_cards" ]]; then
+      local cvv csv ctv avv asv atv vsim ssim tsim breached
+      cvv="$(_embed_text "$(printf '%s' "$cand_cards" | jq -r '.values')")"
+      csv="$(_embed_text "$(printf '%s' "$cand_cards" | jq -r '.style')")"
+      ctv="$(_embed_text "$(printf '%s' "$cand_cards" | jq -r '.topic')")"
+      avv="$(printf '%s' "$anchor_aspects" | jq -c '.values')"
+      asv="$(printf '%s' "$anchor_aspects" | jq -c '.style')"
+      atv="$(printf '%s' "$anchor_aspects" | jq -c '.topic')"
+      if [[ -n "$cvv" && -n "$csv" && -n "$ctv" ]]; then
+        vsim="$(_cosine_sim "$cvv" "$avv")"
+        ssim="$(_cosine_sim "$csv" "$asv")"
+        tsim="$(_cosine_sim "$ctv" "$atv")"
+        breached="$(_aspect_breached "$vsim" "$ssim" "$tsim")"
+        aspect_drift_json="$(jq -n --arg mode "$DRIFT_MODE" --argjson pv "$ASPECT_PROMPT_VERSION" \
+          --argjson v "$vsim" --argjson s "$ssim" --argjson t "$tsim" --argjson br "$breached" \
+          '{mode:$mode, promptVersion:$pv, values:$v, style:$s, topic:$t, breached:$br}')"
+        aspect_ok=1
+      fi
     fi
-    _log "$name — drift OK (sim=$sim, drift=$drift)"
+    (( aspect_ok == 0 )) && _log "WARN $name — aspect distill/embed failed, falling back to scalar drift"
+  fi
+
+  # (3) decision
+  local reject=0 reject_reason=""
+  if [[ "$DRIFT_MODE" == "aspect" && "$aspect_ok" == "1" ]]; then
+    if [[ "$(printf '%s' "$aspect_drift_json" | jq -r '.breached | length')" != "0" ]]; then
+      local br_list av as at
+      br_list="$(printf '%s' "$aspect_drift_json" | jq -r '.breached | join(", ")')"
+      av="$(printf '%s' "$aspect_drift_json" | jq -r '.values')"
+      as="$(printf '%s' "$aspect_drift_json" | jq -r '.style')"
+      at="$(printf '%s' "$aspect_drift_json" | jq -r '.topic')"
+      reject=1
+      reject_reason="aspect drift: [$br_list] breached (values=$av, style=$as, topic=$at)"
+    fi
   else
-    _log "WARN $name — embedder unreachable, skipping drift check"
-    _post_agent_event "$dir" "dream" "dream" "warn" "-" "embedder unreachable, skipped drift check"
+    # scalar gate — covers scalar mode, shadow mode, and aspect-mode fallback
+    if [[ -n "${scalar_sim:-}" ]]; then
+      if python3 -c "import sys; sys.exit(0 if float('$scalar_sim') < float('$DRIFT_THRESHOLD') else 1)" 2>/dev/null; then
+        reject=1
+        reject_reason="drift too large (sim=$scalar_sim, threshold=$DRIFT_THRESHOLD)"
+      fi
+    else
+      _log "WARN $name — embedder unreachable, skipping drift check"
+      _post_agent_event "$dir" "dream" "dream" "warn" "-" "embedder unreachable, skipped drift check"
+    fi
+  fi
+
+  if (( reject == 1 )); then
+    _log "FAIL $name — $reject_reason; keeping original"
+    local fail_metrics
+    if [[ -n "$aspect_drift_json" ]]; then
+      fail_metrics="$(printf '%s' "$aspect_drift_json" | jq -c '{aspects:{values,style,topic}, breached, mode}')"
+    else
+      fail_metrics="$(jq -n --argjson sim "${scalar_sim:-1}" --argjson drift "${scalar_drift:-0}" '{similarity: $sim, drift: $drift}')"
+    fi
+    _post_agent_event "$dir" "dream" "dream" "fail" "-" "$reject_reason" "$DRIFT_THRESHOLD" "" "$fail_metrics"
+    rm -f "$candidate"
+    return
+  fi
+
+  if [[ "$DRIFT_MODE" == "aspect" && "$aspect_ok" == "1" ]]; then
+    _log "$name — aspect drift OK ($(printf '%s' "$aspect_drift_json" | jq -r '"values="+(.values|tostring)+" style="+(.style|tostring)+" topic="+(.topic|tostring)'))"
+  elif [[ -n "${scalar_sim:-}" ]]; then
+    local shadow_note=""
+    [[ "$DRIFT_MODE" == "shadow" && "$aspect_ok" == "1" ]] && \
+      shadow_note=" [shadow aspects: $(printf '%s' "$aspect_drift_json" | jq -r '"v="+(.values|tostring)+" s="+(.style|tostring)+" t="+(.topic|tostring)+" breached="+(.breached|tostring)')]"
+    _log "$name — drift OK (sim=$scalar_sim, drift=$scalar_drift)$shadow_note"
   fi
 
   # ── Dream diff narrative (Feature 5) ─────────────────────────────────────
@@ -565,7 +735,8 @@ PROMPT
   # ── Snapshot ingest (feature A) ──────────────────────────────────────────
   # Push the new personality + its embedding to the server so /lab can show
   # the drift trajectory. Non-fatal: server might be down, network might fail.
-  if NARRATIVE_OVERRIDE="$diff_narrative" bash "$SCRIPT_DIR/snapshot.sh" "$name" >>"$LOG_FILE" 2>&1; then
+  if NARRATIVE_OVERRIDE="$diff_narrative" ASPECT_DRIFT_OVERRIDE="$aspect_drift_json" \
+    bash "$SCRIPT_DIR/snapshot.sh" "$name" >>"$LOG_FILE" 2>&1; then
     _log "$name — snapshot uploaded"
     _post_agent_event "$dir" "snapshot" "snapshot" "success" "-" "snapshot uploaded"
   else

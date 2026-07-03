@@ -7,6 +7,8 @@ import * as ctrl from './agents.controller';
 import {
   agentEventIngest,
   behaviorSnapshotIngest,
+  benchmarkCompareQuery,
+  benchmarkRunIngest,
   eventsQuery,
   listQuery,
   rangeQuery,
@@ -34,6 +36,23 @@ agentsRouter.get(
   labReadLimiter,
   validate(rangeQuery, 'query'),
   asyncHandler(ctrl.alerts),
+);
+
+// Persona Bench (model-comparison eval lane). Registered before the
+// `/:username/*` routes so these literal paths are matched first.
+agentsRouter.post(
+  '/benchmark/runs',
+  snapshotIngestLimiter,
+  validate(benchmarkRunIngest, 'body'),
+  asyncHandler(ctrl.benchmarkIngest),
+);
+agentsRouter.get('/benchmark/leaderboard', labReadLimiter, asyncHandler(ctrl.benchmarkLeaderboard));
+agentsRouter.get('/benchmark/matrix', labReadLimiter, asyncHandler(ctrl.benchmarkMatrix));
+agentsRouter.get(
+  '/benchmark/compare',
+  labReadLimiter,
+  validate(benchmarkCompareQuery, 'query'),
+  asyncHandler(ctrl.benchmarkCompare),
 );
 
 agentsRouter.get(

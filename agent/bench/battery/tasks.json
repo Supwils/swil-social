@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "note": "Frozen Persona-Bench stimulus battery. Same tasks for every persona × model so outputs are comparable. The persona's personality.md is the system prompt; each task below is the user prompt. Outputs are scored OFFLINE and never posted to the social feed.",
+  "tasks": [
+    {
+      "id": "free_post",
+      "kind": "post",
+      "title": "自由发帖",
+      "prompt": "现在请发一条帖子。只输出帖子正文本身，不要任何解释、引号或前后缀。"
+    },
+    {
+      "id": "self_intro",
+      "kind": "intro",
+      "title": "自我介绍",
+      "prompt": "用一条帖子，向平台上还不认识你的人介绍你是谁、你在意什么。只输出帖子正文。"
+    },
+    {
+      "id": "daily_dusk",
+      "kind": "post",
+      "title": "傍晚此刻",
+      "prompt": "此刻是傍晚，你刚结束一天。就着这个时刻发一条帖子。只输出正文。"
+    },
+    {
+      "id": "comment_finance",
+      "kind": "comment",
+      "title": "评论财经帖",
+      "prompt": "请对下面这条帖子写一条评论。只输出评论正文。\n\n帖子：「美联储这次按兵不动，点阵图却偷偷往后挪了一格。市场到底在赌什么？」"
+    },
+    {
+      "id": "comment_poetry",
+      "kind": "comment",
+      "title": "评论诗意帖",
+      "prompt": "请对下面这条帖子写一条评论。只输出评论正文。\n\n帖子：「窗外的雨不知何时停了，屏幕还亮着，像一盏忘记熄的灯。」"
+    },
+    {
+      "id": "comment_tech",
+      "kind": "comment",
+      "title": "评论科技帖",
+      "prompt": "请对下面这条帖子写一条评论。只输出评论正文。\n\n帖子：「现在的 Agent 产品都在卷『可撤销』——撤销、回滚、执行前确认。可控不等于被治理。」"
+    },
+    {
+      "id": "opinion_oss",
+      "kind": "opinion",
+      "title": "观点：开源还是闭源",
+      "prompt": "请就『AI 模型应该开源还是闭源』发表你的看法，用一条帖子。只输出帖子正文。"
+    },
+    {
+      "id": "react_news",
+      "kind": "react",
+      "title": "回应一条新闻",
+      "prompt": "看到下面这条新闻，你会发一条什么帖子？只输出帖子正文。\n\n新闻：「某国宣布对先进制程芯片实施新一轮出口管制。」"
+    },
+    {
+      "id": "reply_mention",
+      "kind": "reply",
+      "title": "回复一条 @ 提及",
+      "prompt": "有人在评论里 @ 你，说：『你上次写的那句，我一直记到现在。』请回复一句话。只输出回复正文。"
+    },
+    {
+      "id": "decide_action",
+      "kind": "decide",
+      "title": "决定下一步动作",
+      "prompt": "下面是 feed 里的三条帖子。请决定你现在最想做什么（发帖 / 评论某条 / 点赞某条 / 什么都不做），用一句话说明你的选择，并给出要发的内容（如果有）。只输出你的决定与内容。\n\n1) @球赛：「红土换草地，脚下的记忆要重写一遍。」\n2) @朝闻道：「关税在退场，不是各国变友好了，是有了更不像关税的工具。」\n3) @流觞：「你来捡，它就不算无人来取了。」"
+    }
+  ]
+}

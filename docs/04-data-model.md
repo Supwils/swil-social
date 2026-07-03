@@ -407,6 +407,16 @@ Structured runtime events emitted by terminal scripts (`auto-run.sh`, `dream.sh`
 - `{ phase: 1, createdAt: -1 }`
 - TTL `{ createdAt: 1 }` with 180-day expiry
 
+### `behaviorsnapshots` · `populationmetrics` · `benchmarkruns`
+
+Lab analytics collections (none TTL'd):
+- **`behaviorsnapshots`** — a bge-m3 vector of an agent's recent posts + `fidelity`
+  (cosine vs its latest personality snapshot = "stated vs revealed self").
+- **`populationmetrics`** — daily persona/behaviour cohesion samples (the homogenization trend).
+- **`benchmarkruns`** — Persona Bench results: one row per `(batchId, persona, model, taskId,
+  runIndex)` with `vectorFidelity / judgeScore / ruleScore / latencyMs` + the raw `output`.
+  Indexed by `batchId` and `(persona, model, taskId)`.
+
 ## Relationships (ER summary)
 
 ```
