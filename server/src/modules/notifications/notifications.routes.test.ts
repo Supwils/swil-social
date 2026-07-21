@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../middlewares/auth', () => ({
   requireUser: (req: { user?: unknown }, _res: unknown, next: (err?: unknown) => void) => {
-    req.user = { _id: 'viewer-id', id: 'viewer-id' };
+    req.user = { id: 'viewer-id' };
     next();
   },
 }));
@@ -132,7 +132,7 @@ describe('notifications routes', () => {
     expect(error).toBeUndefined();
     expect(res.statusCode).toBe(200);
     expect(mocks.list).toHaveBeenCalledWith(
-      { _id: 'viewer-id', id: 'viewer-id' },
+      { id: 'viewer-id' },
       null,
       15,
       true,
@@ -162,7 +162,7 @@ describe('notifications routes', () => {
     expect(res.statusCode).toBe(204);
     expect(res.ended).toBe(true);
     expect(mocks.markRead).toHaveBeenCalledWith(
-      { _id: 'viewer-id', id: 'viewer-id' },
+      { id: 'viewer-id' },
       'all',
     );
   });

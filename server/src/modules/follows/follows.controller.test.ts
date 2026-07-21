@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
 import type { Response } from 'express';
+import { newId } from '../../lib/id';
 
 const mocks = vi.hoisted(() => ({
   follow: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('./follows.service', () => ({
 
 import { encodeCursor } from '../../lib/pagination';
 import { AppError } from '../../lib/errors';
-import type { UserDocument } from '../../models/user.model';
+import type { UserRow } from '../../lib/dto';
 import {
   checkFollowing,
   follow,
@@ -29,11 +29,8 @@ import {
   unfollow,
 } from './follows.controller';
 
-function makeUser(id = new Types.ObjectId()): UserDocument {
-  return {
-    _id: id,
-    id: id.toString(),
-  } as UserDocument;
+function makeUser(id = newId()): UserRow {
+  return { id } as unknown as UserRow;
 }
 
 function makeRes() {
@@ -96,7 +93,7 @@ describe('follows.controller', () => {
   it('parses cursor, limit and search for following lists', async () => {
     const cursor = encodeCursor({
       t: '2026-04-24T00:00:00.000Z',
-      id: new Types.ObjectId().toString(),
+      id: newId(),
     });
     mocks.listFollowing.mockResolvedValue({ items: [], nextCursor: null });
     const res = makeRes();

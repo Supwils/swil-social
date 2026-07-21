@@ -1,202 +1,154 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { bookmarks, posts, users } from '../../db/schema';
+import type { PostRow, UserRow } from '../../lib/dto';
+import { newId } from '../../lib/id';
+import { resetDb } from '../../test/db-reset';
+import { bookmark, listBookmarks, unbookmark } from './bookmarks.service';
 
-const mocks = vi.hoisted(() => ({
-  bookmarkCreate: vi.fn(),
-  bookmarkDeleteOne: vi.fn(),
-  bookmarkFind: vi.fn(),
-  postFindOne: vi.fn(),
-  postFind: vi.fn(),
-  hydratePosts: vi.fn(),
-}));
-
-vi.mock('../../models/bookmark.model', () => ({
-  Bookmark: {
-    create: mocks.bookmarkCreate,
-    deleteOne: mocks.bookmarkDeleteOne,
-    find: mocks.bookmarkFind,
-  },
-}));
-
-vi.mock('../../models/post.model', () => ({
-  Post: {
-    findOne: mocks.postFindOne,
-    find: mocks.postFind,
-  },
-}));
-
-vi.mock('../posts/posts.service', () => ({
-  hydratePosts: mocks.hydratePosts,
-}));
-
-import { bookmark, unbookmark, listBookmarks } from './bookmarks.service';
-import type { UserDocument } from '../../models/user.model';
-
-const viewer = { _id: new Types.ObjectId() } as UserDocument;
-
-// Minimal post shape that satisfies toPostDTO (called inside listBookmarks)
-function makePost(id: Types.ObjectId) {
-  return {
-    _id: id,
-    authorId: new Types.ObjectId(),
-    text: 'sample',
-    images: [],
-    tagIds: [],
-    mentionIds: [],
-    visibility: 'public',
-    likeCount: 0,
-    commentCount: 0,
-    repostCount: 0,
-    status: 'active',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
+async function seedUser(username: string): Promise<UserRow> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      username,
+      usernameDisplay: username,
+      email: `${username}@example.com`,
+      displayName: username,
+    })
+    .returning();
+  return u;
 }
 
-// Minimal author shape for hydratePosts ctx
-function makeCtx() {
-  return {
-    author: {
-      _id: new Types.ObjectId(),
-      username: 'u',
-      displayName: 'U',
-      avatarUrl: '',
-      isAgent: false,
-    },
-    tags: [],
-    mentions: [],
-    likedByMe: false,
-  };
+async function seedPost(
+  authorId: string,
+  over: Partial<typeof posts.$inferInsert> = {},
+): Promise<PostRow> {
+  const [p] = await db
+    .insert(posts)
+    .values({ authorId, text: 'sample', ...over })
+    .returning();
+  return p;
+}
+
+async function seedBookmark(userId: string, postId: string, createdAt?: Date): Promise<void> {
+  await db.insert(bookmarks).values({ userId, postId, ...(createdAt ? { createdAt } : {}) });
 }
 
 describe('bookmarks.service', () => {
-  beforeEach(() => {
-    mocks.postFindOne.mockReturnValue({
-      select: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
-    });
-  });
-
+  beforeEach(resetDb);
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   describe('bookmark', () => {
     it('creates a Bookmark for a valid active post', async () => {
-      mocks.bookmarkCreate.mockResolvedValue({});
-      const postId = new Types.ObjectId().toString();
-      const r = await bookmark(viewer, postId);
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const post = await seedPost(author.id);
+
+      const r = await bookmark(viewer, post.id);
       expect(r).toEqual({ bookmarked: true });
-      expect(mocks.bookmarkCreate).toHaveBeenCalledOnce();
+
+      const rows = await db
+        .select()
+        .from(bookmarks)
+        .where(and(eq(bookmarks.userId, viewer.id), eq(bookmarks.postId, post.id)));
+      expect(rows).toHaveLength(1);
     });
 
-    it('returns success on duplicate-key (already bookmarked)', async () => {
-      mocks.bookmarkCreate.mockRejectedValue({ code: 11000 });
-      const postId = new Types.ObjectId().toString();
-      const r = await bookmark(viewer, postId);
+    it('returns success on duplicate (already bookmarked) and stays idempotent', async () => {
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const post = await seedPost(author.id);
+
+      await bookmark(viewer, post.id);
+      const r = await bookmark(viewer, post.id);
       expect(r).toEqual({ bookmarked: true });
+
+      const rows = await db
+        .select()
+        .from(bookmarks)
+        .where(and(eq(bookmarks.userId, viewer.id), eq(bookmarks.postId, post.id)));
+      expect(rows).toHaveLength(1);
     });
 
-    it('rethrows non-duplicate errors', async () => {
-      mocks.bookmarkCreate.mockRejectedValue(new Error('write conflict'));
-      const postId = new Types.ObjectId().toString();
-      await expect(bookmark(viewer, postId)).rejects.toThrow('write conflict');
-    });
+    it('rejects an unknown post id', async () => {
+      const viewer = await seedUser('viewer');
 
-    it('rejects an invalid ObjectId early', async () => {
+      await expect(bookmark(viewer, newId())).rejects.toMatchObject({ status: 404 });
       await expect(bookmark(viewer, 'not-an-id')).rejects.toMatchObject({ status: 404 });
-      expect(mocks.postFindOne).not.toHaveBeenCalled();
+
+      const rows = await db.select().from(bookmarks).where(eq(bookmarks.userId, viewer.id));
+      expect(rows).toHaveLength(0);
     });
 
-    it('rejects a missing or non-active post', async () => {
-      mocks.postFindOne.mockReturnValue({ select: vi.fn().mockResolvedValue(null) });
-      await expect(bookmark(viewer, new Types.ObjectId().toString())).rejects.toMatchObject({
-        status: 404,
-      });
-      expect(mocks.bookmarkCreate).not.toHaveBeenCalled();
+    it('rejects a non-active post', async () => {
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const hidden = await seedPost(author.id, { status: 'deleted' });
+
+      await expect(bookmark(viewer, hidden.id)).rejects.toMatchObject({ status: 404 });
+
+      const rows = await db.select().from(bookmarks).where(eq(bookmarks.userId, viewer.id));
+      expect(rows).toHaveLength(0);
     });
   });
 
   describe('unbookmark', () => {
     it('deletes the bookmark for the viewer/post pair', async () => {
-      mocks.bookmarkDeleteOne.mockResolvedValue({ deletedCount: 1 });
-      const postId = new Types.ObjectId().toString();
-      const r = await unbookmark(viewer, postId);
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const post = await seedPost(author.id);
+      await seedBookmark(viewer.id, post.id);
+
+      const r = await unbookmark(viewer, post.id);
       expect(r).toEqual({ bookmarked: false });
-      expect(mocks.bookmarkDeleteOne).toHaveBeenCalledWith({
-        userId: viewer._id,
-        postId: expect.any(Types.ObjectId),
-      });
+
+      const rows = await db
+        .select()
+        .from(bookmarks)
+        .where(and(eq(bookmarks.userId, viewer.id), eq(bookmarks.postId, post.id)));
+      expect(rows).toHaveLength(0);
     });
 
     it('still returns success when nothing was bookmarked (idempotent)', async () => {
-      mocks.bookmarkDeleteOne.mockResolvedValue({ deletedCount: 0 });
-      const postId = new Types.ObjectId().toString();
-      await expect(unbookmark(viewer, postId)).resolves.toEqual({ bookmarked: false });
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const post = await seedPost(author.id);
+
+      await expect(unbookmark(viewer, post.id)).resolves.toEqual({ bookmarked: false });
     });
   });
 
   describe('listBookmarks', () => {
-    it('preserves bookmark order (most recent first) when posts come back unsorted', async () => {
-      const p1 = new Types.ObjectId();
-      const p2 = new Types.ObjectId();
-      const p3 = new Types.ObjectId();
-      // Bookmarks: p1, p2, p3 — newest first
-      const chain = {
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        lean: vi.fn().mockResolvedValue([
-          { _id: new Types.ObjectId(), createdAt: new Date(), postId: p1 },
-          { _id: new Types.ObjectId(), createdAt: new Date(), postId: p2 },
-          { _id: new Types.ObjectId(), createdAt: new Date(), postId: p3 },
-        ]),
-      };
-      mocks.bookmarkFind.mockReturnValue(chain);
-      // Posts come back in DB order, possibly different from bookmark order
-      mocks.postFind.mockReturnValue({
-        lean: vi.fn().mockResolvedValue([
-          makePost(p3),
-          makePost(p1),
-          makePost(p2),
-        ]),
-      });
-      // hydratePosts returns one ctx per post id
-      mocks.hydratePosts.mockResolvedValue(
-        new Map([
-          [p1.toString(), makeCtx()],
-          [p2.toString(), makeCtx()],
-          [p3.toString(), makeCtx()],
-        ]),
-      );
+    it('preserves bookmark order (most recent first)', async () => {
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const p1 = await seedPost(author.id, { text: 'p1' });
+      const p2 = await seedPost(author.id, { text: 'p2' });
+      const p3 = await seedPost(author.id, { text: 'p3' });
+
+      // p1 newest, p2 middle, p3 oldest — expected order is p1, p2, p3.
+      const base = Date.now();
+      await seedBookmark(viewer.id, p1.id, new Date(base));
+      await seedBookmark(viewer.id, p2.id, new Date(base - 1000));
+      await seedBookmark(viewer.id, p3.id, new Date(base - 2000));
 
       const out = await listBookmarks(viewer, undefined, 10);
-      expect(out.items.map((p) => p.id)).toEqual([p1.toString(), p2.toString(), p3.toString()]);
+      expect(out.items.map((p) => p.id)).toEqual([p1.id, p2.id, p3.id]);
       expect(out.nextCursor).toBeNull();
     });
 
     it('produces a cursor when there are more results than the limit', async () => {
-      const ids = Array.from({ length: 11 }, () => new Types.ObjectId());
-      const docs = ids.map((id) => ({
-        _id: new Types.ObjectId(),
-        createdAt: new Date(),
-        postId: id,
-      }));
-      mocks.bookmarkFind.mockReturnValue({
-        sort: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        lean: vi.fn().mockResolvedValue(docs),
-      });
-      mocks.postFind.mockReturnValue({
-        lean: vi.fn().mockResolvedValue(
-          ids.slice(0, 10).map((id) => makePost(id)),
-        ),
-      });
-      const ctxMap = new Map(
-        ids.slice(0, 10).map((id) => [
-          id.toString(),
-          makeCtx(),
-        ]),
-      );
-      mocks.hydratePosts.mockResolvedValue(ctxMap);
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+
+      const base = Date.now();
+      for (let i = 0; i < 11; i++) {
+        const p = await seedPost(author.id, { text: `p${i}` });
+        await seedBookmark(viewer.id, p.id, new Date(base - i * 1000));
+      }
 
       const out = await listBookmarks(viewer, undefined, 10);
       expect(out.items.length).toBeLessThanOrEqual(10);

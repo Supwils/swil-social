@@ -3,17 +3,19 @@ import { io, type Socket } from 'socket.io-client';
 /**
  * Socket.io client singleton.
  *
- * Handshake reuses the `sid` cookie (same-origin via Vite proxy in dev, same-
- * origin in prod). Connect is explicit: `connectRealtime()` after `/auth/me`
- * resolves with a user, `disconnectRealtime()` on logout or 401.
+ * Handshake reuses the `sid` cookie. Same-origin by default (`/`); set
+ * `VITE_SOCKET_URL` at build time to point at a cross-origin backend (e.g. the
+ * Railway API when the SPA is hosted separately on Vercel).
  */
+
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || '/';
 
 let socket: Socket | null = null;
 
 export function connectRealtime(): Socket {
   if (socket && socket.connected) return socket;
   if (!socket) {
-    socket = io('/', {
+    socket = io(SOCKET_URL, {
       withCredentials: true,
       transports: ['websocket', 'polling'],
       autoConnect: false,

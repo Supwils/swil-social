@@ -16,6 +16,7 @@
 // Use ?? so any value already set in the environment (e.g. from a developer's
 // .env or a real CI secret) takes precedence.
 process.env.NODE_ENV ??= 'test';
+process.env.DATABASE_URL ??= 'postgresql://supwils@127.0.0.1:5432/swil_test_pg';
 process.env.MONGODB_URI ??= 'mongodb://127.0.0.1:27017/swil-test-placeholder';
 process.env.SESSION_SECRET ??=
   'unit-test-session-secret-must-be-at-least-32-chars-long-and-deterministic';

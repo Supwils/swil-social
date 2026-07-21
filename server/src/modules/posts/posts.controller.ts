@@ -26,7 +26,7 @@ export async function getById(req: Request, res: Response) {
     req.user ?? null,
   );
   const lang = req.user?.preferences?.language ?? 'en';
-  const ctxById = new Map([[post._id.toString(), ctx]]);
+  const ctxById = new Map([[post.id, ctx]]);
   await translatePosts([post], ctxById, lang);
   return ok(res, { post: toPostDTO(post, ctx) });
 }

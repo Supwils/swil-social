@@ -1,71 +1,68 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users, posts, comments } from '../../db/schema';
+import { resetDb } from '../../test/db-reset';
 import { AppError } from '../../lib/errors';
-import { Comment, type CommentDocument } from '../../models/comment.model';
-import { Post } from '../../models/post.model';
-import type { UserDocument } from '../../models/user.model';
+import type { PostRow, UserRow } from '../../lib/dto';
 import { createComment, deleteComment } from './comments.service';
 
-function makeUser(id = new Types.ObjectId()): UserDocument {
-  return {
-    _id: id,
-    id: id.toString(),
-  } as UserDocument;
+let seq = 0;
+async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
+  seq += 1;
+  const [u] = await db
+    .insert(users)
+    .values({
+      username: `user${seq}`,
+      usernameDisplay: `user${seq}`,
+      email: `user${seq}@example.com`,
+      displayName: `User ${seq}`,
+      ...over,
+    })
+    .returning();
+  return u;
 }
 
-function makeComment(overrides: Partial<CommentDocument> = {}): CommentDocument {
-  return {
-    _id: new Types.ObjectId(),
-    postId: new Types.ObjectId(),
-    authorId: new Types.ObjectId(),
-    parentId: null,
-    text: 'hello',
-    mentionIds: [],
-    likeCount: 0,
-    status: 'active',
-    editedAt: null,
-    deletedAt: null,
-    createdAt: new Date(),
-    save: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
-  } as unknown as CommentDocument;
+async function seedPost(authorId: string, over: Partial<typeof posts.$inferInsert> = {}): Promise<PostRow> {
+  const [p] = await db
+    .insert(posts)
+    .values({ authorId, text: 'body', visibility: 'public', ...over })
+    .returning();
+  return p;
 }
 
 describe('comments.service', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+  beforeEach(resetDb);
 
   it('rejects replies whose parent belongs to a different post', async () => {
-    const actor = makeUser();
-    const postId = new Types.ObjectId();
-    const parent = makeComment({ postId: new Types.ObjectId() });
-
-    vi.spyOn(Post, 'findById').mockResolvedValue({
-      _id: postId,
-      authorId: new Types.ObjectId(),
-      status: 'active',
-      visibility: 'public',
-    } as never);
-    vi.spyOn(Comment, 'findById').mockResolvedValue(parent);
+    const actor = await seedUser();
+    const targetPost = await seedPost(actor.id);
+    const otherPost = await seedPost(actor.id);
+    const [parent] = await db
+      .insert(comments)
+      .values({ postId: otherPost.id, authorId: actor.id, text: 'root' })
+      .returning();
 
     await expect(
-      createComment(actor, postId.toString(), 'reply', parent._id.toString()),
-    ).rejects.toMatchObject<AppError>({ code: 'NOT_FOUND', status: 404 });
+      createComment(actor, targetPost.id, 'reply', parent.id),
+    ).rejects.toMatchObject<Partial<AppError>>({ code: 'NOT_FOUND', status: 404 });
   });
 
   it('soft deletes comments and decrements the parent post count', async () => {
-    const actor = makeUser();
-    const comment = makeComment({ authorId: actor._id });
+    const actor = await seedUser();
+    const post = await seedPost(actor.id, { commentCount: 1 });
+    const [comment] = await db
+      .insert(comments)
+      .values({ postId: post.id, authorId: actor.id, text: 'hello' })
+      .returning();
 
-    vi.spyOn(Comment, 'findById').mockResolvedValue(comment);
-    const updateOne = vi.spyOn(Post, 'updateOne').mockResolvedValue({ acknowledged: true } as never);
+    await deleteComment(actor, comment.id);
 
-    await deleteComment(actor, comment._id.toString());
+    const [row] = await db.select().from(comments).where(eq(comments.id, comment.id));
+    expect(row.status).toBe('deleted');
+    expect(row.deletedAt).toBeInstanceOf(Date);
 
-    expect(comment.status).toBe('deleted');
-    expect(comment.deletedAt).toBeInstanceOf(Date);
-    expect(comment.save).toHaveBeenCalledOnce();
-    expect(updateOne).toHaveBeenCalledWith({ _id: comment.postId }, { $inc: { commentCount: -1 } });
+    const [postRow] = await db.select().from(posts).where(eq(posts.id, post.id));
+    expect(postRow.commentCount).toBe(0);
   });
 });

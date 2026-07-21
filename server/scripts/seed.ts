@@ -10,15 +10,13 @@
  */
 import 'dotenv/config';
 import bcrypt from 'bcrypt';
-import mongoose from 'mongoose';
-import { connectDb, disconnectDb, syncAllIndexes } from '../src/config/db';
-import { User } from '../src/models/user.model';
-import { Post } from '../src/models/post.model';
-import { Comment } from '../src/models/comment.model';
-import { Like } from '../src/models/like.model';
-import { Follow } from '../src/models/follow.model';
-import { Tag } from '../src/models/tag.model';
+import { eq, inArray, sql, type InferSelectModel } from 'drizzle-orm';
+import { db, connectDb, disconnectDb } from '../src/db/client';
+import { users, posts, comments, likes, follows, tags } from '../src/db/schema';
 import { extractTags, extractMentionUsernames } from '../src/lib/extract';
+
+type UserRow = InferSelectModel<typeof users>;
+type PostRow = InferSelectModel<typeof posts>;
 
 const PASSWORD = 'password123';
 
@@ -95,14 +93,13 @@ const POST_TEXTS = [
 ];
 
 async function reset() {
-  if (!mongoose.connection.db) throw new Error('db not connected');
   await Promise.all([
-    User.deleteMany({}),
-    Post.deleteMany({}),
-    Comment.deleteMany({}),
-    Like.deleteMany({}),
-    Follow.deleteMany({}),
-    Tag.deleteMany({}),
+    db.delete(users),
+    db.delete(posts),
+    db.delete(comments),
+    db.delete(likes),
+    db.delete(follows),
+    db.delete(tags),
   ]);
   // eslint-disable-next-line no-console
   console.log('✓ reset non-session collections');
@@ -137,54 +134,59 @@ async function seed() {
   const passwordHash = await bcrypt.hash(PASSWORD, 12);
 
   // --- users -----------------------------------------------------------------
-  const users = [];
+  const userRows: UserRow[] = [];
   for (const u of SEED_USERS) {
-    const existing = await User.findOne({ username: u.username });
+    const existing = (
+      await db.select().from(users).where(eq(users.username, u.username)).limit(1)
+    )[0];
     if (existing) {
-      users.push(existing);
+      userRows.push(existing);
       continue;
     }
-    const user = await User.create({
-      username: u.username,
-      usernameDisplay: u.display.split(' ')[0],
-      email: `${u.username}@swil.local`,
-      emailVerified: true,
-      passwordHash,
-      authProviders: [{ provider: 'local' }],
-      displayName: u.display,
-      bio: `I am ${u.display}. This is a seeded account for development.`,
-      headline: u.headline,
-      avatarUrl: avatarFor(u.username),
-    });
-    users.push(user);
+    const [user] = await db
+      .insert(users)
+      .values({
+        username: u.username,
+        usernameDisplay: u.display.split(' ')[0],
+        email: `${u.username}@swil.local`,
+        emailVerified: true,
+        passwordHash,
+        authProviders: [{ provider: 'local' }],
+        displayName: u.display,
+        bio: `I am ${u.display}. This is a seeded account for development.`,
+        headline: u.headline,
+        avatarUrl: avatarFor(u.username),
+      })
+      .returning();
+    userRows.push(user);
   }
   // eslint-disable-next-line no-console
-  console.log(`✓ users: ${users.length}`);
+  console.log(`✓ users: ${userRows.length}`);
 
   // --- follow graph ----------------------------------------------------------
   let followEdgesCreated = 0;
-  for (const follower of users) {
-    const candidates = users.filter((u) => !u._id.equals(follower._id));
+  for (const follower of userRows) {
+    const candidates = userRows.filter((u) => u.id !== follower.id);
     const targets = pickN(candidates, 3 + Math.floor(Math.random() * 5));
     for (const target of targets) {
-      const already = await Follow.findOne({
-        followerId: follower._id,
-        followingId: target._id,
-      });
-      if (already) continue;
-      await Follow.create({ followerId: follower._id, followingId: target._id });
-      followEdgesCreated += 1;
+      const inserted = await db
+        .insert(follows)
+        .values({ followerId: follower.id, followingId: target.id })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted.length) followEdgesCreated += 1;
     }
   }
   // Recompute follower/following counts
-  for (const user of users) {
+  for (const user of userRows) {
     const [followerCount, followingCount] = await Promise.all([
-      Follow.countDocuments({ followingId: user._id }),
-      Follow.countDocuments({ followerId: user._id }),
+      db.$count(follows, eq(follows.followingId, user.id)),
+      db.$count(follows, eq(follows.followerId, user.id)),
     ]);
-    user.followerCount = followerCount;
-    user.followingCount = followingCount;
-    await user.save();
+    await db
+      .update(users)
+      .set({ followerCount, followingCount })
+      .where(eq(users.id, user.id));
   }
   // eslint-disable-next-line no-console
   console.log(`✓ follows: ${followEdgesCreated}`);
@@ -195,11 +197,7 @@ async function seed() {
     for (const t of extractTags(text)) allSlugs.add(t.slug);
   }
   for (const slug of allSlugs) {
-    await Tag.updateOne(
-      { slug },
-      { $setOnInsert: { slug, display: slug } },
-      { upsert: true },
-    );
+    await db.insert(tags).values({ slug, display: slug }).onConflictDoNothing();
   }
   // eslint-disable-next-line no-console
   console.log(`✓ tags: ${allSlugs.size}`);
@@ -207,45 +205,51 @@ async function seed() {
   // --- posts -----------------------------------------------------------------
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
-  const posts = [];
+  const postRows: PostRow[] = [];
   for (let i = 0; i < POST_TEXTS.length; i++) {
     const text = POST_TEXTS[i];
-    const author = users[i % users.length];
+    const author = userRows[i % userRows.length];
     const tagsRaw = extractTags(text);
     const mentions = extractMentionUsernames(text);
 
     const tagDocs = tagsRaw.length
-      ? await Tag.find({ slug: { $in: tagsRaw.map((t) => t.slug) } })
+      ? await db.select().from(tags).where(inArray(tags.slug, tagsRaw.map((t) => t.slug)))
       : [];
     const mentionDocs = mentions.length
-      ? await User.find({ username: { $in: mentions } })
+      ? await db.select().from(users).where(inArray(users.username, mentions))
       : [];
 
     const img = i % 3 === 0 ? [imageFor(`post-${i}`)] : [];
     const createdAt = new Date(now - i * (dayMs / 2) - Math.floor(Math.random() * dayMs));
 
-    const post = await Post.create({
-      authorId: author._id,
-      text,
-      images: img,
-      tagIds: tagDocs.map((t) => t._id),
-      mentionIds: mentionDocs.map((u) => u._id),
-      visibility: 'public',
-      createdAt,
-      updatedAt: createdAt,
-    });
-    posts.push(post);
+    const [post] = await db
+      .insert(posts)
+      .values({
+        authorId: author.id,
+        text,
+        images: img,
+        tagIds: tagDocs.map((t) => t.id),
+        mentionIds: mentionDocs.map((u) => u.id),
+        visibility: 'public',
+        createdAt,
+        updatedAt: createdAt,
+      })
+      .returning();
+    postRows.push(post);
 
     if (tagDocs.length) {
-      await Tag.updateMany(
-        { _id: { $in: tagDocs.map((t) => t._id) } },
-        { $inc: { postCount: 1 }, $set: { lastUsedAt: new Date() } },
-      );
+      await db
+        .update(tags)
+        .set({ postCount: sql`${tags.postCount} + 1`, lastUsedAt: new Date() })
+        .where(inArray(tags.id, tagDocs.map((t) => t.id)));
     }
-    await User.updateOne({ _id: author._id }, { $inc: { postCount: 1 } });
+    await db
+      .update(users)
+      .set({ postCount: sql`${users.postCount} + 1` })
+      .where(eq(users.id, author.id));
   }
   // eslint-disable-next-line no-console
-  console.log(`✓ posts: ${posts.length}`);
+  console.log(`✓ posts: ${postRows.length}`);
 
   // --- comments --------------------------------------------------------------
   const commentBanks = [
@@ -260,18 +264,21 @@ async function seed() {
     'beautifully said',
   ];
   let commentCount = 0;
-  for (const post of posts) {
+  for (const post of postRows) {
     const n = Math.floor(Math.random() * 4);
     for (let j = 0; j < n; j++) {
-      const commenter = users[Math.floor(Math.random() * users.length)];
-      if (commenter._id.equals(post.authorId)) continue;
-      await Comment.create({
-        postId: post._id,
-        authorId: commenter._id,
+      const commenter = userRows[Math.floor(Math.random() * userRows.length)];
+      if (commenter.id === post.authorId) continue;
+      await db.insert(comments).values({
+        postId: post.id,
+        authorId: commenter.id,
         text: commentBanks[Math.floor(Math.random() * commentBanks.length)],
       });
       commentCount += 1;
-      await Post.updateOne({ _id: post._id }, { $inc: { commentCount: 1 } });
+      await db
+        .update(posts)
+        .set({ commentCount: sql`${posts.commentCount} + 1` })
+        .where(eq(posts.id, post.id));
     }
   }
   // eslint-disable-next-line no-console
@@ -279,18 +286,23 @@ async function seed() {
 
   // --- likes -----------------------------------------------------------------
   let likeCount = 0;
-  for (const post of posts) {
+  for (const post of postRows) {
     const likers = pickN(
-      users.filter((u) => !u._id.equals(post.authorId)),
+      userRows.filter((u) => u.id !== post.authorId),
       Math.floor(Math.random() * 6),
     );
     for (const liker of likers) {
-      try {
-        await Like.create({ userId: liker._id, targetType: 'post', targetId: post._id });
+      const inserted = await db
+        .insert(likes)
+        .values({ userId: liker.id, targetType: 'post', targetId: post.id })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted.length) {
         likeCount += 1;
-        await Post.updateOne({ _id: post._id }, { $inc: { likeCount: 1 } });
-      } catch {
-        /* dup */
+        await db
+          .update(posts)
+          .set({ likeCount: sql`${posts.likeCount} + 1` })
+          .where(eq(posts.id, post.id));
       }
     }
   }
@@ -299,7 +311,7 @@ async function seed() {
 
   // eslint-disable-next-line no-console
   console.log('\n--- seeded users (all password: password123) ---');
-  users.forEach((u) => {
+  userRows.forEach((u) => {
     // eslint-disable-next-line no-console
     console.log(`  ${u.username.padEnd(12)} ${u.displayName}`);
   });
@@ -310,7 +322,6 @@ async function main() {
   const reseed = args.includes('--reset');
 
   await connectDb();
-  await syncAllIndexes();
 
   if (reseed) await reset();
   await seed();

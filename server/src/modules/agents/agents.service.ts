@@ -1,25 +1,46 @@
-import { Types } from 'mongoose';
-import { User, type UserDocument } from '../../models/user.model';
-import { Post } from '../../models/post.model';
-import { Comment } from '../../models/comment.model';
-import { Like } from '../../models/like.model';
 import {
-  PersonalitySnapshot,
-  type PersonalitySnapshotDocument,
-} from '../../models/personalitySnapshot.model';
-import { BehaviorSnapshot } from '../../models/behaviorSnapshot.model';
-import { PopulationMetric } from '../../models/populationMetric.model';
-import { BenchmarkRun } from '../../models/benchmarkRun.model';
+  and,
+  or,
+  eq,
+  ne,
+  inArray,
+  asc,
+  desc,
+  gte,
+  isNull,
+  isNotNull,
+  count,
+  type InferSelectModel,
+} from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
+import { db } from '../../db/client';
+import {
+  users,
+  posts,
+  comments,
+  likes,
+  personalitySnapshots,
+  behaviorSnapshots,
+  agentEvents,
+  populationMetrics,
+  benchmarkRuns,
+} from '../../db/schema';
 import { AppError } from '../../lib/errors';
-import { AgentEvent, type AgentEventDocument } from '../../models/agentEvent.model';
 import { cosineDist, cosineSim, meanPairwiseCosine } from '../../lib/vector';
 import { TTLCache } from '../../lib/ttlCache';
+import type { UserRow } from '../../lib/dto';
 import type {
   AgentEventIngestInput,
   BehaviorSnapshotIngestInput,
   BenchmarkRunIngestInput,
   SnapshotIngestInput,
 } from './agents.schemas';
+
+type AgentEventRow = InferSelectModel<typeof agentEvents>;
+
+// Self-join aliases (reply → parent comment author, echo → original post author).
+const parentComments = alias(comments, 'parent_comment');
+const origPosts = alias(posts, 'orig_post');
 
 /* ---------- DTOs ---------- */
 
@@ -264,17 +285,39 @@ function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Count rows per UTC day (matches Mongo's `$dateToString %Y-%m-%d` on a UTC date). */
+function countByDay(dates: Array<{ createdAt: Date }>): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const r of dates) {
+    const k = isoDay(r.createdAt);
+    m.set(k, (m.get(k) ?? 0) + 1);
+  }
+  return m;
+}
+
+/** Split a set of actor rows by AI vs human (null isAgent counts as human). */
+function splitByAgent(rows: Array<{ isAgent: boolean | null }>): { ai: number; human: number } {
+  let ai = 0;
+  let human = 0;
+  for (const r of rows) {
+    if (r.isAgent === true) ai += 1;
+    else human += 1;
+  }
+  return { ai, human };
+}
+
 /**
  * `/lab` tracks both AI agents (isAgent=true) AND human-simulation accounts
  * that participate in the dream/personality loop — they share the same runtime
  * and have personality.md + memory.md. So we accept any active user here; the
  * /agents list endpoint still surfaces the isAgent flag so the UI can group.
  */
-async function findAgentByUsername(username: string): Promise<UserDocument> {
-  const u = await User.findOne({
-    username: username.toLowerCase(),
-    status: 'active',
-  });
+async function findAgentByUsername(username: string): Promise<UserRow> {
+  const [u] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.username, username.toLowerCase()), eq(users.status, 'active')))
+    .limit(1);
   if (!u) throw AppError.notFound('Account not found');
   return u;
 }
@@ -285,68 +328,83 @@ export async function listAgents(limit = 50): Promise<AgentSummaryDTO[]> {
   // Include personality-driven humans (those with at least one snapshot) too,
   // not just `isAgent=true` users. The DTO still carries the isAgent flag so
   // the client can render the two groups distinctly.
-  const snapshotUserIds = await PersonalitySnapshot.distinct('userId');
-  const users = await User.find({
-    status: 'active',
-    $or: [{ isAgent: true }, { _id: { $in: snapshotUserIds as Types.ObjectId[] } }],
-  })
-    .sort({ followerCount: -1, username: 1 })
-    .limit(limit)
-    .lean();
-  if (users.length === 0) return [];
+  const snapUserRows = await db
+    .selectDistinct({ userId: personalitySnapshots.userId })
+    .from(personalitySnapshots);
+  const snapshotUserIds = snapUserRows.map((r) => r.userId);
+  const orCond = snapshotUserIds.length
+    ? or(eq(users.isAgent, true), inArray(users.id, snapshotUserIds))
+    : eq(users.isAgent, true);
+  const rows = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.status, 'active'), orCond))
+    .orderBy(desc(users.followerCount), asc(users.username))
+    .limit(limit);
+  if (rows.length === 0) return [];
 
-  const userIds = users.map((u) => u._id);
+  const userIds = rows.map((u) => u.id);
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [postsByAuthor, snapshotRows, fidelityRows] = await Promise.all([
-    Post.aggregate([
-      {
-        $match: { authorId: { $in: userIds }, status: 'active', createdAt: { $gte: sevenDaysAgo } },
-      },
-      { $group: { _id: '$authorId', count: { $sum: 1 } } },
-    ]),
-    PersonalitySnapshot.aggregate([
-      { $match: { userId: { $in: userIds } } },
-      { $sort: { capturedAt: 1 } },
-      {
-        $group: {
-          _id: '$userId',
-          latest: { $last: '$$ROOT' },
-          driftSparkline: { $push: '$driftFromAnchor' },
-        },
-      },
-    ]),
+  const [postCountRows, snapRows, behRows] = await Promise.all([
+    db
+      .select({ authorId: posts.authorId, n: count() })
+      .from(posts)
+      .where(
+        and(
+          inArray(posts.authorId, userIds),
+          eq(posts.status, 'active'),
+          gte(posts.createdAt, sevenDaysAgo),
+        ),
+      )
+      .groupBy(posts.authorId),
+    // Latest snapshot + full driftFromAnchor sparkline per user, capturedAt asc.
+    db
+      .select({
+        userId: personalitySnapshots.userId,
+        capturedAt: personalitySnapshots.capturedAt,
+        driftFromAnchor: personalitySnapshots.driftFromAnchor,
+      })
+      .from(personalitySnapshots)
+      .where(inArray(personalitySnapshots.userId, userIds))
+      .orderBy(asc(personalitySnapshots.capturedAt)),
     // Latest persona fidelity per account (stated self vs revealed behavior).
-    BehaviorSnapshot.aggregate<{ _id: Types.ObjectId; fidelity: number | null }>([
-      { $match: { userId: { $in: userIds } } },
-      { $sort: { capturedAt: 1 } },
-      { $group: { _id: '$userId', fidelity: { $last: '$fidelity' } } },
-    ]),
+    db
+      .select({ userId: behaviorSnapshots.userId, fidelity: behaviorSnapshots.fidelity })
+      .from(behaviorSnapshots)
+      .where(inArray(behaviorSnapshots.userId, userIds))
+      .orderBy(asc(behaviorSnapshots.capturedAt)),
   ]);
 
   const postCountById = new Map<string, number>();
-  for (const row of postsByAuthor) postCountById.set(String(row._id), row.count);
+  for (const r of postCountRows) postCountById.set(r.authorId, r.n);
 
   const fidelityById = new Map<string, number | null>();
-  for (const row of fidelityRows) {
-    fidelityById.set(String(row._id), typeof row.fidelity === 'number' ? row.fidelity : null);
+  for (const r of behRows) {
+    fidelityById.set(r.userId, typeof r.fidelity === 'number' ? r.fidelity : null);
   }
 
   const snapById = new Map<
     string,
     { capturedAt: Date; driftFromAnchor: number; driftSparkline: number[] }
   >();
-  for (const row of snapshotRows) {
-    const s = row.latest as { capturedAt: Date; driftFromAnchor: number };
-    snapById.set(String(row._id), {
-      capturedAt: s.capturedAt,
-      driftFromAnchor: s.driftFromAnchor,
-      driftSparkline: (row.driftSparkline as number[] | undefined)?.slice(-16) ?? [],
-    });
+  for (const s of snapRows) {
+    const cur = snapById.get(s.userId);
+    if (cur) {
+      cur.capturedAt = s.capturedAt;
+      cur.driftFromAnchor = s.driftFromAnchor;
+      cur.driftSparkline.push(s.driftFromAnchor);
+    } else {
+      snapById.set(s.userId, {
+        capturedAt: s.capturedAt,
+        driftFromAnchor: s.driftFromAnchor,
+        driftSparkline: [s.driftFromAnchor],
+      });
+    }
   }
 
-  return users.map((u) => {
-    const id = String(u._id);
+  return rows.map((u) => {
+    const id = u.id;
     const snap = snapById.get(id);
     return {
       id,
@@ -360,7 +418,7 @@ export async function listAgents(limit = 50): Promise<AgentSummaryDTO[]> {
       postCount: u.postCount,
       lastSnapshotAt: snap ? snap.capturedAt.toISOString() : null,
       currentDriftFromAnchor: snap ? snap.driftFromAnchor : null,
-      driftSparkline: snap?.driftSparkline ?? [],
+      driftSparkline: snap ? snap.driftSparkline.slice(-16) : [],
       postsLast7d: postCountById.get(id) ?? 0,
       currentFidelity: fidelityById.has(id) ? (fidelityById.get(id) ?? null) : null,
     };
@@ -375,38 +433,35 @@ export async function getAgentStats(
 ): Promise<AgentStatsDTO> {
   const agent = await findAgentByUsername(username);
   const { since } = dayBuckets(range);
-  const agentId = agent._id;
+  const agentId = agent.id;
 
   // Cadence: count posts/comments/likes-given per UTC day from `since` to today.
-  const [posts, comments, likesGiven] = await Promise.all([
-    Post.aggregate([
-      { $match: { authorId: agentId, status: 'active', createdAt: { $gte: since } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          n: { $sum: 1 },
-        },
-      },
-    ]),
-    Comment.aggregate([
-      { $match: { authorId: agentId, status: 'active', createdAt: { $gte: since } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          n: { $sum: 1 },
-        },
-      },
-    ]),
-    Like.aggregate([
-      { $match: { userId: agentId, createdAt: { $gte: since } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          n: { $sum: 1 },
-        },
-      },
-    ]),
+  const [postDates, commentDates, likeDates] = await Promise.all([
+    db
+      .select({ createdAt: posts.createdAt })
+      .from(posts)
+      .where(
+        and(eq(posts.authorId, agentId), eq(posts.status, 'active'), gte(posts.createdAt, since)),
+      ),
+    db
+      .select({ createdAt: comments.createdAt })
+      .from(comments)
+      .where(
+        and(
+          eq(comments.authorId, agentId),
+          eq(comments.status, 'active'),
+          gte(comments.createdAt, since),
+        ),
+      ),
+    db
+      .select({ createdAt: likes.createdAt })
+      .from(likes)
+      .where(and(eq(likes.userId, agentId), gte(likes.createdAt, since))),
   ]);
+
+  const postsByDay = countByDay(postDates);
+  const commentsByDay = countByDay(commentDates);
+  const likesByDay = countByDay(likeDates);
 
   const byDay = new Map<string, CadencePointDTO>();
   const today = new Date();
@@ -415,145 +470,155 @@ export async function getAgentStats(
     const key = isoDay(d);
     byDay.set(key, { date: key, posts: 0, comments: 0, likesGiven: 0 });
   }
-  for (const row of posts) byDay.get(String(row._id))!.posts = row.n;
-  for (const row of comments) byDay.get(String(row._id))!.comments = row.n;
-  for (const row of likesGiven) byDay.get(String(row._id))!.likesGiven = row.n;
+  for (const [k, n] of postsByDay) {
+    const row = byDay.get(k);
+    if (row) row.posts = n;
+  }
+  for (const [k, n] of commentsByDay) {
+    const row = byDay.get(k);
+    if (row) row.comments = n;
+  }
+  for (const [k, n] of likesByDay) {
+    const row = byDay.get(k);
+    if (row) row.likesGiven = n;
+  }
   const cadence = Array.from(byDay.values());
 
   // Engagement received: likes + comments on the agent's posts, split by actor.isAgent.
-  // The aggregation joins Like.userId / Comment.authorId against User to read isAgent.
-  const myPostIds = (
-    await Post.find({ authorId: agentId, status: 'active' }).select('_id').lean()
-  ).map((p) => p._id);
+  // The join reads the actor's isAgent flag; JS reduces to an AI/human split.
+  const myPostRows = await db
+    .select({ id: posts.id })
+    .from(posts)
+    .where(and(eq(posts.authorId, agentId), eq(posts.status, 'active')));
+  const myPostIds = myPostRows.map((p) => p.id);
 
-  const [recvLikes, recvComments, givenComments] = await Promise.all([
-    Like.aggregate([
-      {
-        $match: {
-          targetType: 'post',
-          targetId: { $in: myPostIds as Types.ObjectId[] },
-          createdAt: { $gte: since },
-        },
-      },
-      {
-        $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'actor' },
-      },
-      { $unwind: '$actor' },
-      { $group: { _id: '$actor.isAgent', n: { $sum: 1 } } },
-    ]),
-    Comment.aggregate([
-      {
-        $match: {
-          postId: { $in: myPostIds as Types.ObjectId[] },
-          authorId: { $ne: agentId },
-          status: 'active',
-          createdAt: { $gte: since },
-        },
-      },
-      { $lookup: { from: 'users', localField: 'authorId', foreignField: '_id', as: 'actor' } },
-      { $unwind: '$actor' },
-      { $group: { _id: '$actor.isAgent', n: { $sum: 1 } } },
-    ]),
-    Comment.aggregate([
-      // Comments the agent gave on OTHER people's posts.
-      { $match: { authorId: agentId, status: 'active', createdAt: { $gte: since } } },
-      { $lookup: { from: 'posts', localField: 'postId', foreignField: '_id', as: 'post' } },
-      { $unwind: '$post' },
-      { $match: { 'post.authorId': { $ne: agentId } } },
-      {
-        $lookup: { from: 'users', localField: 'post.authorId', foreignField: '_id', as: 'target' },
-      },
-      { $unwind: '$target' },
-      { $group: { _id: '$target.isAgent', n: { $sum: 1 } } },
-    ]),
-  ]);
-
-  const splitOf = (rows: Array<{ _id: boolean | null; n: number }>) => {
-    const ai = rows.find((r) => r._id === true)?.n ?? 0;
-    const human = rows.find((r) => r._id === false || r._id == null)?.n ?? 0;
-    return { ai, human };
-  };
-
-  const likesIn = splitOf(recvLikes);
-  const commentsIn = splitOf(recvComments);
-  const commentsOut = splitOf(givenComments);
-
+  const recvLikesP: Promise<Array<{ isAgent: boolean }>> = myPostIds.length
+    ? db
+        .select({ isAgent: users.isAgent })
+        .from(likes)
+        .innerJoin(users, eq(likes.userId, users.id))
+        .where(
+          and(
+            eq(likes.targetType, 'post'),
+            inArray(likes.targetId, myPostIds),
+            gte(likes.createdAt, since),
+          ),
+        )
+    : Promise.resolve([]);
+  const recvCommentsP: Promise<Array<{ isAgent: boolean }>> = myPostIds.length
+    ? db
+        .select({ isAgent: users.isAgent })
+        .from(comments)
+        .innerJoin(users, eq(comments.authorId, users.id))
+        .where(
+          and(
+            inArray(comments.postId, myPostIds),
+            ne(comments.authorId, agentId),
+            eq(comments.status, 'active'),
+            gte(comments.createdAt, since),
+          ),
+        )
+    : Promise.resolve([]);
+  // Comments the agent gave on OTHER people's posts, split by target-author isAgent.
+  const givenCommentsP = db
+    .select({ isAgent: users.isAgent })
+    .from(comments)
+    .innerJoin(posts, eq(comments.postId, posts.id))
+    .innerJoin(users, eq(posts.authorId, users.id))
+    .where(
+      and(
+        eq(comments.authorId, agentId),
+        eq(comments.status, 'active'),
+        gte(comments.createdAt, since),
+        ne(posts.authorId, agentId),
+      ),
+    );
   // Likes given by agent split by target author.
-  const likesGivenSplit = await Like.aggregate([
-    { $match: { userId: agentId, targetType: 'post', createdAt: { $gte: since } } },
-    { $lookup: { from: 'posts', localField: 'targetId', foreignField: '_id', as: 'post' } },
-    { $unwind: '$post' },
-    { $lookup: { from: 'users', localField: 'post.authorId', foreignField: '_id', as: 'target' } },
-    { $unwind: '$target' },
-    { $group: { _id: '$target.isAgent', n: { $sum: 1 } } },
-  ]);
-  const likesOut = splitOf(likesGivenSplit);
-
+  const likesGivenP = db
+    .select({ isAgent: users.isAgent })
+    .from(likes)
+    .innerJoin(posts, eq(likes.targetId, posts.id))
+    .innerJoin(users, eq(posts.authorId, users.id))
+    .where(
+      and(eq(likes.userId, agentId), eq(likes.targetType, 'post'), gte(likes.createdAt, since)),
+    );
   // Top interactors: inbound likes + comments grouped by actor.
-  const [topLikes, topComments] = await Promise.all([
-    Like.aggregate([
-      {
-        $match: {
-          targetType: 'post',
-          targetId: { $in: myPostIds as Types.ObjectId[] },
-          createdAt: { $gte: since },
-        },
-      },
-      { $group: { _id: '$userId', count: { $sum: 1 } } },
-      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
-      { $unwind: '$user' },
-      {
-        $project: {
-          _id: 0,
-          username: '$user.username',
-          displayName: '$user.displayName',
-          isAgent: '$user.isAgent',
-          count: 1,
-        },
-      },
-    ]),
-    Comment.aggregate([
-      {
-        $match: {
-          postId: { $in: myPostIds as Types.ObjectId[] },
-          authorId: { $ne: agentId },
-          status: 'active',
-          createdAt: { $gte: since },
-        },
-      },
-      { $group: { _id: '$authorId', count: { $sum: 1 } } },
-      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
-      { $unwind: '$user' },
-      {
-        $project: {
-          _id: 0,
-          username: '$user.username',
-          displayName: '$user.displayName',
-          isAgent: '$user.isAgent',
-          count: 1,
-        },
-      },
-    ]),
-  ]);
+  const topLikesP: Promise<Array<{ username: string; displayName: string; isAgent: boolean }>> =
+    myPostIds.length
+      ? db
+          .select({
+            username: users.username,
+            displayName: users.displayName,
+            isAgent: users.isAgent,
+          })
+          .from(likes)
+          .innerJoin(users, eq(likes.userId, users.id))
+          .where(
+            and(
+              eq(likes.targetType, 'post'),
+              inArray(likes.targetId, myPostIds),
+              gte(likes.createdAt, since),
+            ),
+          )
+      : Promise.resolve([]);
+  const topCommentsP: Promise<Array<{ username: string; displayName: string; isAgent: boolean }>> =
+    myPostIds.length
+      ? db
+          .select({
+            username: users.username,
+            displayName: users.displayName,
+            isAgent: users.isAgent,
+          })
+          .from(comments)
+          .innerJoin(users, eq(comments.authorId, users.id))
+          .where(
+            and(
+              inArray(comments.postId, myPostIds),
+              ne(comments.authorId, agentId),
+              eq(comments.status, 'active'),
+              gte(comments.createdAt, since),
+            ),
+          )
+      : Promise.resolve([]);
+
+  const [recvLikeRows, recvCommentRows, givenCommentRows, likesGivenRows, topLikeRows, topCommentRows] =
+    await Promise.all([
+      recvLikesP,
+      recvCommentsP,
+      givenCommentsP,
+      likesGivenP,
+      topLikesP,
+      topCommentsP,
+    ]);
+
+  const likesIn = splitByAgent(recvLikeRows);
+  const commentsIn = splitByAgent(recvCommentRows);
+  const commentsOut = splitByAgent(givenCommentRows);
+  const likesOut = splitByAgent(likesGivenRows);
 
   const topByUsername = new Map<
     string,
     { username: string; displayName: string; isAgent: boolean; count: number }
   >();
-  for (const row of [...topLikes, ...topComments]) {
-    const username = row.username as string;
-    const existing = topByUsername.get(username);
-    if (existing) {
-      existing.count += row.count as number;
-    } else {
-      topByUsername.set(username, {
-        username,
-        displayName: row.displayName as string,
-        isAgent: Boolean(row.isAgent),
-        count: row.count as number,
-      });
+  const addTop = (
+    interactorRows: Array<{ username: string; displayName: string; isAgent: boolean }>,
+  ) => {
+    for (const row of interactorRows) {
+      const existing = topByUsername.get(row.username);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        topByUsername.set(row.username, {
+          username: row.username,
+          displayName: row.displayName,
+          isAgent: Boolean(row.isAgent),
+          count: 1,
+        });
+      }
     }
-  }
+  };
+  addTop(topLikeRows);
+  addTop(topCommentRows);
   const top = Array.from(topByUsername.values())
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
@@ -586,9 +651,11 @@ export async function getAgentStats(
 
 export async function getDrift(username: string): Promise<DriftPointDTO[]> {
   const agent = await findAgentByUsername(username);
-  const snaps = (await PersonalitySnapshot.find({ userId: agent._id })
-    .sort({ capturedAt: 1 })
-    .lean()) as unknown as PersonalitySnapshotDocument[];
+  const snaps = await db
+    .select()
+    .from(personalitySnapshots)
+    .where(eq(personalitySnapshots.userId, agent.id))
+    .orderBy(asc(personalitySnapshots.capturedAt));
   return snaps.map((s) => ({
     capturedAt: s.capturedAt.toISOString(),
     distanceFromAnchor: s.driftFromAnchor,
@@ -612,9 +679,9 @@ export async function getDrift(username: string): Promise<DriftPointDTO[]> {
 
 /* ---------- event stream ---------- */
 
-function toAgentEventDTO(event: AgentEventDocument): AgentEventDTO {
+function toAgentEventDTO(event: AgentEventRow): AgentEventDTO {
   return {
-    id: event._id.toString(),
+    id: event.id,
     type: event.type,
     phase: event.phase,
     outcome: event.outcome,
@@ -633,36 +700,41 @@ export async function getAgentEvents(
   type?: AgentEventDTO['type'],
 ): Promise<AgentEventDTO[]> {
   const agent = await findAgentByUsername(username);
-  const filter: Record<string, unknown> = { userId: agent._id };
-  if (type) filter.type = type;
-  const events = (await AgentEvent.find(filter)
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .lean()) as unknown as AgentEventDocument[];
+  const conds = [eq(agentEvents.userId, agent.id)];
+  if (type) conds.push(eq(agentEvents.type, type));
+  const events = await db
+    .select()
+    .from(agentEvents)
+    .where(and(...conds))
+    .orderBy(desc(agentEvents.createdAt))
+    .limit(limit);
   return events.map(toAgentEventDTO);
 }
 
 export async function ingestAgentEvent(
   agentUsername: string,
-  actor: UserDocument,
+  actor: UserRow,
   input: AgentEventIngestInput,
 ): Promise<AgentEventDTO> {
   const agent = await findAgentByUsername(agentUsername);
-  if (!agent._id.equals(actor._id)) {
+  if (agent.id !== actor.id) {
     throw AppError.forbidden('Only the agent itself can post its own lab events');
   }
 
-  const event = await AgentEvent.create({
-    userId: agent._id,
-    type: input.type,
-    phase: input.phase,
-    outcome: input.outcome,
-    action: input.action,
-    summary: input.summary,
-    reason: input.reason,
-    targetId: input.targetId,
-    metrics: input.metrics,
-  });
+  const [event] = await db
+    .insert(agentEvents)
+    .values({
+      userId: agent.id,
+      type: input.type,
+      phase: input.phase,
+      outcome: input.outcome,
+      action: input.action,
+      summary: input.summary,
+      reason: input.reason,
+      targetId: input.targetId,
+      metrics: input.metrics,
+    })
+    .returning();
 
   return toAgentEventDTO(event);
 }
@@ -672,19 +744,23 @@ export async function ingestAgentEvent(
 export async function getOverview(): Promise<AgentOverviewDTO> {
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [snapshotUserIds, eventUserIds] = await Promise.all([
-    PersonalitySnapshot.distinct('userId'),
-    AgentEvent.distinct('userId'),
+  const [snapUserRows, eventUserRows] = await Promise.all([
+    db.selectDistinct({ userId: personalitySnapshots.userId }).from(personalitySnapshots),
+    db.selectDistinct({ userId: agentEvents.userId }).from(agentEvents),
   ]);
-  const labUserIds = [...snapshotUserIds, ...eventUserIds] as Types.ObjectId[];
-  const labUsers = (await User.find({
-    status: 'active',
-    $or: [{ isAgent: true }, { _id: { $in: labUserIds } }],
-  })
-    .select('_id username displayName')
-    .lean()) as unknown as Array<{ _id: Types.ObjectId; username: string; displayName: string }>;
-  const labIds = labUsers.map((u) => u._id);
+  const labUserIds = Array.from(
+    new Set([...snapUserRows.map((r) => r.userId), ...eventUserRows.map((r) => r.userId)]),
+  );
+  const orCond = labUserIds.length
+    ? or(eq(users.isAgent, true), inArray(users.id, labUserIds))
+    : eq(users.isAgent, true);
+  const labUsers = await db
+    .select({ id: users.id, username: users.username, displayName: users.displayName })
+    .from(users)
+    .where(and(eq(users.status, 'active'), orCond));
+  const labIds = labUsers.map((u) => u.id);
   if (labIds.length === 0) {
     return {
       totalsToday: { posts: 0, comments: 0, likes: 0 },
@@ -694,70 +770,87 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
       echoChamberFlags: [],
     };
   }
-  const nameById = new Map(labUsers.map((u) => [String(u._id), u]));
+  const nameById = new Map(labUsers.map((u) => [u.id, u]));
 
-  const [totalsPosts, totalsComments, totalsLikes, mostActiveRaw, latestSnaps, flagRows] =
+  const [totalsPosts, totalsComments, totalsLikes, postCountRows, snapRows, echoRows] =
     await Promise.all([
-      Post.countDocuments({
-        authorId: { $in: labIds },
-        status: 'active',
-        createdAt: { $gte: startOfDay },
-      }),
-      Comment.countDocuments({
-        authorId: { $in: labIds },
-        status: 'active',
-        createdAt: { $gte: startOfDay },
-      }),
-      Like.countDocuments({ userId: { $in: labIds }, createdAt: { $gte: startOfDay } }),
-      Post.aggregate([
-        {
-          $match: {
-            authorId: { $in: labIds },
-            status: 'active',
-            createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-          },
-        },
-        { $group: { _id: '$authorId', n: { $sum: 1 } } },
-        { $sort: { n: -1 } },
-        { $limit: 5 },
-      ]),
-      PersonalitySnapshot.aggregate([
-        { $match: { userId: { $in: labIds } } },
-        { $sort: { capturedAt: -1 } },
-        {
-          $group: {
-            _id: '$userId',
-            latest: { $first: '$$ROOT' },
-          },
-        },
-      ]),
-      AgentEvent.aggregate([
-        {
-          $match: {
-            userId: { $in: labIds },
-            type: 'echo_flag',
-            createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-          },
-        },
-        { $sort: { createdAt: -1 } },
-        { $group: { _id: '$userId', latest: { $first: '$$ROOT' } } },
-        { $match: { 'latest.outcome': 'flagged' } },
-      ]),
+      db.$count(
+        posts,
+        and(
+          inArray(posts.authorId, labIds),
+          eq(posts.status, 'active'),
+          gte(posts.createdAt, startOfDay),
+        ),
+      ),
+      db.$count(
+        comments,
+        and(
+          inArray(comments.authorId, labIds),
+          eq(comments.status, 'active'),
+          gte(comments.createdAt, startOfDay),
+        ),
+      ),
+      db.$count(likes, and(inArray(likes.userId, labIds), gte(likes.createdAt, startOfDay))),
+      db
+        .select({ authorId: posts.authorId, n: count() })
+        .from(posts)
+        .where(
+          and(
+            inArray(posts.authorId, labIds),
+            eq(posts.status, 'active'),
+            gte(posts.createdAt, sevenDaysAgo),
+          ),
+        )
+        .groupBy(posts.authorId),
+      // Latest snapshot per user (capturedAt asc → last wins), incl. embedding for cohesion.
+      db
+        .select({
+          userId: personalitySnapshots.userId,
+          capturedAt: personalitySnapshots.capturedAt,
+          driftFromAnchor: personalitySnapshots.driftFromAnchor,
+          embedding: personalitySnapshots.embedding,
+        })
+        .from(personalitySnapshots)
+        .where(inArray(personalitySnapshots.userId, labIds))
+        .orderBy(asc(personalitySnapshots.capturedAt)),
+      // echo_flag events over the last 7d; latest per user decides the flag.
+      db
+        .select({
+          userId: agentEvents.userId,
+          outcome: agentEvents.outcome,
+          createdAt: agentEvents.createdAt,
+        })
+        .from(agentEvents)
+        .where(
+          and(
+            inArray(agentEvents.userId, labIds),
+            eq(agentEvents.type, 'echo_flag'),
+            gte(agentEvents.createdAt, sevenDaysAgo),
+          ),
+        )
+        .orderBy(asc(agentEvents.createdAt)),
     ]);
 
-  const mostActive = mostActiveRaw.map((row) => {
-    const u = nameById.get(String(row._id));
-    return {
-      username: u?.username ?? '?',
-      displayName: u?.displayName ?? '?',
-      posts: row.n as number,
-    };
-  });
-
-  const driftLeaderboardRaw = latestSnaps
+  const mostActive = [...postCountRows]
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 5)
     .map((row) => {
-      const s = row.latest as { driftFromAnchor: number; embedding: number[] };
-      const u = nameById.get(String(row._id));
+      const u = nameById.get(row.authorId);
+      return {
+        username: u?.username ?? '?',
+        displayName: u?.displayName ?? '?',
+        posts: row.n,
+      };
+    });
+
+  const latestByUser = new Map<string, { driftFromAnchor: number; embedding: number[] }>();
+  for (const r of snapRows) {
+    latestByUser.set(r.userId, { driftFromAnchor: r.driftFromAnchor, embedding: r.embedding });
+  }
+
+  const driftLeaderboardRaw = Array.from(latestByUser.entries())
+    .map(([uid, s]) => {
+      const u = nameById.get(uid);
       return {
         username: u?.username ?? '?',
         displayName: u?.displayName ?? '?',
@@ -782,8 +875,11 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
     driftLeaderboardRaw.filter((r) => r.embedding?.length).map((r) => r.embedding),
   );
 
-  const echoChamberFlags = flagRows
-    .map((row) => nameById.get(String(row._id))?.username)
+  const latestEcho = new Map<string, string>();
+  for (const r of echoRows) latestEcho.set(r.userId, r.outcome);
+  const echoChamberFlags = Array.from(latestEcho.entries())
+    .filter(([, outcome]) => outcome === 'flagged')
+    .map(([uid]) => nameById.get(uid)?.username)
     .filter((username): username is string => Boolean(username));
 
   return {
@@ -799,12 +895,12 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
 
 export async function ingestSnapshot(
   agentUsername: string,
-  actor: UserDocument,
+  actor: UserRow,
   input: SnapshotIngestInput,
 ): Promise<{ id: string; driftFromAnchor: number; driftFromPrev: number }> {
   const agent = await findAgentByUsername(agentUsername);
   // Only the agent itself (via its own API key) may upload its snapshots, for now.
-  if (!agent._id.equals(actor._id)) {
+  if (agent.id !== actor.id) {
     throw AppError.forbidden('Only the agent itself can post its own snapshots');
   }
 
@@ -812,20 +908,26 @@ export async function ingestSnapshot(
   // For ANCHOR rows we still re-run the recompute pass: a stale dream-first
   // ordering (anchor uploaded after a dream during initial backfill) needs
   // every other row's driftFromAnchor recomputed against this anchor.
-  const existing = await PersonalitySnapshot.findOne({ contentHash: input.contentHash });
+  const [existing] = await db
+    .select()
+    .from(personalitySnapshots)
+    .where(eq(personalitySnapshots.contentHash, input.contentHash))
+    .limit(1);
   if (existing) {
     if (input.snapshotType === 'anchor' && existing.embedding?.length) {
-      await recomputeDriftAgainstAnchor(agent._id, existing.embedding, existing._id);
+      await recomputeDriftAgainstAnchor(agent.id, existing.embedding, existing.id);
     }
     // Backfill: enrich a pre-existing snapshot with aspectDrift if it lacks it
     // (re-running a dream/backfill after the per-aspect feature shipped). Never
     // overwrite an existing block.
     if (input.aspectDrift && !existing.aspectDrift) {
-      existing.aspectDrift = input.aspectDrift;
-      await existing.save();
+      await db
+        .update(personalitySnapshots)
+        .set({ aspectDrift: input.aspectDrift })
+        .where(eq(personalitySnapshots.id, existing.id));
     }
     return {
-      id: existing._id.toString(),
+      id: existing.id,
       driftFromAnchor: existing.driftFromAnchor,
       driftFromPrev: existing.driftFromPrev,
     };
@@ -836,8 +938,24 @@ export async function ingestSnapshot(
   // Anchor = the earliest snapshot for this user, OR this incoming one if there
   // are none yet (in which case drift is trivially 0).
   const [anchor, prev] = await Promise.all([
-    PersonalitySnapshot.findOne({ userId: agent._id, snapshotType: 'anchor' }).lean(),
-    PersonalitySnapshot.findOne({ userId: agent._id }).sort({ capturedAt: -1 }).lean(),
+    db
+      .select({ embedding: personalitySnapshots.embedding })
+      .from(personalitySnapshots)
+      .where(
+        and(
+          eq(personalitySnapshots.userId, agent.id),
+          eq(personalitySnapshots.snapshotType, 'anchor'),
+        ),
+      )
+      .limit(1)
+      .then((r) => r[0]),
+    db
+      .select({ embedding: personalitySnapshots.embedding })
+      .from(personalitySnapshots)
+      .where(eq(personalitySnapshots.userId, agent.id))
+      .orderBy(desc(personalitySnapshots.capturedAt))
+      .limit(1)
+      .then((r) => r[0]),
   ]);
 
   let driftFromAnchor = 0;
@@ -849,53 +967,70 @@ export async function ingestSnapshot(
     driftFromPrev = cosineDist(input.embedding, prev.embedding);
   }
 
-  const doc = await PersonalitySnapshot.create({
-    userId: agent._id,
-    capturedAt,
-    contentHash: input.contentHash,
-    embedding: input.embedding,
-    snapshotType: input.snapshotType,
-    archivePath: input.archivePath,
-    driftFromAnchor,
-    driftFromPrev,
-    excerpt: input.excerpt ?? '',
-    ...(input.diffNarrative ? { diffNarrative: input.diffNarrative } : {}),
-    ...(input.aspectDrift ? { aspectDrift: input.aspectDrift } : {}),
-  });
+  const [doc] = await db
+    .insert(personalitySnapshots)
+    .values({
+      userId: agent.id,
+      capturedAt,
+      contentHash: input.contentHash,
+      embedding: input.embedding,
+      snapshotType: input.snapshotType,
+      archivePath: input.archivePath,
+      driftFromAnchor,
+      driftFromPrev,
+      excerpt: input.excerpt ?? '',
+      ...(input.diffNarrative ? { diffNarrative: input.diffNarrative } : {}),
+      ...(input.aspectDrift ? { aspectDrift: input.aspectDrift } : {}),
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  // Lost a concurrent insert race on the unique contentHash — return the winner.
+  if (!doc) {
+    const [raced] = await db
+      .select()
+      .from(personalitySnapshots)
+      .where(eq(personalitySnapshots.contentHash, input.contentHash))
+      .limit(1);
+    return {
+      id: raced.id,
+      driftFromAnchor: raced.driftFromAnchor,
+      driftFromPrev: raced.driftFromPrev,
+    };
+  }
 
   // If this incoming snapshot IS the (new) anchor, recompute driftFromAnchor
   // for all other snapshots of this user — backfills inserted before the anchor
   // would otherwise carry a stale drift=0.
   if (input.snapshotType === 'anchor') {
-    await recomputeDriftAgainstAnchor(agent._id, input.embedding, doc._id);
+    await recomputeDriftAgainstAnchor(agent.id, input.embedding, doc.id);
   }
 
   return {
-    id: doc._id.toString(),
+    id: doc.id,
     driftFromAnchor,
     driftFromPrev,
   };
 }
 
 async function recomputeDriftAgainstAnchor(
-  userId: Types.ObjectId,
+  userId: string,
   anchorVec: number[],
-  anchorDocId: Types.ObjectId,
+  anchorDocId: string,
 ): Promise<void> {
-  const others = (await PersonalitySnapshot.find({
-    userId,
-    _id: { $ne: anchorDocId },
-  })
-    .select('_id embedding')
-    .lean()) as unknown as Array<{ _id: Types.ObjectId; embedding: number[] }>;
+  const others = await db
+    .select({ id: personalitySnapshots.id, embedding: personalitySnapshots.embedding })
+    .from(personalitySnapshots)
+    .where(
+      and(eq(personalitySnapshots.userId, userId), ne(personalitySnapshots.id, anchorDocId)),
+    );
   if (others.length === 0) return;
-  const ops = others.map((s) => ({
-    updateOne: {
-      filter: { _id: s._id },
-      update: { $set: { driftFromAnchor: cosineDist(s.embedding, anchorVec) } },
-    },
-  }));
-  await PersonalitySnapshot.bulkWrite(ops);
+  for (const s of others) {
+    await db
+      .update(personalitySnapshots)
+      .set({ driftFromAnchor: cosineDist(s.embedding, anchorVec) })
+      .where(eq(personalitySnapshots.id, s.id));
+  }
 }
 
 /* ---------- persona fidelity (Feature 1) ---------- */
@@ -907,49 +1042,70 @@ async function recomputeDriftAgainstAnchor(
  */
 export async function ingestBehaviorSnapshot(
   agentUsername: string,
-  actor: UserDocument,
+  actor: UserRow,
   input: BehaviorSnapshotIngestInput,
 ): Promise<{ id: string; fidelity: number | null }> {
   const agent = await findAgentByUsername(agentUsername);
-  if (!agent._id.equals(actor._id)) {
+  if (agent.id !== actor.id) {
     throw AppError.forbidden('Only the agent itself can post its own behavior snapshots');
   }
 
-  const existing = await BehaviorSnapshot.findOne({ contentHash: input.contentHash });
+  const [existing] = await db
+    .select({ id: behaviorSnapshots.id, fidelity: behaviorSnapshots.fidelity })
+    .from(behaviorSnapshots)
+    .where(eq(behaviorSnapshots.contentHash, input.contentHash))
+    .limit(1);
   if (existing) {
-    return { id: existing._id.toString(), fidelity: existing.fidelity };
+    return { id: existing.id, fidelity: existing.fidelity };
   }
 
   // Compare against the most recent personality snapshot — "what it says it is".
-  const persona = (await PersonalitySnapshot.findOne({ userId: agent._id })
-    .sort({ capturedAt: -1 })
-    .select('embedding')
-    .lean()) as unknown as { embedding: number[] } | null;
+  const [persona] = await db
+    .select({ embedding: personalitySnapshots.embedding })
+    .from(personalitySnapshots)
+    .where(eq(personalitySnapshots.userId, agent.id))
+    .orderBy(desc(personalitySnapshots.capturedAt))
+    .limit(1);
 
   const fidelity =
     persona && persona.embedding?.length ? cosineSim(input.embedding, persona.embedding) : null;
 
-  const doc = await BehaviorSnapshot.create({
-    userId: agent._id,
-    capturedAt: input.capturedAt ?? new Date(),
-    contentHash: input.contentHash,
-    embedding: input.embedding,
-    fidelity,
-    postCount: input.postCount,
-    commentCount: input.commentCount,
-    excerpt: input.excerpt,
-  });
+  const [doc] = await db
+    .insert(behaviorSnapshots)
+    .values({
+      userId: agent.id,
+      capturedAt: input.capturedAt ?? new Date(),
+      contentHash: input.contentHash,
+      embedding: input.embedding,
+      fidelity,
+      postCount: input.postCount,
+      commentCount: input.commentCount,
+      excerpt: input.excerpt,
+    })
+    .onConflictDoNothing()
+    .returning();
 
-  return { id: doc._id.toString(), fidelity };
+  // Lost a concurrent insert race on the unique contentHash — return the winner.
+  if (!doc) {
+    const [raced] = await db
+      .select({ id: behaviorSnapshots.id, fidelity: behaviorSnapshots.fidelity })
+      .from(behaviorSnapshots)
+      .where(eq(behaviorSnapshots.contentHash, input.contentHash))
+      .limit(1);
+    return { id: raced.id, fidelity: raced.fidelity };
+  }
+
+  return { id: doc.id, fidelity };
 }
 
 /** Fidelity trajectory for one agent: stated-self vs revealed-self over time. */
 export async function getFidelity(username: string): Promise<FidelityDTO> {
   const agent = await findAgentByUsername(username);
-  const rows = (await BehaviorSnapshot.find({ userId: agent._id })
-    .sort({ capturedAt: 1 })
-    .select('capturedAt fidelity')
-    .lean()) as unknown as Array<{ capturedAt: Date; fidelity: number | null }>;
+  const rows = await db
+    .select({ capturedAt: behaviorSnapshots.capturedAt, fidelity: behaviorSnapshots.fidelity })
+    .from(behaviorSnapshots)
+    .where(eq(behaviorSnapshots.userId, agent.id))
+    .orderBy(asc(behaviorSnapshots.capturedAt));
 
   const points: FidelityPointDTO[] = rows.map((r) => ({
     capturedAt: r.capturedAt.toISOString(),
@@ -962,7 +1118,7 @@ export async function getFidelity(username: string): Promise<FidelityDTO> {
 /* ---------- interaction graph (Feature 2) ---------- */
 
 interface LabUser {
-  _id: Types.ObjectId;
+  id: string;
   username: string;
   displayName: string;
   isAgent: boolean;
@@ -970,17 +1126,25 @@ interface LabUser {
 
 /** The lab population: AI agents + any account in the dream/event loop. */
 async function loadLabUsers(): Promise<LabUser[]> {
-  const [snapshotUserIds, eventUserIds] = await Promise.all([
-    PersonalitySnapshot.distinct('userId'),
-    AgentEvent.distinct('userId'),
+  const [snapUserRows, eventUserRows] = await Promise.all([
+    db.selectDistinct({ userId: personalitySnapshots.userId }).from(personalitySnapshots),
+    db.selectDistinct({ userId: agentEvents.userId }).from(agentEvents),
   ]);
-  const labUserIds = [...snapshotUserIds, ...eventUserIds] as Types.ObjectId[];
-  return (await User.find({
-    status: 'active',
-    $or: [{ isAgent: true }, { _id: { $in: labUserIds } }],
-  })
-    .select('_id username displayName isAgent')
-    .lean()) as unknown as LabUser[];
+  const labUserIds = Array.from(
+    new Set([...snapUserRows.map((r) => r.userId), ...eventUserRows.map((r) => r.userId)]),
+  );
+  const orCond = labUserIds.length
+    ? or(eq(users.isAgent, true), inArray(users.id, labUserIds))
+    : eq(users.isAgent, true);
+  return db
+    .select({
+      id: users.id,
+      username: users.username,
+      displayName: users.displayName,
+      isAgent: users.isAgent,
+    })
+    .from(users)
+    .where(and(eq(users.status, 'active'), orCond));
 }
 
 const graphCache = new TTLCache<string, InteractionGraphDTO>(60_000);
@@ -991,7 +1155,6 @@ export async function getInteractionGraph(
   return graphCache.getOrLoad(range, () => computeInteractionGraph(range));
 }
 
-type RawEdge = { _id: { s: Types.ObjectId; t: Types.ObjectId }; count: number };
 type EdgeKind = 'comment' | 'reply' | 'echo' | 'like';
 
 async function computeInteractionGraph(range: '7d' | '30d' | '90d'): Promise<InteractionGraphDTO> {
@@ -1000,51 +1163,74 @@ async function computeInteractionGraph(range: '7d' | '30d' | '90d'): Promise<Int
 
   const [commentEdges, replyEdges, echoEdges, likeEdges] = await Promise.all([
     // top-level comments → post author
-    Comment.aggregate<RawEdge>([
-      { $match: { status: 'active', parentId: null, createdAt: { $gte: since } } },
-      { $lookup: { from: 'posts', localField: 'postId', foreignField: '_id', as: 'post' } },
-      { $unwind: '$post' },
-      { $match: { 'post.status': 'active', $expr: { $ne: ['$authorId', '$post.authorId'] } } },
-      { $group: { _id: { s: '$authorId', t: '$post.authorId' }, count: { $sum: 1 } } },
-    ]),
+    db
+      .select({ s: comments.authorId, t: posts.authorId })
+      .from(comments)
+      .innerJoin(posts, eq(comments.postId, posts.id))
+      .where(
+        and(
+          eq(comments.status, 'active'),
+          isNull(comments.parentId),
+          gte(comments.createdAt, since),
+          eq(posts.status, 'active'),
+          ne(comments.authorId, posts.authorId),
+        ),
+      ),
     // replies → parent comment author
-    Comment.aggregate<RawEdge>([
-      { $match: { status: 'active', parentId: { $ne: null }, createdAt: { $gte: since } } },
-      { $lookup: { from: 'comments', localField: 'parentId', foreignField: '_id', as: 'parent' } },
-      { $unwind: '$parent' },
-      { $match: { 'parent.status': 'active', $expr: { $ne: ['$authorId', '$parent.authorId'] } } },
-      { $group: { _id: { s: '$authorId', t: '$parent.authorId' }, count: { $sum: 1 } } },
-    ]),
+    db
+      .select({ s: comments.authorId, t: parentComments.authorId })
+      .from(comments)
+      .innerJoin(parentComments, eq(comments.parentId, parentComments.id))
+      .where(
+        and(
+          eq(comments.status, 'active'),
+          isNotNull(comments.parentId),
+          gte(comments.createdAt, since),
+          eq(parentComments.status, 'active'),
+          ne(comments.authorId, parentComments.authorId),
+        ),
+      ),
     // echoes (reposts) → original post author
-    Post.aggregate<RawEdge>([
-      { $match: { status: 'active', echoOf: { $ne: null }, createdAt: { $gte: since } } },
-      { $lookup: { from: 'posts', localField: 'echoOf', foreignField: '_id', as: 'orig' } },
-      { $unwind: '$orig' },
-      { $match: { 'orig.status': 'active', $expr: { $ne: ['$authorId', '$orig.authorId'] } } },
-      { $group: { _id: { s: '$authorId', t: '$orig.authorId' }, count: { $sum: 1 } } },
-    ]),
+    db
+      .select({ s: posts.authorId, t: origPosts.authorId })
+      .from(posts)
+      .innerJoin(origPosts, eq(posts.echoOf, origPosts.id))
+      .where(
+        and(
+          eq(posts.status, 'active'),
+          isNotNull(posts.echoOf),
+          gte(posts.createdAt, since),
+          eq(origPosts.status, 'active'),
+          ne(posts.authorId, origPosts.authorId),
+        ),
+      ),
     // likes on posts → post author
-    Like.aggregate<RawEdge>([
-      { $match: { targetType: 'post', createdAt: { $gte: since } } },
-      { $lookup: { from: 'posts', localField: 'targetId', foreignField: '_id', as: 'post' } },
-      { $unwind: '$post' },
-      { $match: { 'post.status': 'active', $expr: { $ne: ['$userId', '$post.authorId'] } } },
-      { $group: { _id: { s: '$userId', t: '$post.authorId' }, count: { $sum: 1 } } },
-    ]),
+    db
+      .select({ s: likes.userId, t: posts.authorId })
+      .from(likes)
+      .innerJoin(posts, eq(likes.targetId, posts.id))
+      .where(
+        and(
+          eq(likes.targetType, 'post'),
+          gte(likes.createdAt, since),
+          eq(posts.status, 'active'),
+          ne(likes.userId, posts.authorId),
+        ),
+      ),
   ]);
 
-  const idToUser = new Map(((await loadLabUsers()) as LabUser[]).map((u) => [String(u._id), u]));
+  const idToUser = new Map((await loadLabUsers()).map((u) => [u.id, u]));
 
   const edgeMap = new Map<string, Record<EdgeKind, number>>();
-  const accumulate = (raw: RawEdge[], kind: EdgeKind) => {
+  const accumulate = (raw: Array<{ s: string; t: string }>, kind: EdgeKind) => {
     for (const e of raw) {
-      const s = String(e._id.s);
-      const t = String(e._id.t);
+      const s = e.s;
+      const t = e.t;
       // Keep edges strictly within the lab population.
       if (!idToUser.has(s) || !idToUser.has(t)) continue;
       const key = `${s}|${t}`;
       const acc = edgeMap.get(key) ?? { comment: 0, reply: 0, echo: 0, like: 0 };
-      acc[kind] += e.count;
+      acc[kind] += 1;
       edgeMap.set(key, acc);
     }
   };
@@ -1079,23 +1265,30 @@ async function computeInteractionGraph(range: '7d' | '30d' | '90d'): Promise<Int
 
 /* ---------- population homogenization (Feature 3) ---------- */
 
-/** Latest embedding per user from a snapshot collection, as a vector list. */
-type EmbRow = { _id: Types.ObjectId; embedding: number[] };
+/** Latest embedding per user from a set of snapshot rows ordered capturedAt asc. */
+function latestEmbeddings(rows: Array<{ userId: string; embedding: number[] }>): number[][] {
+  const byUser = new Map<string, number[]>();
+  for (const r of rows) byUser.set(r.userId, r.embedding);
+  return Array.from(byUser.values()).filter((v) => v.length > 0);
+}
 
 /** Live cohesion: mean pairwise cosine of the latest persona / behavior vectors. */
 export async function computeCohesion(): Promise<CohesionDTO> {
   const [personaRows, behaviorRows] = await Promise.all([
-    PersonalitySnapshot.aggregate<EmbRow>([
-      { $sort: { capturedAt: 1 } },
-      { $group: { _id: '$userId', embedding: { $last: '$embedding' } } },
-    ]),
-    BehaviorSnapshot.aggregate<EmbRow>([
-      { $sort: { capturedAt: 1 } },
-      { $group: { _id: '$userId', embedding: { $last: '$embedding' } } },
-    ]),
+    db
+      .select({
+        userId: personalitySnapshots.userId,
+        embedding: personalitySnapshots.embedding,
+      })
+      .from(personalitySnapshots)
+      .orderBy(asc(personalitySnapshots.capturedAt)),
+    db
+      .select({ userId: behaviorSnapshots.userId, embedding: behaviorSnapshots.embedding })
+      .from(behaviorSnapshots)
+      .orderBy(asc(behaviorSnapshots.capturedAt)),
   ]);
-  const personaVecs = personaRows.filter((r) => r.embedding?.length).map((r) => r.embedding);
-  const behaviorVecs = behaviorRows.filter((r) => r.embedding?.length).map((r) => r.embedding);
+  const personaVecs = latestEmbeddings(personaRows);
+  const behaviorVecs = latestEmbeddings(behaviorRows);
   return {
     personaCohesion: meanPairwiseCosine(personaVecs),
     behaviorCohesion: meanPairwiseCosine(behaviorVecs),
@@ -1112,7 +1305,7 @@ export async function recordPopulationMetric(): Promise<HomogenizationPointDTO> 
   // Don't historise a degenerate sample: with <2 behavior vectors cohesion is a
   // placeholder 1.0, which would otherwise poison the homogenization trend.
   if (c.n >= 2) {
-    await PopulationMetric.create({
+    await db.insert(populationMetrics).values({
       capturedAt,
       personaCohesion: c.personaCohesion,
       behaviorCohesion: c.behaviorCohesion,
@@ -1132,14 +1325,11 @@ export async function getHomogenization(
 async function computeHomogenization(range: '7d' | '30d' | '90d'): Promise<HomogenizationDTO> {
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = (await PopulationMetric.find({ capturedAt: { $gte: since } })
-    .sort({ capturedAt: 1 })
-    .lean()) as unknown as Array<{
-    capturedAt: Date;
-    personaCohesion: number;
-    behaviorCohesion: number;
-    n: number;
-  }>;
+  const rows = await db
+    .select()
+    .from(populationMetrics)
+    .where(gte(populationMetrics.capturedAt, since))
+    .orderBy(asc(populationMetrics.capturedAt));
   const points: HomogenizationPointDTO[] = rows.map((r) => ({
     capturedAt: r.capturedAt.toISOString(),
     personaCohesion: r.personaCohesion,
@@ -1165,40 +1355,7 @@ export async function getPulse(range: '7d' | '30d' | '90d' = '30d'): Promise<Pul
 }
 async function computePulse(range: '7d' | '30d' | '90d'): Promise<PulseDTO> {
   const { since } = dayBuckets(range);
-  const labIds = (await loadLabUsers()).map((u) => u._id) as Types.ObjectId[];
-
-  const dayGroup = (dateField: string) => ({
-    _id: { $dateToString: { format: '%Y-%m-%d', date: `$${dateField}` } },
-  });
-
-  const [posts, comments, likes, fidelity, drift] = await Promise.all([
-    Post.aggregate([
-      { $match: { authorId: { $in: labIds }, status: 'active', createdAt: { $gte: since } } },
-      { $group: { ...dayGroup('createdAt'), n: { $sum: 1 } } },
-    ]),
-    Comment.aggregate([
-      { $match: { authorId: { $in: labIds }, status: 'active', createdAt: { $gte: since } } },
-      { $group: { ...dayGroup('createdAt'), n: { $sum: 1 } } },
-    ]),
-    Like.aggregate([
-      { $match: { userId: { $in: labIds }, createdAt: { $gte: since } } },
-      { $group: { ...dayGroup('createdAt'), n: { $sum: 1 } } },
-    ]),
-    BehaviorSnapshot.aggregate([
-      { $match: { userId: { $in: labIds }, capturedAt: { $gte: since } } },
-      { $group: { ...dayGroup('capturedAt'), avg: { $avg: '$fidelity' } } },
-    ]),
-    PersonalitySnapshot.aggregate([
-      {
-        $match: {
-          userId: { $in: labIds },
-          snapshotType: 'dream',
-          capturedAt: { $gte: since },
-        },
-      },
-      { $group: { ...dayGroup('capturedAt'), avg: { $avg: '$driftFromPrev' } } },
-    ]),
-  ]);
+  const labIds = (await loadLabUsers()).map((u) => u.id);
 
   const byDay = new Map<string, PulsePointDTO>();
   const today = new Date();
@@ -1215,25 +1372,101 @@ async function computePulse(range: '7d' | '30d' | '90d'): Promise<PulseDTO> {
       meanDriftVelocity: null,
     });
   }
-  const bump = (rows: Array<{ _id: string; n: number }>, field: 'posts' | 'comments' | 'likes') => {
-    for (const r of rows) {
-      const row = byDay.get(String(r._id));
-      if (row) {
-        row[field] = r.n;
-        row.actions += r.n;
+
+  if (labIds.length) {
+    const [postDates, commentDates, likeDates, fidRows, driftRows] = await Promise.all([
+      db
+        .select({ createdAt: posts.createdAt })
+        .from(posts)
+        .where(
+          and(
+            inArray(posts.authorId, labIds),
+            eq(posts.status, 'active'),
+            gte(posts.createdAt, since),
+          ),
+        ),
+      db
+        .select({ createdAt: comments.createdAt })
+        .from(comments)
+        .where(
+          and(
+            inArray(comments.authorId, labIds),
+            eq(comments.status, 'active'),
+            gte(comments.createdAt, since),
+          ),
+        ),
+      db
+        .select({ createdAt: likes.createdAt })
+        .from(likes)
+        .where(and(inArray(likes.userId, labIds), gte(likes.createdAt, since))),
+      db
+        .select({
+          capturedAt: behaviorSnapshots.capturedAt,
+          fidelity: behaviorSnapshots.fidelity,
+        })
+        .from(behaviorSnapshots)
+        .where(
+          and(
+            inArray(behaviorSnapshots.userId, labIds),
+            gte(behaviorSnapshots.capturedAt, since),
+          ),
+        ),
+      db
+        .select({
+          capturedAt: personalitySnapshots.capturedAt,
+          driftFromPrev: personalitySnapshots.driftFromPrev,
+        })
+        .from(personalitySnapshots)
+        .where(
+          and(
+            inArray(personalitySnapshots.userId, labIds),
+            eq(personalitySnapshots.snapshotType, 'dream'),
+            gte(personalitySnapshots.capturedAt, since),
+          ),
+        ),
+    ]);
+
+    const bumpDates = (
+      dates: Array<{ createdAt: Date }>,
+      field: 'posts' | 'comments' | 'likes',
+    ) => {
+      for (const r of dates) {
+        const row = byDay.get(isoDay(r.createdAt));
+        if (row) {
+          row[field] += 1;
+          row.actions += 1;
+        }
+      }
+    };
+    bumpDates(postDates, 'posts');
+    bumpDates(commentDates, 'comments');
+    bumpDates(likeDates, 'likes');
+
+    const fidByDay = new Map<string, number[]>();
+    for (const r of fidRows) {
+      if (typeof r.fidelity === 'number') {
+        const k = isoDay(r.capturedAt);
+        const arr = fidByDay.get(k);
+        if (arr) arr.push(r.fidelity);
+        else fidByDay.set(k, [r.fidelity]);
       }
     }
-  };
-  bump(posts as Array<{ _id: string; n: number }>, 'posts');
-  bump(comments as Array<{ _id: string; n: number }>, 'comments');
-  bump(likes as Array<{ _id: string; n: number }>, 'likes');
-  for (const r of fidelity as Array<{ _id: string; avg: number | null }>) {
-    const row = byDay.get(String(r._id));
-    if (row && typeof r.avg === 'number') row.meanFidelity = r.avg;
-  }
-  for (const r of drift as Array<{ _id: string; avg: number | null }>) {
-    const row = byDay.get(String(r._id));
-    if (row && typeof r.avg === 'number') row.meanDriftVelocity = r.avg;
+    for (const [k, arr] of fidByDay) {
+      const row = byDay.get(k);
+      if (row && arr.length) row.meanFidelity = arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
+
+    const driftByDay = new Map<string, number[]>();
+    for (const r of driftRows) {
+      const k = isoDay(r.capturedAt);
+      const arr = driftByDay.get(k);
+      if (arr) arr.push(r.driftFromPrev);
+      else driftByDay.set(k, [r.driftFromPrev]);
+    }
+    for (const [k, arr] of driftByDay) {
+      const row = byDay.get(k);
+      if (row && arr.length) row.meanDriftVelocity = arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
   }
 
   return { range, points: Array.from(byDay.values()) };
@@ -1258,53 +1491,99 @@ export async function getAlerts(range: '7d' | '30d' | '90d' = '30d'): Promise<Al
 async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const idToUser = new Map(((await loadLabUsers()) as LabUser[]).map((u) => [String(u._id), u]));
+  const idToUser = new Map((await loadLabUsers()).map((u) => [u.id, u]));
 
-  const [latestPersona, latestBehavior, dreamFails, echoFlags, ruleFlags] = await Promise.all([
-    PersonalitySnapshot.aggregate<{ _id: Types.ObjectId; driftFromPrev: number; capturedAt: Date }>([
-      { $sort: { capturedAt: 1 } },
-      {
-        $group: {
-          _id: '$userId',
-          driftFromPrev: { $last: '$driftFromPrev' },
-          capturedAt: { $last: '$capturedAt' },
-        },
-      },
-    ]),
-    BehaviorSnapshot.aggregate<{ _id: Types.ObjectId; fidelity: number | null; capturedAt: Date }>([
-      { $sort: { capturedAt: 1 } },
-      {
-        $group: {
-          _id: '$userId',
-          fidelity: { $last: '$fidelity' },
-          capturedAt: { $last: '$capturedAt' },
-        },
-      },
-    ]),
-    AgentEvent.aggregate<{ _id: Types.ObjectId; count: number; last: Date }>([
-      { $match: { type: 'dream', outcome: 'fail', createdAt: { $gte: since } } },
-      { $group: { _id: '$userId', count: { $sum: 1 }, last: { $max: '$createdAt' } } },
-    ]),
-    AgentEvent.aggregate<{ _id: Types.ObjectId; last: Date }>([
-      { $match: { type: 'echo_flag', outcome: 'flagged', createdAt: { $gte: since } } },
-      { $group: { _id: '$userId', last: { $max: '$createdAt' } } },
-    ]),
-    AgentEvent.aggregate<{ _id: Types.ObjectId; last: Date; summary: string }>([
-      { $match: { type: 'rule_check', outcome: 'flagged', createdAt: { $gte: since } } },
-      { $sort: { createdAt: 1 } },
-      { $group: { _id: '$userId', last: { $last: '$createdAt' }, summary: { $last: '$summary' } } },
-    ]),
-  ]);
+  const [personaSnaps, behaviorSnaps, dreamFailRows, echoFlagRows, ruleFlagRows] =
+    await Promise.all([
+      db
+        .select({
+          userId: personalitySnapshots.userId,
+          driftFromPrev: personalitySnapshots.driftFromPrev,
+          capturedAt: personalitySnapshots.capturedAt,
+        })
+        .from(personalitySnapshots)
+        .orderBy(asc(personalitySnapshots.capturedAt)),
+      db
+        .select({
+          userId: behaviorSnapshots.userId,
+          fidelity: behaviorSnapshots.fidelity,
+          capturedAt: behaviorSnapshots.capturedAt,
+        })
+        .from(behaviorSnapshots)
+        .orderBy(asc(behaviorSnapshots.capturedAt)),
+      db
+        .select({ userId: agentEvents.userId, createdAt: agentEvents.createdAt })
+        .from(agentEvents)
+        .where(
+          and(
+            eq(agentEvents.type, 'dream'),
+            eq(agentEvents.outcome, 'fail'),
+            gte(agentEvents.createdAt, since),
+          ),
+        ),
+      db
+        .select({ userId: agentEvents.userId, createdAt: agentEvents.createdAt })
+        .from(agentEvents)
+        .where(
+          and(
+            eq(agentEvents.type, 'echo_flag'),
+            eq(agentEvents.outcome, 'flagged'),
+            gte(agentEvents.createdAt, since),
+          ),
+        ),
+      db
+        .select({
+          userId: agentEvents.userId,
+          createdAt: agentEvents.createdAt,
+          summary: agentEvents.summary,
+        })
+        .from(agentEvents)
+        .where(
+          and(
+            eq(agentEvents.type, 'rule_check'),
+            eq(agentEvents.outcome, 'flagged'),
+            gte(agentEvents.createdAt, since),
+          ),
+        )
+        .orderBy(asc(agentEvents.createdAt)),
+    ]);
+
+  // Latest persona / behavior sample per user (rows arrive capturedAt asc).
+  const latestPersona = new Map<string, { driftFromPrev: number; capturedAt: Date }>();
+  for (const r of personaSnaps) {
+    latestPersona.set(r.userId, { driftFromPrev: r.driftFromPrev, capturedAt: r.capturedAt });
+  }
+  const latestBehavior = new Map<string, { fidelity: number | null; capturedAt: Date }>();
+  for (const r of behaviorSnaps) {
+    latestBehavior.set(r.userId, { fidelity: r.fidelity, capturedAt: r.capturedAt });
+  }
+  const dreamFails = new Map<string, { count: number; last: Date }>();
+  for (const r of dreamFailRows) {
+    const cur = dreamFails.get(r.userId);
+    if (cur) {
+      cur.count += 1;
+      if (r.createdAt > cur.last) cur.last = r.createdAt;
+    } else {
+      dreamFails.set(r.userId, { count: 1, last: r.createdAt });
+    }
+  }
+  const echoFlags = new Map<string, Date>();
+  for (const r of echoFlagRows) {
+    const cur = echoFlags.get(r.userId);
+    if (!cur || r.createdAt > cur) echoFlags.set(r.userId, r.createdAt);
+  }
+  const ruleFlags = new Map<string, { last: Date; summary: string }>();
+  for (const r of ruleFlagRows) ruleFlags.set(r.userId, { last: r.createdAt, summary: r.summary });
 
   const alerts: AnomalyAlertDTO[] = [];
   const push = (
-    id: Types.ObjectId,
+    id: string,
     severity: AnomalyAlertDTO['severity'],
     kind: string,
     message: string,
     at: Date,
   ) => {
-    const u = idToUser.get(String(id));
+    const u = idToUser.get(id);
     if (!u) return;
     alerts.push({
       username: u.username,
@@ -1317,10 +1596,10 @@ async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
     });
   };
 
-  for (const r of latestPersona) {
+  for (const [id, r] of latestPersona) {
     if (r.driftFromPrev > DRIFT_SPIKE_THRESHOLD && r.capturedAt >= since) {
       push(
-        r._id,
+        id,
         'danger',
         'drift_spike',
         `Personality jumped ${r.driftFromPrev.toFixed(3)} from the previous version`,
@@ -1328,10 +1607,10 @@ async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
       );
     }
   }
-  for (const r of latestBehavior) {
+  for (const [id, r] of latestBehavior) {
     if (typeof r.fidelity === 'number' && r.fidelity < FIDELITY_FLOOR) {
       push(
-        r._id,
+        id,
         'warning',
         'low_fidelity',
         `Persona fidelity low (${r.fidelity.toFixed(3)}) — posts diverging from the stated self`,
@@ -1339,10 +1618,10 @@ async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
       );
     }
   }
-  for (const r of dreamFails) {
+  for (const [id, r] of dreamFails) {
     if (r.count >= DREAM_FAIL_STREAK) {
       push(
-        r._id,
+        id,
         'warning',
         'dream_rejected',
         `${r.count} dreams rejected by the drift gate — anchor may be straining`,
@@ -1350,11 +1629,11 @@ async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
       );
     }
   }
-  for (const r of echoFlags) {
-    push(r._id, 'warning', 'echo_chamber', 'Recent posts flagged as echo-chamber (low variance)', r.last);
+  for (const [id, last] of echoFlags) {
+    push(id, 'warning', 'echo_chamber', 'Recent posts flagged as echo-chamber (low variance)', last);
   }
-  for (const r of ruleFlags) {
-    push(r._id, 'info', 'rule_violation', r.summary || 'Stated rule not consistently followed', r.last);
+  for (const [id, r] of ruleFlags) {
+    push(id, 'info', 'rule_violation', r.summary || 'Stated rule not consistently followed', r.last);
   }
 
   const sevRank: Record<AnomalyAlertDTO['severity'], number> = { danger: 0, warning: 1, info: 2 };
@@ -1381,80 +1660,120 @@ async function computeInfluences(
   range: '7d' | '30d' | '90d',
 ): Promise<InfluencesDTO> {
   const agent = await findAgentByUsername(username);
-  const uid = agent._id;
+  const uid = agent.id;
   const { since, days } = dayBuckets(range);
 
-  const snaps = (await PersonalitySnapshot.find({ userId: uid })
-    .sort({ capturedAt: 1 })
-    .select('capturedAt driftFromAnchor')
-    .lean()) as unknown as Array<{ capturedAt: Date; driftFromAnchor: number }>;
+  const snaps = await db
+    .select({
+      capturedAt: personalitySnapshots.capturedAt,
+      driftFromAnchor: personalitySnapshots.driftFromAnchor,
+    })
+    .from(personalitySnapshots)
+    .where(eq(personalitySnapshots.userId, uid))
+    .orderBy(asc(personalitySnapshots.capturedAt));
   const drift = snaps.map((s) => ({
     capturedAt: s.capturedAt.toISOString(),
     distanceFromAnchor: s.driftFromAnchor,
   }));
 
-  // Outbound interactions, grouped by the partner this agent engaged.
-  const [cOut, rOut, eOut, lOut, postsByDay, commentsByDay, likesByDay, behaviorRows] =
+  // Outbound interactions, one row per interaction (partner = the account engaged).
+  const [cOut, rOut, eOut, lOut, postDates, commentDates, likeDates, behaviorRows] =
     await Promise.all([
-      Comment.aggregate<{ _id: Types.ObjectId; count: number }>([
-        { $match: { authorId: uid, status: 'active', parentId: null, createdAt: { $gte: since } } },
-        { $lookup: { from: 'posts', localField: 'postId', foreignField: '_id', as: 'post' } },
-        { $unwind: '$post' },
-        { $match: { 'post.status': 'active', $expr: { $ne: ['$authorId', '$post.authorId'] } } },
-        { $group: { _id: '$post.authorId', count: { $sum: 1 } } },
-      ]),
-      Comment.aggregate<{ _id: Types.ObjectId; count: number }>([
-        {
-          $match: { authorId: uid, status: 'active', parentId: { $ne: null }, createdAt: { $gte: since } },
-        },
-        { $lookup: { from: 'comments', localField: 'parentId', foreignField: '_id', as: 'parent' } },
-        { $unwind: '$parent' },
-        { $match: { 'parent.status': 'active', $expr: { $ne: ['$authorId', '$parent.authorId'] } } },
-        { $group: { _id: '$parent.authorId', count: { $sum: 1 } } },
-      ]),
-      Post.aggregate<{ _id: Types.ObjectId; count: number }>([
-        { $match: { authorId: uid, status: 'active', echoOf: { $ne: null }, createdAt: { $gte: since } } },
-        { $lookup: { from: 'posts', localField: 'echoOf', foreignField: '_id', as: 'orig' } },
-        { $unwind: '$orig' },
-        { $match: { 'orig.status': 'active', $expr: { $ne: ['$authorId', '$orig.authorId'] } } },
-        { $group: { _id: '$orig.authorId', count: { $sum: 1 } } },
-      ]),
-      Like.aggregate<{ _id: Types.ObjectId; count: number }>([
-        { $match: { userId: uid, targetType: 'post', createdAt: { $gte: since } } },
-        { $lookup: { from: 'posts', localField: 'targetId', foreignField: '_id', as: 'post' } },
-        { $unwind: '$post' },
-        { $match: { 'post.status': 'active', $expr: { $ne: ['$userId', '$post.authorId'] } } },
-        { $group: { _id: '$post.authorId', count: { $sum: 1 } } },
-      ]),
-      Post.aggregate<{ _id: string; n: number }>([
-        { $match: { authorId: uid, status: 'active', createdAt: { $gte: since } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
-      ]),
-      Comment.aggregate<{ _id: string; n: number }>([
-        { $match: { authorId: uid, status: 'active', createdAt: { $gte: since } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
-      ]),
-      Like.aggregate<{ _id: string; n: number }>([
-        { $match: { userId: uid, createdAt: { $gte: since } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
-      ]),
-      BehaviorSnapshot.aggregate<{ _id: Types.ObjectId; embedding: number[] }>([
-        { $sort: { capturedAt: 1 } },
-        { $group: { _id: '$userId', embedding: { $last: '$embedding' } } },
-      ]),
+      db
+        .select({ partner: posts.authorId })
+        .from(comments)
+        .innerJoin(posts, eq(comments.postId, posts.id))
+        .where(
+          and(
+            eq(comments.authorId, uid),
+            eq(comments.status, 'active'),
+            isNull(comments.parentId),
+            gte(comments.createdAt, since),
+            eq(posts.status, 'active'),
+            ne(comments.authorId, posts.authorId),
+          ),
+        ),
+      db
+        .select({ partner: parentComments.authorId })
+        .from(comments)
+        .innerJoin(parentComments, eq(comments.parentId, parentComments.id))
+        .where(
+          and(
+            eq(comments.authorId, uid),
+            eq(comments.status, 'active'),
+            isNotNull(comments.parentId),
+            gte(comments.createdAt, since),
+            eq(parentComments.status, 'active'),
+            ne(comments.authorId, parentComments.authorId),
+          ),
+        ),
+      db
+        .select({ partner: origPosts.authorId })
+        .from(posts)
+        .innerJoin(origPosts, eq(posts.echoOf, origPosts.id))
+        .where(
+          and(
+            eq(posts.authorId, uid),
+            eq(posts.status, 'active'),
+            isNotNull(posts.echoOf),
+            gte(posts.createdAt, since),
+            eq(origPosts.status, 'active'),
+            ne(posts.authorId, origPosts.authorId),
+          ),
+        ),
+      db
+        .select({ partner: posts.authorId })
+        .from(likes)
+        .innerJoin(posts, eq(likes.targetId, posts.id))
+        .where(
+          and(
+            eq(likes.userId, uid),
+            eq(likes.targetType, 'post'),
+            gte(likes.createdAt, since),
+            eq(posts.status, 'active'),
+            ne(likes.userId, posts.authorId),
+          ),
+        ),
+      db
+        .select({ createdAt: posts.createdAt })
+        .from(posts)
+        .where(
+          and(eq(posts.authorId, uid), eq(posts.status, 'active'), gte(posts.createdAt, since)),
+        ),
+      db
+        .select({ createdAt: comments.createdAt })
+        .from(comments)
+        .where(
+          and(
+            eq(comments.authorId, uid),
+            eq(comments.status, 'active'),
+            gte(comments.createdAt, since),
+          ),
+        ),
+      db
+        .select({ createdAt: likes.createdAt })
+        .from(likes)
+        .where(and(eq(likes.userId, uid), gte(likes.createdAt, since))),
+      db
+        .select({ userId: behaviorSnapshots.userId, embedding: behaviorSnapshots.embedding })
+        .from(behaviorSnapshots)
+        .orderBy(asc(behaviorSnapshots.capturedAt)),
     ]);
 
   // Merge outbound counts per partner id.
   const counts = new Map<string, number>();
-  for (const arr of [cOut, rOut, eOut, lOut]) {
-    for (const row of arr) counts.set(String(row._id), (counts.get(String(row._id)) ?? 0) + row.count);
-  }
+  const addCounts = (rows: Array<{ partner: string }>) => {
+    for (const r of rows) counts.set(r.partner, (counts.get(r.partner) ?? 0) + 1);
+  };
+  addCounts(cOut);
+  addCounts(rOut);
+  addCounts(eOut);
+  addCounts(lOut);
 
-  const idToUser = new Map(((await loadLabUsers()) as LabUser[]).map((u) => [String(u._id), u]));
-  const vecById = new Map(
-    behaviorRows.filter((r) => r.embedding?.length).map((r) => [String(r._id), r.embedding]),
-  );
-  const selfVec = vecById.get(String(uid)) ?? null;
+  const idToUser = new Map((await loadLabUsers()).map((u) => [u.id, u]));
+  const vecById = new Map<string, number[]>();
+  for (const r of behaviorRows) if (r.embedding?.length) vecById.set(r.userId, r.embedding);
+  const selfVec = vecById.get(uid) ?? null;
 
   const partners: InfluencePartnerDTO[] = [];
   for (const [id, interactions] of counts) {
@@ -1474,9 +1793,15 @@ async function computeInfluences(
 
   // Daily outbound activity (posts + comments + likes), zero-filled.
   const byDay = new Map<string, number>();
-  for (const arr of [postsByDay, commentsByDay, likesByDay]) {
-    for (const row of arr) byDay.set(row._id, (byDay.get(row._id) ?? 0) + row.n);
-  }
+  const bumpAct = (dates: Array<{ createdAt: Date }>) => {
+    for (const d of dates) {
+      const key = isoDay(d.createdAt);
+      byDay.set(key, (byDay.get(key) ?? 0) + 1);
+    }
+  };
+  bumpAct(postDates);
+  bumpAct(commentDates);
+  bumpAct(likeDates);
   const activity: Array<{ date: string; actions: number }> = [];
   for (let i = 0; i < days; i++) {
     const d = new Date(since);
@@ -1490,26 +1815,27 @@ async function computeInfluences(
 
 /* ---------- Persona Bench: ingest + reads ---------- */
 
-export async function ingestBenchmarkRun(
-  input: BenchmarkRunIngestInput,
-): Promise<{ id: string }> {
-  const doc = await BenchmarkRun.create({
-    batchId: input.batchId,
-    persona: input.persona,
-    personaDisplay: input.personaDisplay ?? '',
-    model: input.model,
-    taskId: input.taskId,
-    taskKind: input.taskKind ?? '',
-    runIndex: input.runIndex ?? 0,
-    output: input.output ?? '',
-    vectorFidelity: input.vectorFidelity ?? null,
-    judgeScore: input.judgeScore ?? null,
-    ruleScore: input.ruleScore ?? null,
-    ruleDetail: input.ruleDetail ?? '',
-    latencyMs: input.latencyMs ?? null,
-    capturedAt: input.capturedAt ?? new Date(),
-  });
-  return { id: doc._id.toString() };
+export async function ingestBenchmarkRun(input: BenchmarkRunIngestInput): Promise<{ id: string }> {
+  const [doc] = await db
+    .insert(benchmarkRuns)
+    .values({
+      batchId: input.batchId,
+      persona: input.persona,
+      personaDisplay: input.personaDisplay ?? '',
+      model: input.model,
+      taskId: input.taskId,
+      taskKind: input.taskKind ?? '',
+      runIndex: input.runIndex ?? 0,
+      output: input.output ?? '',
+      vectorFidelity: input.vectorFidelity ?? null,
+      judgeScore: input.judgeScore ?? null,
+      ruleScore: input.ruleScore ?? null,
+      ruleDetail: input.ruleDetail ?? '',
+      latencyMs: input.latencyMs ?? null,
+      capturedAt: input.capturedAt ?? new Date(),
+    })
+    .returning();
+  return { id: doc.id };
 }
 
 interface BenchRow {
@@ -1539,11 +1865,29 @@ const stddevOf = (xs: number[]): number => {
 
 /** Load the most-recent batch's rows — the leaderboard reflects the latest sweep. */
 async function loadLatestBenchRows(): Promise<BenchRow[]> {
-  const latest = (await BenchmarkRun.findOne().sort({ createdAt: -1 }).select('batchId').lean()) as {
-    batchId?: string;
-  } | null;
+  const [latest] = await db
+    .select({ batchId: benchmarkRuns.batchId })
+    .from(benchmarkRuns)
+    .orderBy(desc(benchmarkRuns.createdAt))
+    .limit(1);
   if (!latest?.batchId) return [];
-  return (await BenchmarkRun.find({ batchId: latest.batchId }).lean()) as unknown as BenchRow[];
+  return db
+    .select({
+      persona: benchmarkRuns.persona,
+      personaDisplay: benchmarkRuns.personaDisplay,
+      model: benchmarkRuns.model,
+      taskId: benchmarkRuns.taskId,
+      taskKind: benchmarkRuns.taskKind,
+      runIndex: benchmarkRuns.runIndex,
+      output: benchmarkRuns.output,
+      vectorFidelity: benchmarkRuns.vectorFidelity,
+      judgeScore: benchmarkRuns.judgeScore,
+      ruleScore: benchmarkRuns.ruleScore,
+      ruleDetail: benchmarkRuns.ruleDetail,
+      latencyMs: benchmarkRuns.latencyMs,
+    })
+    .from(benchmarkRuns)
+    .where(eq(benchmarkRuns.batchId, latest.batchId));
 }
 
 const benchLeaderboardCache = new TTLCache<string, BenchmarkLeaderboardDTO>(30_000);

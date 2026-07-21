@@ -1,105 +1,128 @@
-import { Types } from 'mongoose';
-import { Comment, type CommentDocument } from '../../models/comment.model';
-import { Post } from '../../models/post.model';
-import { User, type UserDocument } from '../../models/user.model';
-import { Like } from '../../models/like.model';
+import { and, or, eq, inArray, asc, gt, sql } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { posts, comments, users, likes } from '../../db/schema';
 import { AppError } from '../../lib/errors';
-import {
-  type Cursor,
-  cursorFilterAsc,
-  buildNextCursor,
-} from '../../lib/pagination';
+import { type Cursor, encodeCursor } from '../../lib/pagination';
 import { assertVisibility } from '../posts/posts.service';
-import type { CommentDTOContext } from '../../lib/dto';
+import type { CommentDTOContext, CommentRow, UserRow } from '../../lib/dto';
 import { createNotification } from '../notifications/notifications.service';
 import { refreshFeedScore } from '../../lib/feedScorer';
 import { extractMentionUsernames } from '../../lib/extract';
 
 export async function listForPost(
   postId: string,
-  viewer: UserDocument | null,
+  viewer: UserRow | null,
   cursor: Cursor | null,
   limit: number,
 ): Promise<{
-  items: CommentDocument[];
+  items: CommentRow[];
   nextCursor: string | null;
   ctxByCommentId: Map<string, CommentDTOContext>;
 }> {
-  const post = await Post.findById(postId);
+  const [post] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   if (!post || post.status !== 'active') throw AppError.notFound('Post not found');
   await assertVisibility(post, viewer);
 
-  const filter = {
-    postId: post._id,
-    status: { $in: ['active', 'deleted'] },
-    ...cursorFilterAsc(cursor),
-  };
-  const docs = (await Comment.find(filter)
-    .sort({ createdAt: 1, _id: 1 })
-    .limit(limit + 1)
-    .lean()) as unknown as CommentDocument[];
+  // Ascending pagination (oldest-first), ties broken by id.
+  const cursorCond = cursor
+    ? or(
+        gt(comments.createdAt, new Date(cursor.t)),
+        and(eq(comments.createdAt, new Date(cursor.t)), gt(comments.id, cursor.id)),
+      )
+    : undefined;
 
-  const { items, nextCursor } = buildNextCursor(docs, limit);
+  const rows = await db
+    .select()
+    .from(comments)
+    .where(and(eq(comments.postId, post.id), inArray(comments.status, ['active', 'deleted']), cursorCond))
+    .orderBy(asc(comments.createdAt), asc(comments.id))
+    .limit(limit + 1);
 
-  const authorIds = Array.from(new Set(items.map((c) => c.authorId.toString())));
-  const authors = (await User.find({
-    _id: { $in: authorIds.map((id) => new Types.ObjectId(id)) },
-  }).lean()) as unknown as UserDocument[];
-  const authorById = new Map(authors.map((u) => [u._id.toString(), u]));
+  let items = rows;
+  let nextCursor: string | null = null;
+  if (rows.length > limit) {
+    items = rows.slice(0, limit);
+    const last = items[items.length - 1];
+    nextCursor = encodeCursor({ t: last.createdAt.toISOString(), id: last.id });
+  }
+
+  const authorIds = Array.from(new Set(items.map((c) => c.authorId)));
+  const authors = authorIds.length
+    ? await db.select().from(users).where(inArray(users.id, authorIds))
+    : [];
+  const authorById = new Map(authors.map((u) => [u.id, u]));
 
   let likedIds = new Set<string>();
   if (viewer && items.length) {
-    const likes = (await Like.find({
-      userId: viewer._id,
-      targetType: 'comment',
-      targetId: { $in: items.map((c) => c._id) },
-    }).select('targetId').lean()) as unknown as Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>;
-    likedIds = new Set(likes.map((l) => l.targetId.toString()));
+    const likeRows = await db
+      .select({ targetId: likes.targetId })
+      .from(likes)
+      .where(
+        and(
+          eq(likes.userId, viewer.id),
+          eq(likes.targetType, 'comment'),
+          inArray(
+            likes.targetId,
+            items.map((c) => c.id),
+          ),
+        ),
+      );
+    likedIds = new Set(likeRows.map((l) => l.targetId));
   }
 
   const ctxByCommentId = new Map<string, CommentDTOContext>();
   for (const c of items) {
-    const author = authorById.get(c.authorId.toString());
+    const author = authorById.get(c.authorId);
     if (!author) continue;
-    ctxByCommentId.set(c._id.toString(), { author, likedByMe: likedIds.has(c._id.toString()) });
+    ctxByCommentId.set(c.id, { author, likedByMe: likedIds.has(c.id) });
   }
 
   return { items, nextCursor, ctxByCommentId };
 }
 
 export async function createComment(
-  actor: UserDocument,
+  actor: UserRow,
   postId: string,
   text: string,
   parentId: string | null,
-): Promise<{ comment: CommentDocument; ctx: CommentDTOContext }> {
-  const post = await Post.findById(postId);
+): Promise<{ comment: CommentRow; ctx: CommentDTOContext }> {
+  const [post] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   if (!post || post.status !== 'active') throw AppError.notFound('Post not found');
   await assertVisibility(post, actor);
 
-  let parent: CommentDocument | null = null;
+  let parent: CommentRow | null = null;
   if (parentId) {
-    parent = await Comment.findById(parentId);
-    if (!parent || parent.status !== 'active' || !parent.postId.equals(post._id)) {
+    const [p] = await db.select().from(comments).where(eq(comments.id, parentId)).limit(1);
+    parent = p ?? null;
+    if (!parent || parent.status !== 'active' || parent.postId !== post.id) {
       throw AppError.notFound('Parent comment not found');
     }
   }
 
   const mentionUsernames = extractMentionUsernames(text);
   const mentionUsers = mentionUsernames.length
-    ? await User.find({ username: { $in: mentionUsernames }, status: 'active' }).select('_id')
+    ? await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(inArray(users.username, mentionUsernames), eq(users.status, 'active')))
     : [];
 
-  const comment = await Comment.create({
-    postId: post._id,
-    authorId: actor._id,
-    parentId: parent ? parent._id : null,
-    text,
-    mentionIds: mentionUsers.map((u) => u._id),
-  });
+  const [comment] = await db
+    .insert(comments)
+    .values({
+      postId: post.id,
+      authorId: actor.id,
+      parentId: parent ? parent.id : null,
+      text,
+      mentionIds: mentionUsers.map((u) => u.id),
+    })
+    .returning();
 
-  await Post.updateOne({ _id: post._id }, { $inc: { commentCount: 1 } });
-  refreshFeedScore(post._id);
+  await db
+    .update(posts)
+    .set({ commentCount: sql`${posts.commentCount} + 1` })
+    .where(eq(posts.id, post.id));
+  refreshFeedScore(post.id);
 
   // Notifications — fire concurrently
   const notifJobs: Promise<void>[] = [];
@@ -108,17 +131,17 @@ export async function createComment(
       parent
         ? {
             recipientId: parent.authorId,
-            actorId: actor._id,
+            actorId: actor.id,
             type: 'reply',
-            postId: post._id,
-            commentId: comment._id,
+            postId: post.id,
+            commentId: comment.id,
           }
         : {
             recipientId: post.authorId,
-            actorId: actor._id,
+            actorId: actor.id,
             type: 'comment',
-            postId: post._id,
-            commentId: comment._id,
+            postId: post.id,
+            commentId: comment.id,
           },
     ),
   );
@@ -126,16 +149,16 @@ export async function createComment(
   // Mention notifications — skip if already notified as post/parent author
   const alreadyNotified = new Set<string>();
   alreadyNotified.add(actor.id);
-  alreadyNotified.add(parent ? parent.authorId.toString() : post.authorId.toString());
+  alreadyNotified.add(parent ? parent.authorId : post.authorId);
   for (const u of mentionUsers) {
-    if (alreadyNotified.has(u._id.toString())) continue;
+    if (alreadyNotified.has(u.id)) continue;
     notifJobs.push(
       createNotification({
-        recipientId: u._id,
-        actorId: actor._id,
+        recipientId: u.id,
+        actorId: actor.id,
         type: 'mention',
-        postId: post._id,
-        commentId: comment._id,
+        postId: post.id,
+        commentId: comment.id,
       }),
     );
   }
@@ -145,30 +168,36 @@ export async function createComment(
 }
 
 export async function updateComment(
-  actor: UserDocument,
+  actor: UserRow,
   commentId: string,
   text: string,
-): Promise<{ comment: CommentDocument; ctx: CommentDTOContext }> {
-  const comment = await Comment.findById(commentId);
-  if (!comment || comment.status !== 'active') throw AppError.notFound('Comment not found');
-  if (!comment.authorId.equals(actor._id)) throw AppError.forbidden('Not your comment');
+): Promise<{ comment: CommentRow; ctx: CommentDTOContext }> {
+  const [existing] = await db.select().from(comments).where(eq(comments.id, commentId)).limit(1);
+  if (!existing || existing.status !== 'active') throw AppError.notFound('Comment not found');
+  if (existing.authorId !== actor.id) throw AppError.forbidden('Not your comment');
 
-  comment.text = text;
-  comment.editedAt = new Date();
-  await comment.save();
+  const [comment] = await db
+    .update(comments)
+    .set({ text, editedAt: new Date() })
+    .where(eq(comments.id, commentId))
+    .returning();
 
   return { comment, ctx: { author: actor } };
 }
 
-export async function deleteComment(actor: UserDocument, commentId: string): Promise<void> {
-  const comment = await Comment.findById(commentId);
+export async function deleteComment(actor: UserRow, commentId: string): Promise<void> {
+  const [comment] = await db.select().from(comments).where(eq(comments.id, commentId)).limit(1);
   if (!comment || comment.status !== 'active') throw AppError.notFound('Comment not found');
-  if (!comment.authorId.equals(actor._id)) throw AppError.forbidden('Not your comment');
+  if (comment.authorId !== actor.id) throw AppError.forbidden('Not your comment');
 
-  comment.status = 'deleted';
-  comment.deletedAt = new Date();
-  await comment.save();
+  await db
+    .update(comments)
+    .set({ status: 'deleted', deletedAt: new Date() })
+    .where(eq(comments.id, commentId));
 
-  await Post.updateOne({ _id: comment.postId }, { $inc: { commentCount: -1 } });
+  await db
+    .update(posts)
+    .set({ commentCount: sql`${posts.commentCount} - 1` })
+    .where(eq(posts.id, comment.postId));
   refreshFeedScore(comment.postId);
 }

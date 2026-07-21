@@ -1,10 +1,14 @@
-import { Types } from 'mongoose';
-import { Post, type PostDocument } from '../../models/post.model';
-import { User, type UserDocument } from '../../models/user.model';
-import { Tag, type TagDocument } from '../../models/tag.model';
-import { Like } from '../../models/like.model';
-import { Bookmark } from '../../models/bookmark.model';
-import { toPostDTO, type PostDTOContext, type PostDTO } from '../../lib/dto';
+import { and, eq, inArray } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users, posts, tags, likes, bookmarks } from '../../db/schema';
+import {
+  toPostDTO,
+  type PostDTOContext,
+  type PostDTO,
+  type PostRow,
+  type UserRow,
+  type TagRow,
+} from '../../lib/dto';
 
 /**
  * Hydrate a list of posts to their DTO contexts in a single round-trip per
@@ -12,95 +16,94 @@ import { toPostDTO, type PostDTOContext, type PostDTO } from '../../lib/dto';
  * loaded (one extra round-trip covers all echoes in the page).
  */
 export async function hydratePosts(
-  posts: PostDocument[],
-  viewer: UserDocument | null,
+  postList: PostRow[],
+  viewer: UserRow | null,
 ): Promise<Map<string, PostDTOContext>> {
   const authorIds = new Set<string>();
   const tagIds = new Set<string>();
   const mentionIds = new Set<string>();
-  for (const p of posts) {
-    authorIds.add(p.authorId.toString());
-    p.tagIds.forEach((t) => tagIds.add(t.toString()));
-    p.mentionIds.forEach((m) => mentionIds.add(m.toString()));
+  for (const p of postList) {
+    authorIds.add(p.authorId);
+    p.tagIds.forEach((t) => tagIds.add(t));
+    p.mentionIds.forEach((m) => mentionIds.add(m));
   }
 
-  const [authors, tags, mentions, likes, bookmarks] = (await Promise.all([
-    User.find({ _id: { $in: Array.from(authorIds).map((id) => new Types.ObjectId(id)) } }).lean(),
-    tagIds.size
-      ? Tag.find({ _id: { $in: Array.from(tagIds).map((id) => new Types.ObjectId(id)) } }).lean()
-      : Promise.resolve([] as TagDocument[]),
-    mentionIds.size
-      ? User.find({ _id: { $in: Array.from(mentionIds).map((id) => new Types.ObjectId(id)) } }).lean()
-      : Promise.resolve([] as UserDocument[]),
-    viewer && posts.length
-      ? Like.find({
-          userId: viewer._id,
-          targetType: 'post',
-          targetId: { $in: posts.map((p) => p._id) },
-        }).select('targetId').lean()
-      : Promise.resolve([] as Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>),
-    viewer && posts.length
-      ? Bookmark.find({
-          userId: viewer._id,
-          postId: { $in: posts.map((p) => p._id) },
-        }).select('postId').lean()
-      : Promise.resolve([] as Array<{ _id: Types.ObjectId; postId: Types.ObjectId }>),
-  ])) as unknown as [
-    UserDocument[],
-    TagDocument[],
-    UserDocument[],
-    Array<{ _id: Types.ObjectId; targetId: Types.ObjectId }>,
-    Array<{ _id: Types.ObjectId; postId: Types.ObjectId }>,
-  ];
+  const postIds = postList.map((p) => p.id);
 
-  const authorById = new Map(authors.map((u) => [u._id.toString(), u]));
-  const tagById = new Map(tags.map((t) => [t._id.toString(), t]));
-  const mentionById = new Map(mentions.map((u) => [u._id.toString(), u]));
-  const likedSet = new Set(likes.map((l) => l.targetId.toString()));
-  const bookmarkedSet = new Set(bookmarks.map((b) => b.postId.toString()));
+  const [authors, tagRows, mentions, likeRows, bookmarkRows] = await Promise.all([
+    authorIds.size
+      ? db.select().from(users).where(inArray(users.id, Array.from(authorIds)))
+      : Promise.resolve([] as UserRow[]),
+    tagIds.size
+      ? db.select().from(tags).where(inArray(tags.id, Array.from(tagIds)))
+      : Promise.resolve([] as TagRow[]),
+    mentionIds.size
+      ? db.select().from(users).where(inArray(users.id, Array.from(mentionIds)))
+      : Promise.resolve([] as UserRow[]),
+    viewer && postList.length
+      ? db
+          .select({ targetId: likes.targetId })
+          .from(likes)
+          .where(
+            and(
+              eq(likes.userId, viewer.id),
+              eq(likes.targetType, 'post'),
+              inArray(likes.targetId, postIds),
+            ),
+          )
+      : Promise.resolve([] as Array<{ targetId: string }>),
+    viewer && postList.length
+      ? db
+          .select({ postId: bookmarks.postId })
+          .from(bookmarks)
+          .where(and(eq(bookmarks.userId, viewer.id), inArray(bookmarks.postId, postIds)))
+      : Promise.resolve([] as Array<{ postId: string }>),
+  ]);
+
+  const authorById = new Map(authors.map((u) => [u.id, u]));
+  const tagById = new Map(tagRows.map((t) => [t.id, t]));
+  const mentionById = new Map(mentions.map((u) => [u.id, u]));
+  const likedSet = new Set(likeRows.map((l) => l.targetId));
+  const bookmarkedSet = new Set(bookmarkRows.map((b) => b.postId));
 
   // Batch-load echoOf original posts
-  const echoOfIds = posts
-    .filter((p) => p.echoOf)
-    .map((p) => p.echoOf as Types.ObjectId);
+  const echoOfIds = postList.filter((p) => p.echoOf).map((p) => p.echoOf as string);
 
   const echoOfDtoById = new Map<string, PostDTO>();
 
   if (echoOfIds.length) {
-    const origPosts = (await Post.find({
-      _id: { $in: echoOfIds },
-      status: { $in: ['active', 'deleted'] },
-    }).lean()) as unknown as PostDocument[];
+    const origPosts = await db
+      .select()
+      .from(posts)
+      .where(and(inArray(posts.id, echoOfIds), inArray(posts.status, ['active', 'deleted'])));
 
-    const origAuthorIdSet = new Set(origPosts.map((p) => p.authorId.toString()));
-    const origAuthors = (await User.find({
-      _id: { $in: Array.from(origAuthorIdSet).map((id) => new Types.ObjectId(id)) },
-    }).lean()) as unknown as UserDocument[];
-    const origAuthorById = new Map(origAuthors.map((u) => [u._id.toString(), u]));
+    const origAuthorIdSet = new Set(origPosts.map((p) => p.authorId));
+    const origAuthors = origAuthorIdSet.size
+      ? await db.select().from(users).where(inArray(users.id, Array.from(origAuthorIdSet)))
+      : [];
+    const origAuthorById = new Map(origAuthors.map((u) => [u.id, u]));
 
     for (const orig of origPosts) {
-      const origAuthor = origAuthorById.get(orig.authorId.toString());
+      const origAuthor = origAuthorById.get(orig.authorId);
       if (!origAuthor) continue;
       echoOfDtoById.set(
-        orig._id.toString(),
+        orig.id,
         toPostDTO(orig, { author: origAuthor, tags: [], mentions: [], likedByMe: false }),
       );
     }
   }
 
   const out = new Map<string, PostDTOContext>();
-  for (const p of posts) {
-    const author = authorById.get(p.authorId.toString());
+  for (const p of postList) {
+    const author = authorById.get(p.authorId);
     if (!author) continue;
-    out.set(p._id.toString(), {
+    out.set(p.id, {
       author,
-      tags: p.tagIds.map((t) => tagById.get(t.toString())).filter((x): x is TagDocument => !!x),
-      mentions: p.mentionIds
-        .map((m) => mentionById.get(m.toString()))
-        .filter((x): x is UserDocument => !!x),
-      likedByMe: likedSet.has(p._id.toString()),
-      bookmarkedByMe: bookmarkedSet.has(p._id.toString()),
-      echoOf: p.echoOf ? echoOfDtoById.get(p.echoOf.toString()) : undefined,
+      tags: p.tagIds.map((t) => tagById.get(t)).filter((x): x is TagRow => !!x),
+      mentions: p.mentionIds.map((m) => mentionById.get(m)).filter((x): x is UserRow => !!x),
+      likedByMe: likedSet.has(p.id),
+      bookmarkedByMe: bookmarkedSet.has(p.id),
+      echoOf: p.echoOf ? echoOfDtoById.get(p.echoOf) : undefined,
     });
   }
   return out;

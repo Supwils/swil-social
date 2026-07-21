@@ -1,82 +1,77 @@
-import { Types } from 'mongoose';
-import { Bookmark } from '../../models/bookmark.model';
-import { Post } from '../../models/post.model';
+import { and, or, eq, lt, desc, inArray } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { bookmarks, posts } from '../../db/schema';
 import { AppError } from '../../lib/errors';
-import type { UserDocument } from '../../models/user.model';
-import type { PostDTO } from '../../lib/dto';
+import type { PostDTO, PostRow, UserRow } from '../../lib/dto';
 import { toPostDTO } from '../../lib/dto';
-import { decodeCursor, buildNextCursor } from '../../lib/pagination';
+import { decodeCursor, encodeCursor } from '../../lib/pagination';
 import { hydratePosts } from '../posts/posts.service';
-import type { PostDocument } from '../../models/post.model';
 
-export async function bookmark(
-  user: UserDocument,
-  postId: string,
-): Promise<{ bookmarked: true }> {
-  if (!Types.ObjectId.isValid(postId)) throw AppError.notFound('Post not found');
-  const post = await Post.findOne({ _id: postId, status: 'active' }).select('_id');
+export async function bookmark(user: UserRow, postId: string): Promise<{ bookmarked: true }> {
+  const [post] = await db
+    .select({ id: posts.id })
+    .from(posts)
+    .where(and(eq(posts.id, postId), eq(posts.status, 'active')))
+    .limit(1);
   if (!post) throw AppError.notFound('Post not found');
 
-  try {
-    await Bookmark.create({ userId: user._id, postId: new Types.ObjectId(postId) });
-  } catch (err: unknown) {
-    if ((err as { code?: number }).code === 11000) return { bookmarked: true };
-    throw err;
-  }
+  // Idempotent: a duplicate bookmark is a no-op that still reports success.
+  await db.insert(bookmarks).values({ userId: user.id, postId }).onConflictDoNothing();
   return { bookmarked: true };
 }
 
-export async function unbookmark(
-  user: UserDocument,
-  postId: string,
-): Promise<{ bookmarked: false }> {
-  await Bookmark.deleteOne({ userId: user._id, postId: new Types.ObjectId(postId) });
+export async function unbookmark(user: UserRow, postId: string): Promise<{ bookmarked: false }> {
+  await db.delete(bookmarks).where(and(eq(bookmarks.userId, user.id), eq(bookmarks.postId, postId)));
   return { bookmarked: false };
 }
 
 export async function listBookmarks(
-  user: UserDocument,
+  user: UserRow,
   cursor: string | undefined,
   limit: number,
 ): Promise<{ items: PostDTO[]; nextCursor: string | null }> {
   const decoded = decodeCursor(cursor);
 
-  const filter: Record<string, unknown> = { userId: user._id };
-  if (decoded) {
-    const t = new Date(decoded.t);
-    const id = new Types.ObjectId(decoded.id);
-    filter.$or = [
-      { createdAt: { $lt: t } },
-      { createdAt: t, _id: { $lt: id } },
-    ];
-  }
+  // Descending by createdAt, id breaking ties — fetch rows strictly older than
+  // the cursor (which points at the last row of the previous page).
+  const cursorCond = decoded
+    ? or(
+        lt(bookmarks.createdAt, new Date(decoded.t)),
+        and(eq(bookmarks.createdAt, new Date(decoded.t)), lt(bookmarks.id, decoded.id)),
+      )
+    : undefined;
 
-  const bookmarkDocs = await Bookmark.find(filter)
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean();
+  const bookmarkRows = await db
+    .select()
+    .from(bookmarks)
+    .where(and(eq(bookmarks.userId, user.id), cursorCond))
+    .orderBy(desc(bookmarks.createdAt), desc(bookmarks.id))
+    .limit(limit + 1);
 
-  const { items: pageDocs, nextCursor } = buildNextCursor(
-    bookmarkDocs as Array<{ createdAt: Date; _id: Types.ObjectId; postId: Types.ObjectId }>,
-    limit,
-  );
+  const hasMore = bookmarkRows.length > limit;
+  const pageDocs = hasMore ? bookmarkRows.slice(0, limit) : bookmarkRows;
+  const last = pageDocs[pageDocs.length - 1];
+  const nextCursor =
+    hasMore && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }) : null;
 
   const postIds = pageDocs.map((b) => b.postId);
-  const rawPosts = (await Post.find({
-    _id: { $in: postIds },
-    status: 'active',
-  }).lean()) as unknown as PostDocument[];
+  const rawPosts = postIds.length
+    ? await db
+        .select()
+        .from(posts)
+        .where(and(inArray(posts.id, postIds), eq(posts.status, 'active')))
+    : [];
 
-  const postById = new Map(rawPosts.map((p) => [p._id.toString(), p]));
+  const postById = new Map(rawPosts.map((p) => [p.id, p]));
   const orderedPosts = pageDocs
-    .map((b) => postById.get(b.postId.toString()))
-    .filter((p): p is PostDocument => !!p);
+    .map((b) => postById.get(b.postId))
+    .filter((p): p is PostRow => !!p);
 
   const ctxMap = await hydratePosts(orderedPosts, user);
 
   const items = orderedPosts
     .map((p) => {
-      const ctx = ctxMap.get(p._id.toString());
+      const ctx = ctxMap.get(p.id);
       return ctx ? toPostDTO(p, ctx) : null;
     })
     .filter((x): x is PostDTO => x !== null);

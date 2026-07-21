@@ -9,6 +9,37 @@ owner: round-13
 
 **If you are picking up this repo, this is the first file to read.** This document is the authoritative snapshot of where the project stands. v1 shipped in Rounds 1–8. Rounds 9–10 are post-v1 improvements.
 
+## ⚠ Database: migrated MongoDB → Postgres (Neon) — 2026-07-20
+
+The server persistence layer was migrated from **Mongoose/MongoDB** to
+**Drizzle ORM / Postgres**. Mongoose, connect-mongo, and the 17 `*.model.ts`
+files are gone. Key facts for anyone picking up:
+
+- **Schema:** `server/src/db/schema/*.ts` (18 tables). Migrations in
+  `server/src/db/migrations/`. Apply with `npm --prefix server run db:migrate`
+  (needs `DATABASE_URL`). `drizzle-kit generate` after schema edits.
+- **Client:** `server/src/db/client.ts` exports `db` (Drizzle) + `connectDb` /
+  `disconnectDb` / `pingDb`. Services use `db.select/insert/update/delete`.
+- **IDs:** primary keys are the original 24-char ObjectId hex kept as `text`
+  (`lib/id.ts::newId()`), so the API/client `id` format is unchanged.
+- **Embeddings:** `personality_snapshots.embedding` / `behavior_snapshots.embedding`
+  are `vector(1024)` (pgvector); cosine still computed in JS (`lib/vector.ts`).
+- **Sessions:** `connect-pg-simple` on a `session` table (was connect-mongo).
+- **Env:** `DATABASE_URL` (Postgres) replaces `MONGODB_URI`. `MONGO_SOURCE_URI`
+  is only for the one-off ETL. Local dev uses a local Postgres
+  (`swil_social_pg`); tests use `swil_test_pg` (vitest `globalSetup` migrates it,
+  serial execution, `resetDb()` per test).
+- **Data migration:** `server/scripts/migrate-mongo-to-pg.ts` (faithful, count +
+  embedding-fidelity validated). Already run into **Neon** (Vercel Marketplace
+  resource `neon-citron-zebra`, connected to the `swil-social` Vercel project);
+  10,844 rows migrated. Production `DATABASE_URL` = the Neon connection string
+  (use the **direct/unpooled** endpoint for the persistent server; pooled for
+  serverless). Available via `vercel env pull` / repo `.env.local` (gitignored).
+- **Design + plan:** `docs/superpowers/specs/2026-07-20-mongoose-to-neon-migration-design.md`
+  and `docs/superpowers/plans/2026-07-20-mongoose-to-neon-migration.md`.
+- **Bug fixed en route:** `messages.service.send` had a malformed Postgres array
+  binding that broke every 2-person DM; fixed during test conversion.
+
 ## Status
 
 **v1 — COMPLETE. Post-v1 improvements in progress.**

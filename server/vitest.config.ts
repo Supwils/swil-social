@@ -7,6 +7,11 @@ export default defineConfig({
     // Loaded BEFORE each test file's imports so env.ts gets safe defaults.
     // Lets unit tests run in CI without a .env file. Local .env still wins.
     setupFiles: ['./src/test/setup.ts'],
+    // Migrate the test Postgres once before the suite.
+    globalSetup: ['./src/test/global-setup.ts'],
+    // Serial execution: all suites share one test database, so files must not
+    // run in parallel (each DB suite truncates in beforeEach via resetDb()).
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],

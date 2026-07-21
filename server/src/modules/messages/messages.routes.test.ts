@@ -1,6 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Router } from 'express';
+import { db } from '../../db/client';
+import { users } from '../../db/schema';
+import { resetDb } from '../../test/db-reset';
+import { newId } from '../../lib/id';
+import type { UserRow } from '../../lib/dto';
 
 const mocks = vi.hoisted(() => ({
   listForViewer: vi.fn(),
@@ -9,13 +13,11 @@ const mocks = vi.hoisted(() => ({
   listMessages: vi.fn(),
   send: vi.fn(),
   markRead: vi.fn(),
-  userFind: vi.fn(),
 }));
 
 vi.mock('../../middlewares/auth', () => ({
   requireUser: (req: { user?: unknown }, _res: unknown, next: (err?: unknown) => void) => {
     req.user = {
-      _id: new Types.ObjectId(),
       id: 'viewer-id',
       username: 'viewer',
       displayName: 'Viewer',
@@ -42,16 +44,21 @@ vi.mock('../../middlewares/rateLimit', () => ({
   messageWriteLimiter: (_req: unknown, _res: unknown, next: (err?: unknown) => void) => next(),
 }));
 
-vi.mock('../../models/user.model', async () => {
-  const actual = await vi.importActual<typeof import('../../models/user.model')>('../../models/user.model');
-  return {
-    ...actual,
-    User: {
-      ...actual.User,
-      find: mocks.userFind,
-    },
-  };
-});
+let seq = 0;
+async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
+  seq += 1;
+  const [u] = await db
+    .insert(users)
+    .values({
+      username: `user${seq}`,
+      usernameDisplay: `user${seq}`,
+      email: `user${seq}@example.com`,
+      displayName: `User ${seq}`,
+      ...over,
+    })
+    .returning();
+  return u;
+}
 
 import { conversationsRouter } from './messages.routes';
 
@@ -151,6 +158,7 @@ async function runRoute(
 }
 
 describe('messages routes', () => {
+  beforeEach(resetDb);
   afterEach(() => {
     vi.clearAllMocks();
   });
@@ -168,38 +176,26 @@ describe('messages routes', () => {
   });
 
   it('creates a conversation and returns 201 when new', async () => {
-    const me = { _id: new Types.ObjectId(), id: 'viewer-id' };
-    const peerId = new Types.ObjectId();
+    const me = await seedUser({
+      username: 'viewer',
+      usernameDisplay: 'viewer',
+      email: 'viewer@example.com',
+      displayName: 'Viewer',
+    });
+    const peer = await seedUser({
+      username: 'bob',
+      usernameDisplay: 'bob',
+      email: 'bob@example.com',
+      displayName: 'Bob',
+    });
     const conversation = {
-      _id: new Types.ObjectId(),
-      participantIds: [me._id, peerId],
+      id: newId(),
+      participantIds: [me.id, peer.id],
       unreadBy: [],
       lastMessageAt: new Date('2026-04-23T00:00:00.000Z'),
       lastMessageId: null,
     };
     mocks.findOrCreateWith.mockResolvedValue({ conversation, created: true });
-    mocks.userFind.mockResolvedValue([
-      {
-        _id: me._id,
-        username: 'viewer',
-        usernameDisplay: 'viewer',
-        displayName: 'Viewer',
-        avatarUrl: null,
-        headline: '',
-        profileTags: [],
-        isAgent: false,
-      },
-      {
-        _id: peerId,
-        username: 'bob',
-        usernameDisplay: 'bob',
-        displayName: 'Bob',
-        avatarUrl: null,
-        headline: '',
-        profileTags: [],
-        isAgent: false,
-      },
-    ]);
 
     const { res, error } = await runRoute(conversationsRouter, '/', 'post', {
       body: { recipientUsername: 'bob' },
@@ -207,13 +203,16 @@ describe('messages routes', () => {
 
     expect(error).toBeUndefined();
     expect(res.statusCode).toBe(201);
-    expect((res.payload as { data: { conversation: { id: string } } }).data.conversation.id)
-      .toBe(conversation._id.toString());
+    const payload = res.payload as {
+      data: { conversation: { id: string; participants: unknown[] } };
+    };
+    expect(payload.data.conversation.id).toBe(conversation.id);
+    expect(payload.data.conversation.participants).toHaveLength(2);
   });
 
   it('rejects blank message bodies after validation trim', async () => {
     const { error } = await runRoute(conversationsRouter, '/:id/messages', 'post', {
-      params: { id: new Types.ObjectId().toString() },
+      params: { id: newId() },
       body: { text: '   ' },
     });
 
@@ -226,7 +225,7 @@ describe('messages routes', () => {
 
   it('passes parsed paging params to listMessages', async () => {
     mocks.listMessages.mockResolvedValue({ items: [], nextCursor: null });
-    const id = new Types.ObjectId().toString();
+    const id = newId();
 
     const { res, error } = await runRoute(conversationsRouter, '/:id/messages', 'get', {
       params: { id },

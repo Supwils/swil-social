@@ -14,9 +14,10 @@ import { Server as IOServer } from 'socket.io';
 import type { Server as HttpServer } from 'node:http';
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
+import { and, eq, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
-import { Conversation } from '../models/conversation.model';
-import { Types } from 'mongoose';
+import { db } from '../db/client';
+import { conversations } from '../db/schema';
 
 /**
  * Zod schemas for inbound socket events. Malformed payloads are dropped
@@ -117,32 +118,34 @@ export function getIO(): IOServer | null {
   return io;
 }
 
-export function userRoom(userId: string | Types.ObjectId): string {
-  return `user:${userId.toString()}`;
+export function userRoom(userId: string): string {
+  return `user:${userId}`;
 }
 
-export function conversationRoom(conversationId: string | Types.ObjectId): string {
-  return `conversation:${conversationId.toString()}`;
+export function conversationRoom(conversationId: string): string {
+  return `conversation:${conversationId}`;
 }
 
-export function emitToUser(userId: string | Types.ObjectId, event: string, payload: unknown): void {
+export function emitToUser(userId: string, event: string, payload: unknown): void {
   if (!io) return;
   io.to(userRoom(userId)).emit(event, payload);
 }
 
-export function emitToConversation(
-  conversationId: string | Types.ObjectId,
-  event: string,
-  payload: unknown,
-): void {
+export function emitToConversation(conversationId: string, event: string, payload: unknown): void {
   if (!io) return;
   io.to(conversationRoom(conversationId)).emit(event, payload);
 }
 
 async function isConversationMember(conversationId: string, userId: string): Promise<boolean> {
-  const hit = await Conversation.exists({
-    _id: new Types.ObjectId(conversationId),
-    participantIds: new Types.ObjectId(userId),
-  });
+  const [hit] = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.id, conversationId),
+        sql`${conversations.participantIds} @> ARRAY[${userId}]::text[]`,
+      ),
+    )
+    .limit(1);
   return Boolean(hit);
 }

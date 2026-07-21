@@ -1,86 +1,82 @@
-import { Types } from 'mongoose';
-import { Follow, type FollowDocument } from '../../models/follow.model';
-import { User, type UserDocument } from '../../models/user.model';
+import { and, or, eq, lt, desc, inArray, ilike, sql } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { follows, users } from '../../db/schema';
 import { AppError } from '../../lib/errors';
-import { logger } from '../../lib/logger';
-import {
-  type Cursor,
-  cursorFilterDesc,
-  buildNextCursor,
-} from '../../lib/pagination';
-import type { UserLiteDTO } from '../../lib/dto';
+import { type Cursor, encodeCursor } from '../../lib/pagination';
+import type { UserLiteDTO, UserRow } from '../../lib/dto';
 import { toUserLiteDTO } from '../../lib/dto';
 import { createNotification } from '../notifications/notifications.service';
 
-async function findUserByUsername(username: string): Promise<UserDocument> {
-  const user = await User.findOne({ username: username.toLowerCase(), status: 'active' });
+async function findUserByUsername(username: string): Promise<UserRow> {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.username, username.toLowerCase()), eq(users.status, 'active')))
+    .limit(1);
   if (!user) throw AppError.notFound('User not found');
   return user;
 }
 
-export async function follow(
-  follower: UserDocument,
-  targetUsername: string,
-): Promise<void> {
+export async function follow(follower: UserRow, targetUsername: string): Promise<void> {
   const target = await findUserByUsername(targetUsername);
-  if (target._id.equals(follower._id)) {
+  if (target.id === follower.id) {
     throw AppError.validation('Cannot follow yourself');
   }
 
-  try {
-    await Follow.create({ followerId: follower._id, followingId: target._id });
-  } catch (err: unknown) {
-    const e = err as { code?: number };
-    if (e.code === 11000) throw AppError.conflict('Already following this user');
-    throw err;
-  }
+  // Insert the edge and bump both counters atomically. An existing edge is a
+  // no-op insert (onConflictDoNothing) that we surface as a conflict.
+  await db.transaction(async (tx) => {
+    const [edge] = await tx
+      .insert(follows)
+      .values({ followerId: follower.id, followingId: target.id })
+      .onConflictDoNothing()
+      .returning({ id: follows.id });
+    if (!edge) throw AppError.conflict('Already following this user');
 
-  await Promise.all([
-    User.updateOne({ _id: follower._id }, { $inc: { followingCount: 1 } }),
-    User.updateOne({ _id: target._id }, { $inc: { followerCount: 1 } }),
-  ]).catch(async (err) => {
-    // Count drift: reconcile from the edge collection rather than silently losing consistency
-    logger.error({ err }, 'follower count update failed — reconciling from Follow edges');
-    const [followingCount, followerCount] = await Promise.all([
-      Follow.countDocuments({ followerId: follower._id }),
-      Follow.countDocuments({ followingId: target._id }),
-    ]);
-    await Promise.all([
-      User.updateOne({ _id: follower._id }, { $set: { followingCount } }),
-      User.updateOne({ _id: target._id }, { $set: { followerCount } }),
-    ]);
+    await tx
+      .update(users)
+      .set({ followingCount: sql`${users.followingCount} + 1` })
+      .where(eq(users.id, follower.id));
+    await tx
+      .update(users)
+      .set({ followerCount: sql`${users.followerCount} + 1` })
+      .where(eq(users.id, target.id));
   });
 
   await createNotification({
-    recipientId: target._id,
-    actorId: follower._id,
+    recipientId: target.id,
+    actorId: follower.id,
     type: 'follow',
   });
 }
 
-export async function unfollow(
-  follower: UserDocument,
-  targetUsername: string,
-): Promise<void> {
+export async function unfollow(follower: UserRow, targetUsername: string): Promise<void> {
   const target = await findUserByUsername(targetUsername);
-  if (target._id.equals(follower._id)) return;
+  if (target.id === follower.id) return;
 
-  const deleted = await Follow.findOneAndDelete({
-    followerId: follower._id,
-    followingId: target._id,
+  await db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(follows)
+      .where(and(eq(follows.followerId, follower.id), eq(follows.followingId, target.id)))
+      .returning({ id: follows.id });
+    if (deleted.length === 0) return;
+
+    await tx
+      .update(users)
+      .set({ followingCount: sql`${users.followingCount} - 1` })
+      .where(eq(users.id, follower.id));
+    await tx
+      .update(users)
+      .set({ followerCount: sql`${users.followerCount} - 1` })
+      .where(eq(users.id, target.id));
   });
-  if (!deleted) return;
-
-  await Promise.all([
-    User.updateOne({ _id: follower._id }, { $inc: { followingCount: -1 } }),
-    User.updateOne({ _id: target._id }, { $inc: { followerCount: -1 } }),
-  ]);
 }
 
 type Direction = 'following' | 'followers';
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Escape LIKE/ILIKE wildcards so user input can't inject `%` / `_` patterns. */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, '\\$&');
 }
 
 async function listEdges(
@@ -92,58 +88,75 @@ async function listEdges(
 ): Promise<{ items: UserLiteDTO[]; nextCursor: string | null }> {
   const user = await findUserByUsername(username);
 
-  const edgeFilter =
+  // Following → this user is the follower; followers → this user is the followed.
+  const baseEdgeCond =
     direction === 'following'
-      ? { followerId: user._id }
-      : { followingId: user._id };
+      ? eq(follows.followerId, user.id)
+      : eq(follows.followingId, user.id);
+  const peerCol = direction === 'following' ? follows.followingId : follows.followerId;
 
   const term = search?.trim();
   if (term) {
-    // Search mode: get all peer IDs (capped at 2000) then regex-filter on User
-    const allEdges = (await Follow.find(edgeFilter)
-      .select(direction === 'following' ? 'followingId' : 'followerId')
-      .limit(2000)
-      .lean()) as unknown as FollowDocument[];
+    // Search mode: get all peer IDs (capped at 2000) then match on User.
+    const allEdges = await db
+      .select({ peerId: peerCol })
+      .from(follows)
+      .where(baseEdgeCond)
+      .limit(2000);
 
-    const peerIds = allEdges.map((e) =>
-      direction === 'following' ? e.followingId : e.followerId,
-    );
+    const peerIds = allEdges.map((e) => e.peerId);
     if (!peerIds.length) return { items: [], nextCursor: null };
 
-    const pattern = new RegExp(escapeRegex(term), 'i');
-    const users = (await User.find({
-      _id: { $in: peerIds as Types.ObjectId[] },
-      status: 'active',
-      $or: [{ username: pattern }, { displayName: pattern }],
-    })
-      .limit(50)
-      .lean()) as unknown as UserDocument[];
+    const pattern = `%${escapeLike(term)}%`;
+    const peerUsers = await db
+      .select()
+      .from(users)
+      .where(
+        and(
+          inArray(users.id, peerIds),
+          eq(users.status, 'active'),
+          or(ilike(users.username, pattern), ilike(users.displayName, pattern)),
+        ),
+      )
+      .limit(50);
 
-    return { items: users.map(toUserLiteDTO), nextCursor: null };
+    return { items: peerUsers.map(toUserLiteDTO), nextCursor: null };
   }
 
-  const docs = (await Follow.find({ ...edgeFilter, ...cursorFilterDesc(cursor) })
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean()) as unknown as FollowDocument[];
+  // Descending by createdAt, id breaking ties — cursor points at the last row
+  // of the previous page; fetch rows strictly older.
+  const cursorCond = cursor
+    ? or(
+        lt(follows.createdAt, new Date(cursor.t)),
+        and(eq(follows.createdAt, new Date(cursor.t)), lt(follows.id, cursor.id)),
+      )
+    : undefined;
 
-  const { items, nextCursor } = buildNextCursor(docs, limit);
+  const edges = await db
+    .select({ id: follows.id, createdAt: follows.createdAt, peerId: peerCol })
+    .from(follows)
+    .where(and(baseEdgeCond, cursorCond))
+    .orderBy(desc(follows.createdAt), desc(follows.id))
+    .limit(limit + 1);
 
-  const peerIds = items.map((e: FollowDocument) =>
-    direction === 'following' ? e.followingId : e.followerId,
-  );
-  const users = peerIds.length
-    ? (await User.find({
-        _id: { $in: peerIds as Types.ObjectId[] },
-        status: 'active',
-      }).lean()) as unknown as UserDocument[]
+  const hasMore = edges.length > limit;
+  const page = hasMore ? edges.slice(0, limit) : edges;
+  const last = page[page.length - 1];
+  const nextCursor =
+    hasMore && last ? encodeCursor({ t: last.createdAt.toISOString(), id: last.id }) : null;
+
+  const peerIds = page.map((e) => e.peerId);
+  const peerUsers = peerIds.length
+    ? await db
+        .select()
+        .from(users)
+        .where(and(inArray(users.id, peerIds), eq(users.status, 'active')))
     : [];
-  const byId = new Map(users.map((u) => [u._id.toString(), u]));
+  const byId = new Map(peerUsers.map((u) => [u.id, u]));
 
-  const ordered: UserLiteDTO[] = items
+  const ordered: UserLiteDTO[] = page
     .map((e) => {
-      const pid = direction === 'following' ? e.followingId : e.followerId;
-      const u = byId.get(pid.toString());
+      const u = byId.get(e.peerId);
       return u ? toUserLiteDTO(u) : null;
     })
     .filter((x): x is UserLiteDTO => x !== null);
@@ -156,14 +169,12 @@ export const listFollowing = (u: string, c: Cursor | null, l: number, search?: s
 export const listFollowers = (u: string, c: Cursor | null, l: number, search?: string) =>
   listEdges(u, 'followers', c, l, search);
 
-export async function isFollowing(
-  follower: UserDocument,
-  targetUsername: string,
-): Promise<boolean> {
+export async function isFollowing(follower: UserRow, targetUsername: string): Promise<boolean> {
   const target = await findUserByUsername(targetUsername);
-  const hit = await Follow.exists({
-    followerId: follower._id,
-    followingId: target._id,
-  });
+  const [hit] = await db
+    .select({ id: follows.id })
+    .from(follows)
+    .where(and(eq(follows.followerId, follower.id), eq(follows.followingId, target.id)))
+    .limit(1);
   return Boolean(hit);
 }

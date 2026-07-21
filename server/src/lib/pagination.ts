@@ -3,9 +3,11 @@
  *
  * A cursor is an opaque base64url-encoded JSON `{ t: <ISO timestamp>, id: <string> }`
  * pointing at the last item of the previous page. Queries filter for items strictly
- * older (or newer, depending on sortDir) than the cursor; ties broken by _id.
+ * older (or newer, depending on sortDir) than the cursor; ties broken by id.
  */
-import { Types } from 'mongoose';
+import { and, or, eq, lt, gt, type SQL, type AnyColumn } from 'drizzle-orm';
+
+const OBJECT_ID_RE = /^[a-f0-9]{24}$/;
 
 export interface Cursor {
   t: string;
@@ -36,7 +38,7 @@ export function decodeCursor(raw: unknown): Cursor | null {
     const json = Buffer.from(raw, 'base64url').toString('utf8');
     const parsed = JSON.parse(json) as Partial<Cursor>;
     if (typeof parsed.t !== 'string' || typeof parsed.id !== 'string') return null;
-    if (!Types.ObjectId.isValid(parsed.id)) return null;
+    if (!OBJECT_ID_RE.test(parsed.id)) return null;
     return { t: parsed.t, id: parsed.id };
   } catch {
     return null;
@@ -44,44 +46,31 @@ export function decodeCursor(raw: unknown): Cursor | null {
 }
 
 /**
- * Build a mongo filter fragment for descending pagination by createdAt.
- * The cursor points at the last item of the previous page; we want items
- * strictly older, with _id breaking ties at identical timestamps.
+ * Drizzle WHERE condition for descending keyset pagination by (tsCol, idCol).
+ * Returns undefined when there is no cursor (first page).
  */
-export function cursorFilterDesc(
+export function cursorConditionDesc(
   cursor: Cursor | null,
-  field = 'createdAt',
-): Record<string, unknown> {
-  if (!cursor) return {};
+  tsCol: AnyColumn,
+  idCol: AnyColumn,
+): SQL | undefined {
+  if (!cursor) return undefined;
   const t = new Date(cursor.t);
-  const id = new Types.ObjectId(cursor.id);
-  return {
-    $or: [
-      { [field]: { $lt: t } },
-      { [field]: t, _id: { $lt: id } },
-    ],
-  };
+  return or(lt(tsCol, t), and(eq(tsCol, t), lt(idCol, cursor.id)));
 }
 
-/**
- * Ascending variant (e.g., comments shown oldest-first).
- */
-export function cursorFilterAsc(
+/** Ascending variant (e.g., comments shown oldest-first). */
+export function cursorConditionAsc(
   cursor: Cursor | null,
-  field = 'createdAt',
-): Record<string, unknown> {
-  if (!cursor) return {};
+  tsCol: AnyColumn,
+  idCol: AnyColumn,
+): SQL | undefined {
+  if (!cursor) return undefined;
   const t = new Date(cursor.t);
-  const id = new Types.ObjectId(cursor.id);
-  return {
-    $or: [
-      { [field]: { $gt: t } },
-      { [field]: t, _id: { $gt: id } },
-    ],
-  };
+  return or(gt(tsCol, t), and(eq(tsCol, t), gt(idCol, cursor.id)));
 }
 
-export function buildNextCursor<T extends { createdAt: Date; _id: Types.ObjectId }>(
+export function buildNextCursor<T extends { createdAt: Date; id: string }>(
   items: T[],
   limit: number,
 ): { items: T[]; nextCursor: string | null } {
@@ -90,10 +79,9 @@ export function buildNextCursor<T extends { createdAt: Date; _id: Types.ObjectId
   }
   const page = items.slice(0, limit);
   const last = page[page.length - 1];
-  const id = last._id.toString();
   return {
     items: page,
-    nextCursor: encodeCursor({ t: last.createdAt.toISOString(), id }),
+    nextCursor: encodeCursor({ t: last.createdAt.toISOString(), id: last.id }),
   };
 }
 
@@ -110,25 +98,24 @@ export function decodeScoreCursor(raw: unknown): ScoreCursor | null {
     const json = Buffer.from(raw, 'base64url').toString('utf8');
     const parsed = JSON.parse(json) as Partial<ScoreCursor>;
     if (typeof parsed.s !== 'number' || typeof parsed.id !== 'string') return null;
-    if (!Types.ObjectId.isValid(parsed.id)) return null;
+    if (!OBJECT_ID_RE.test(parsed.id)) return null;
     return { s: parsed.s, id: parsed.id };
   } catch {
     return null;
   }
 }
 
-export function scoreCursorFilter(cursor: ScoreCursor | null): Record<string, unknown> {
-  if (!cursor) return {};
-  const id = new Types.ObjectId(cursor.id);
-  return {
-    $or: [
-      { feedScore: { $lt: cursor.s } },
-      { feedScore: cursor.s, _id: { $lt: id } },
-    ],
-  };
+/** Drizzle WHERE condition for descending keyset pagination by (scoreCol, idCol). */
+export function scoreCursorCondition(
+  cursor: ScoreCursor | null,
+  scoreCol: AnyColumn,
+  idCol: AnyColumn,
+): SQL | undefined {
+  if (!cursor) return undefined;
+  return or(lt(scoreCol, cursor.s), and(eq(scoreCol, cursor.s), lt(idCol, cursor.id)));
 }
 
-export function buildNextScoreCursor<T extends { feedScore: number; _id: Types.ObjectId }>(
+export function buildNextScoreCursor<T extends { feedScore: number; id: string }>(
   items: T[],
   limit: number,
 ): { items: T[]; nextCursor: string | null } {
@@ -139,6 +126,9 @@ export function buildNextScoreCursor<T extends { feedScore: number; _id: Types.O
   const last = page[page.length - 1];
   return {
     items: page,
-    nextCursor: Buffer.from(JSON.stringify({ s: last.feedScore, id: last._id.toString() }), 'utf8').toString('base64url'),
+    nextCursor: Buffer.from(
+      JSON.stringify({ s: last.feedScore, id: last.id }),
+      'utf8',
+    ).toString('base64url'),
   };
 }

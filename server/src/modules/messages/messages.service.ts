@@ -1,148 +1,170 @@
-import { Types } from 'mongoose';
-import {
-  Conversation,
-  type ConversationDocument,
-  computeParticipantKey,
-} from '../../models/conversation.model';
-import { Message, type MessageDocument } from '../../models/message.model';
-import { User, type UserDocument } from '../../models/user.model';
+import { createHash } from 'node:crypto';
+import { and, arrayContains, desc, eq, inArray, lt, not, or, sql } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { conversations, messages, users } from '../../db/schema';
 import { AppError } from '../../lib/errors';
-import {
-  type Cursor,
-  cursorFilterDesc,
-  buildNextCursor,
-} from '../../lib/pagination';
+import { type Cursor, encodeCursor } from '../../lib/pagination';
 import {
   toMessageDTO,
   toConversationDTO,
   type ConversationDTO,
+  type ConversationRow,
   type MessageDTO,
+  type MessageRow,
+  type UserRow,
 } from '../../lib/dto';
 import { emitToUser, emitToConversation } from '../../realtime/io';
 import { createNotification } from '../notifications/notifications.service';
 
+/**
+ * Deterministic conversation key: sha256 of the sorted participant ids joined
+ * by ':'. Kept in sync across every writer so the `participantKey` unique index
+ * collapses a pair to a single conversation regardless of who initiates.
+ */
+function computeParticipantKey(ids: string[]): string {
+  const sorted = ids.map((id) => id.toString()).sort();
+  return createHash('sha256').update(sorted.join(':')).digest('hex');
+}
+
 /* ---------- conversations ---------- */
 
 export async function findOrCreateWith(
-  me: UserDocument,
+  me: UserRow,
   recipientUsername: string,
-): Promise<{ conversation: ConversationDocument; created: boolean }> {
-  const recipient = await User.findOne({
-    username: recipientUsername.toLowerCase(),
-    status: 'active',
-  });
+): Promise<{ conversation: ConversationRow; created: boolean }> {
+  const [recipient] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.username, recipientUsername.toLowerCase()), eq(users.status, 'active')))
+    .limit(1);
   if (!recipient) throw AppError.notFound('User not found');
-  if (recipient._id.equals(me._id)) {
+  if (recipient.id === me.id) {
     throw AppError.validation('Cannot message yourself');
   }
 
-  const participantIds = [me._id, recipient._id];
+  const participantIds = [me.id, recipient.id];
   const key = computeParticipantKey(participantIds);
 
-  const existing = await Conversation.findOne({ participantKey: key });
+  const [existing] = await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.participantKey, key))
+    .limit(1);
   if (existing) return { conversation: existing, created: false };
 
-  try {
-    const convo = await Conversation.create({
-      participantIds,
-      participantKey: key,
-      lastMessageAt: new Date(),
-    });
-    return { conversation: convo, created: true };
-  } catch (err: unknown) {
-    const e = err as { code?: number };
-    if (e.code !== 11000) throw err;
-    const raced = await Conversation.findOne({ participantKey: key });
-    if (!raced) throw err;
-    return { conversation: raced, created: false };
-  }
+  const [inserted] = await db
+    .insert(conversations)
+    .values({ participantIds, participantKey: key, lastMessageAt: new Date() })
+    .onConflictDoNothing({ target: conversations.participantKey })
+    .returning();
+  if (inserted) return { conversation: inserted, created: true };
+
+  // Lost the insert race against a concurrent creator — the row now exists.
+  const [raced] = await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.participantKey, key))
+    .limit(1);
+  if (!raced) throw AppError.internal('Failed to create conversation');
+  return { conversation: raced, created: false };
 }
 
 export async function listForViewer(
-  viewer: UserDocument,
+  viewer: UserRow,
   cursor: Cursor | null,
   limit: number,
 ): Promise<{ items: ConversationDTO[]; nextCursor: string | null }> {
-  const docs = (await Conversation.find({
-    participantIds: viewer._id,
-    ...cursorFilterDesc(cursor, 'lastMessageAt'),
-  })
-    .sort({ lastMessageAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean()) as unknown as ConversationDocument[];
+  const conds = [arrayContains(conversations.participantIds, [viewer.id])];
+  if (cursor) {
+    const t = new Date(cursor.t);
+    conds.push(
+      or(
+        lt(conversations.lastMessageAt, t),
+        and(eq(conversations.lastMessageAt, t), lt(conversations.id, cursor.id)),
+      )!,
+    );
+  }
 
-  // buildNextCursor uses createdAt; we sort by lastMessageAt so compute cursors from that field.
+  const docs = await db
+    .select()
+    .from(conversations)
+    .where(and(...conds))
+    .orderBy(desc(conversations.lastMessageAt), desc(conversations.id))
+    .limit(limit + 1);
+
   const pageSlice = docs.length > limit ? docs.slice(0, limit) : docs;
   const hasMore = docs.length > limit;
 
   const participantIds = new Set<string>();
   const lastMessageIds = new Set<string>();
   for (const c of pageSlice) {
-    for (const id of c.participantIds) participantIds.add(id.toString());
-    if (c.lastMessageId) lastMessageIds.add(c.lastMessageId.toString());
+    for (const id of c.participantIds) participantIds.add(id);
+    if (c.lastMessageId) lastMessageIds.add(c.lastMessageId);
   }
 
-  const [users, messages] = (await Promise.all([
-    User.find({
-      _id: { $in: Array.from(participantIds).map((id) => new Types.ObjectId(id)) },
-    }).lean(),
+  const [userRows, messageRows] = await Promise.all([
+    participantIds.size
+      ? db.select().from(users).where(inArray(users.id, Array.from(participantIds)))
+      : Promise.resolve([] as UserRow[]),
     lastMessageIds.size
-      ? Message.find({
-          _id: { $in: Array.from(lastMessageIds).map((id) => new Types.ObjectId(id)) },
-        }).lean()
-      : Promise.resolve([] as MessageDocument[]),
-  ])) as unknown as [UserDocument[], MessageDocument[]];
+      ? db.select().from(messages).where(inArray(messages.id, Array.from(lastMessageIds)))
+      : Promise.resolve([] as MessageRow[]),
+  ]);
 
-  const userById = new Map(users.map((u) => [u._id.toString(), u]));
-  const msgById = new Map(messages.map((m) => [m._id.toString(), m]));
+  const userById = new Map(userRows.map((u) => [u.id, u]));
+  const msgById = new Map(messageRows.map((m) => [m.id, m]));
 
   const items: ConversationDTO[] = pageSlice.map((c) => {
     const people = c.participantIds
-      .map((pid) => userById.get(pid.toString()))
-      .filter((x): x is UserDocument => Boolean(x));
+      .map((pid) => userById.get(pid))
+      .filter((x): x is UserRow => Boolean(x));
     let lastMessage: MessageDTO | null = null;
     if (c.lastMessageId) {
-      const m = msgById.get(c.lastMessageId.toString());
+      const m = msgById.get(c.lastMessageId);
       if (m) {
-        const sender = userById.get(m.senderId.toString());
+        const sender = userById.get(m.senderId);
         if (sender) lastMessage = toMessageDTO(m, sender);
       }
     }
     return toConversationDTO(c, people, viewer.id, lastMessage);
   });
 
-  const nextCursor = hasMore && pageSlice.length > 0
-    ? encodeLastMessageCursor(pageSlice[pageSlice.length - 1])
-    : null;
+  const nextCursor =
+    hasMore && pageSlice.length > 0
+      ? encodeLastMessageCursor(pageSlice[pageSlice.length - 1])
+      : null;
 
   return { items, nextCursor };
 }
 
-export async function unreadCount(viewer: UserDocument): Promise<number> {
-  return Conversation.countDocuments({
-    participantIds: viewer._id,
-    unreadBy: viewer._id,
-  });
+export async function unreadCount(viewer: UserRow): Promise<number> {
+  return db.$count(
+    conversations,
+    and(
+      arrayContains(conversations.participantIds, [viewer.id]),
+      arrayContains(conversations.unreadBy, [viewer.id]),
+    ),
+  );
 }
 
-function encodeLastMessageCursor(c: ConversationDocument): string {
-  return Buffer.from(
-    JSON.stringify({ t: c.lastMessageAt.toISOString(), id: c._id.toString() }),
-    'utf8',
-  ).toString('base64url');
+function encodeLastMessageCursor(c: ConversationRow): string {
+  return encodeCursor({ t: c.lastMessageAt.toISOString(), id: c.id });
 }
 
-export async function getById(
-  viewer: UserDocument,
-  conversationId: string,
-): Promise<ConversationDTO> {
+export async function getById(viewer: UserRow, conversationId: string): Promise<ConversationDTO> {
   const convo = await assertMember(viewer, conversationId);
-  const participants = (await User.find({ _id: { $in: convo.participantIds } }).lean()) as unknown as UserDocument[];
+  const participants = convo.participantIds.length
+    ? await db.select().from(users).where(inArray(users.id, convo.participantIds))
+    : [];
   let lastMessage: MessageDTO | null = null;
   if (convo.lastMessageId) {
-    const msg = (await Message.findById(convo.lastMessageId).lean()) as unknown as MessageDocument | null;
+    const [msg] = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.id, convo.lastMessageId))
+      .limit(1);
     if (msg) {
-      const sender = participants.find((u) => u._id.equals(msg.senderId));
+      const sender = participants.find((u) => u.id === msg.senderId);
       if (sender) lastMessage = toMessageDTO(msg, sender);
     }
   }
@@ -152,33 +174,45 @@ export async function getById(
 /* ---------- messages ---------- */
 
 export async function listMessages(
-  viewer: UserDocument,
+  viewer: UserRow,
   conversationId: string,
   cursor: Cursor | null,
   limit: number,
 ): Promise<{ items: MessageDTO[]; nextCursor: string | null }> {
   const convo = await assertMember(viewer, conversationId);
 
-  const filter = {
-    conversationId: convo._id,
-    deletedFor: { $ne: viewer._id },
-    ...cursorFilterDesc(cursor),
-  };
-  const docs = (await Message.find(filter)
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean()) as unknown as MessageDocument[];
-  const { items, nextCursor } = buildNextCursor(docs, limit);
+  const conds = [
+    eq(messages.conversationId, convo.id),
+    not(arrayContains(messages.deletedFor, [viewer.id])),
+  ];
+  if (cursor) {
+    const t = new Date(cursor.t);
+    conds.push(
+      or(
+        lt(messages.createdAt, t),
+        and(eq(messages.createdAt, t), lt(messages.id, cursor.id)),
+      )!,
+    );
+  }
 
-  const senderIds = Array.from(new Set(items.map((m) => m.senderId.toString())));
-  const senders = (await User.find({
-    _id: { $in: senderIds.map((id) => new Types.ObjectId(id)) },
-  }).lean()) as unknown as UserDocument[];
-  const byId = new Map(senders.map((u) => [u._id.toString(), u]));
+  const docs = await db
+    .select()
+    .from(messages)
+    .where(and(...conds))
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(limit + 1);
+
+  const { items, nextCursor } = buildMessageCursorPage(docs, limit);
+
+  const senderIds = Array.from(new Set(items.map((m) => m.senderId)));
+  const senders = senderIds.length
+    ? await db.select().from(users).where(inArray(users.id, senderIds))
+    : [];
+  const byId = new Map(senders.map((u) => [u.id, u]));
 
   const hydrated: MessageDTO[] = items
     .map((m) => {
-      const s = byId.get(m.senderId.toString());
+      const s = byId.get(m.senderId);
       return s ? toMessageDTO(m, s) : null;
     })
     .filter((x): x is MessageDTO => x !== null);
@@ -187,74 +221,105 @@ export async function listMessages(
 }
 
 export async function send(
-  sender: UserDocument,
+  sender: UserRow,
   conversationId: string,
   text: string,
 ): Promise<MessageDTO> {
   const convo = await assertMember(sender, conversationId);
 
-  const message = await Message.create({
-    conversationId: convo._id,
-    senderId: sender._id,
-    text,
-    readBy: [sender._id],
-  });
+  const [message] = await db
+    .insert(messages)
+    .values({
+      conversationId: convo.id,
+      senderId: sender.id,
+      text,
+      readBy: [sender.id],
+    })
+    .returning();
 
-  const otherIds = convo.participantIds.filter((id) => !id.equals(sender._id));
+  const otherIds = convo.participantIds.filter((id) => id !== sender.id);
 
-  await Conversation.updateOne(
-    { _id: convo._id },
-    {
-      $set: { lastMessageId: message._id, lastMessageAt: message.createdAt },
-      $addToSet: { unreadBy: { $each: otherIds } },
-    },
-  );
+  // Atomic $addToSet equivalent: union the persisted unreadBy with otherIds.
+  // Build a proper `ARRAY[$1, $2, …]::text[]` literal — interpolating the raw
+  // JS array as `${otherIds}::text[]` binds a scalar param and fails at runtime.
+  const otherIdsSql = sql`ARRAY[${sql.join(
+    otherIds.map((id) => sql`${id}`),
+    sql`, `,
+  )}]::text[]`;
+  await db
+    .update(conversations)
+    .set({
+      lastMessageId: message.id,
+      lastMessageAt: message.createdAt,
+      unreadBy: sql`ARRAY(SELECT DISTINCT unnest(${conversations.unreadBy} || ${otherIdsSql}))`,
+    })
+    .where(eq(conversations.id, convo.id));
 
   const dto = toMessageDTO(message, sender);
-  emitToConversation(convo._id.toString(), 'message', dto);
+  emitToConversation(convo.id, 'message', dto);
   // Notify each other participant individually (their `user:<id>` room) for
   // inbox badges and toasts when they're not currently in the thread.
   for (const otherId of otherIds) {
-    emitToUser(otherId, 'conversation:update', { conversationId: convo._id.toString() });
+    emitToUser(otherId, 'conversation:update', { conversationId: convo.id });
     await createNotification({
       recipientId: otherId,
-      actorId: sender._id,
+      actorId: sender.id,
       type: 'message',
-      messageId: message._id,
-      conversationId: convo._id,
+      messageId: message.id,
+      conversationId: convo.id,
     });
   }
   return dto;
 }
 
-export async function markRead(viewer: UserDocument, conversationId: string): Promise<void> {
+export async function markRead(viewer: UserRow, conversationId: string): Promise<void> {
   const convo = await assertMember(viewer, conversationId);
 
   await Promise.all([
-    Conversation.updateOne({ _id: convo._id }, { $pull: { unreadBy: viewer._id } }),
-    Message.updateMany(
-      {
-        conversationId: convo._id,
-        readBy: { $ne: viewer._id },
-      },
-      { $addToSet: { readBy: viewer._id } },
-    ),
+    db
+      .update(conversations)
+      .set({ unreadBy: sql`array_remove(${conversations.unreadBy}, ${viewer.id})` })
+      .where(eq(conversations.id, convo.id)),
+    db
+      .update(messages)
+      .set({ readBy: sql`array_append(${messages.readBy}, ${viewer.id})` })
+      .where(
+        and(
+          eq(messages.conversationId, convo.id),
+          not(arrayContains(messages.readBy, [viewer.id])),
+        ),
+      ),
   ]);
 
-  emitToConversation(convo._id.toString(), 'message:read', {
-    conversationId: convo._id.toString(),
+  emitToConversation(convo.id, 'message:read', {
+    conversationId: convo.id,
     userId: viewer.id,
     at: new Date().toISOString(),
   });
 }
 
-async function assertMember(
-  viewer: UserDocument,
-  conversationId: string,
-): Promise<ConversationDocument> {
-  if (!Types.ObjectId.isValid(conversationId)) throw AppError.notFound('Conversation not found');
-  const convo = (await Conversation.findById(conversationId).lean()) as unknown as ConversationDocument | null;
-  if (!convo || !convo.participantIds.some((id) => id.equals(viewer._id))) {
+function buildMessageCursorPage(
+  docs: MessageRow[],
+  limit: number,
+): { items: MessageRow[]; nextCursor: string | null } {
+  if (docs.length <= limit) {
+    return { items: docs, nextCursor: null };
+  }
+  const page = docs.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    items: page,
+    nextCursor: encodeCursor({ t: last.createdAt.toISOString(), id: last.id }),
+  };
+}
+
+async function assertMember(viewer: UserRow, conversationId: string): Promise<ConversationRow> {
+  const [convo] = await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .limit(1);
+  if (!convo || !convo.participantIds.some((id) => id === viewer.id)) {
     throw AppError.notFound('Conversation not found');
   }
   return convo;

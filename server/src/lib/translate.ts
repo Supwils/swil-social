@@ -1,8 +1,14 @@
+import { eq } from 'drizzle-orm';
+import { db } from '../db/client';
+import { posts, comments, tags } from '../db/schema';
 import { env } from '../config/env';
-import { Post, type PostDocument } from '../models/post.model';
-import { Comment, type CommentDocument } from '../models/comment.model';
-import { Tag, type TagDocument } from '../models/tag.model';
-import type { PostDTOContext, CommentDTOContext } from './dto';
+import type {
+  PostRow,
+  CommentRow,
+  TagRow,
+  PostDTOContext,
+  CommentDTOContext,
+} from './dto';
 
 const TRANSLATE_URL = 'https://translation.googleapis.com/language/translate/v2';
 
@@ -34,16 +40,16 @@ async function translateBatch(texts: string[], targetLang: string): Promise<stri
 }
 
 export async function translatePosts(
-  posts: PostDocument[],
+  postList: PostRow[],
   ctxById: Map<string, PostDTOContext>,
   targetLang: string,
 ): Promise<void> {
   if (!env.GOOGLE_TRANSLATE_API_KEY) return;
 
-  const pending: PostDocument[] = [];
+  const pending: PostRow[] = [];
 
-  for (const post of posts) {
-    const id = post._id.toString();
+  for (const post of postList) {
+    const id = post.id;
     if (!post.text?.trim()) continue;
 
     const cached = post.translations?.[targetLang];
@@ -68,30 +74,27 @@ export async function translatePosts(
         targetLang,
       );
 
-      const bulkOps: Array<{
-        updateOne: { filter: Record<string, unknown>; update: Record<string, unknown> };
-      }> = [];
+      const updates: Array<Promise<unknown>> = [];
 
       for (let i = 0; i < pending.length; i++) {
         const post = pending[i];
         const translatedText = translated[i];
         if (translatedText && translatedText !== post.text) {
-          const ctx = ctxById.get(post._id.toString());
+          const ctx = ctxById.get(post.id);
           if (ctx) {
             ctx.translatedText = translatedText;
             ctx.originalLang = hasChinese(post.text) ? 'zh' : 'en';
           }
-          bulkOps.push({
-            updateOne: {
-              filter: { _id: post._id },
-              update: { $set: { [`translations.${targetLang}`]: translatedText } },
-            },
-          });
+          const merged = { ...(post.translations ?? {}), [targetLang]: translatedText };
+          updates.push(
+            db.update(posts).set({ translations: merged }).where(eq(posts.id, post.id)),
+          );
         }
       }
 
-      if (bulkOps.length > 0) {
-        Post.bulkWrite(bulkOps).catch(() => undefined);
+      if (updates.length > 0) {
+        // Fire-and-forget — persisting the cache must never block the response.
+        Promise.all(updates).catch(() => undefined);
       }
     } catch {
       // Translation API failed — originals will be used
@@ -99,7 +102,7 @@ export async function translatePosts(
   }
 
   // Also translate tags embedded in post contexts
-  const uniqueTags: TagDocument[] = [];
+  const uniqueTags: TagRow[] = [];
   const seenSlugs = new Set<string>();
   for (const ctx of ctxById.values()) {
     for (const tag of ctx.tags) {
@@ -119,16 +122,16 @@ export async function translatePosts(
 }
 
 export async function translateComments(
-  comments: CommentDocument[],
+  commentList: CommentRow[],
   ctxByCommentId: Map<string, CommentDTOContext>,
   targetLang: string,
 ): Promise<void> {
   if (!env.GOOGLE_TRANSLATE_API_KEY) return;
 
-  const pending: CommentDocument[] = [];
+  const pending: CommentRow[] = [];
 
-  for (const comment of comments) {
-    const id = comment._id.toString();
+  for (const comment of commentList) {
+    const id = comment.id;
     if (!comment.text?.trim() || comment.status === 'deleted') continue;
 
     const cached = comment.translations?.[targetLang];
@@ -151,42 +154,36 @@ export async function translateComments(
       targetLang,
     );
 
-    const bulkOps: Array<{
-      updateOne: { filter: Record<string, unknown>; update: Record<string, unknown> };
-    }> = [];
+    const updates: Array<Promise<unknown>> = [];
 
     for (let i = 0; i < pending.length; i++) {
       const comment = pending[i];
       const translatedText = translated[i];
       if (translatedText && translatedText !== comment.text) {
-        const ctx = ctxByCommentId.get(comment._id.toString());
+        const ctx = ctxByCommentId.get(comment.id);
         if (ctx) ctx.translatedText = translatedText;
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: comment._id },
-            update: { $set: { [`translations.${targetLang}`]: translatedText } },
-          },
-        });
+        const merged = { ...(comment.translations ?? {}), [targetLang]: translatedText };
+        updates.push(
+          db.update(comments).set({ translations: merged }).where(eq(comments.id, comment.id)),
+        );
       }
     }
 
-    if (bulkOps.length > 0) {
-      Comment.bulkWrite(bulkOps).catch(() => undefined);
+    if (updates.length > 0) {
+      // Fire-and-forget — persisting the cache must never block the response.
+      Promise.all(updates).catch(() => undefined);
     }
   } catch {
     // Translation API failed
   }
 }
 
-export async function translateTags(
-  tags: TagDocument[],
-  targetLang: string,
-): Promise<void> {
+export async function translateTags(tagList: TagRow[], targetLang: string): Promise<void> {
   if (!env.GOOGLE_TRANSLATE_API_KEY) return;
 
-  const pending: TagDocument[] = [];
+  const pending: TagRow[] = [];
 
-  for (const tag of tags) {
+  for (const tag of tagList) {
     if (tag.translations?.[targetLang]) continue;
     if (needsTranslation(tag.display, targetLang)) {
       pending.push(tag);
@@ -201,27 +198,24 @@ export async function translateTags(
       targetLang,
     );
 
-    const bulkOps: Array<{
-      updateOne: { filter: Record<string, unknown>; update: Record<string, unknown> };
-    }> = [];
+    const updates: Array<Promise<unknown>> = [];
 
     for (let i = 0; i < pending.length; i++) {
       const tag = pending[i];
       const translatedDisplay = translated[i];
       if (translatedDisplay && translatedDisplay !== tag.display) {
-        if (!tag.translations) (tag as unknown as Record<string, unknown>).translations = {};
-        tag.translations[targetLang] = translatedDisplay;
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: tag._id },
-            update: { $set: { [`translations.${targetLang}`]: translatedDisplay } },
-          },
-        });
+        const merged = { ...(tag.translations ?? {}), [targetLang]: translatedDisplay };
+        // Mutate in memory so toTagDTO in the same request sees the translation.
+        tag.translations = merged;
+        updates.push(
+          db.update(tags).set({ translations: merged }).where(eq(tags.id, tag.id)),
+        );
       }
     }
 
-    if (bulkOps.length > 0) {
-      Tag.bulkWrite(bulkOps).catch(() => undefined);
+    if (updates.length > 0) {
+      // Fire-and-forget — persisting the cache must never block the response.
+      Promise.all(updates).catch(() => undefined);
     }
   } catch {
     // Translation API failed

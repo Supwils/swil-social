@@ -1,11 +1,13 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { and, eq, gt, gte, desc, like, inArray } from 'drizzle-orm';
 import { validate } from '../../middlewares/validate';
 import { optionalUser, requireUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import { ok } from '../../lib/respond';
 import { AppError } from '../../lib/errors';
-import { Tag } from '../../models/tag.model';
+import { db } from '../../db/client';
+import { tags } from '../../db/schema';
 import { toTagDTO } from '../../lib/dto';
 import { translateTags } from '../../lib/translate';
 
@@ -32,17 +34,17 @@ tagsRouter.get(
   asyncHandler(async (req: Request, res: Response) => {
     const q = (req.query.q as string).toLowerCase();
     const limit = typeof req.query.limit === 'number' ? req.query.limit : 8;
-    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const tags = await Tag.find({
-      slug: { $regex: new RegExp(`^${escaped}`) },
-      isAlias: { $ne: true },
-      postCount: { $gt: 0 },
-    })
-      .sort({ postCount: -1 })
-      .limit(limit)
-      .lean();
+    // Prefix match on slug — escape LIKE wildcards so a user-supplied `%`/`_`
+    // is treated literally.
+    const likePrefix = q.replace(/[\\%_]/g, '\\$&');
+    const rows = await db
+      .select()
+      .from(tags)
+      .where(and(like(tags.slug, `${likePrefix}%`), eq(tags.isAlias, false), gt(tags.postCount, 0)))
+      .orderBy(desc(tags.postCount))
+      .limit(limit);
     const lang = req.user?.preferences?.language ?? 'en';
-    return ok(res, { items: (tags as unknown as import('../../models/tag.model').TagDocument[]).map((t) => toTagDTO(t, lang)) });
+    return ok(res, { items: rows.map((t) => toTagDTO(t, lang)) });
   }),
 );
 
@@ -56,12 +58,15 @@ tagsRouter.get(
   asyncHandler(async (req: Request, res: Response) => {
     const limit = typeof req.query.limit === 'number' ? req.query.limit : 10;
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const tags = await Tag.find({ lastUsedAt: { $gte: since }, isAlias: { $ne: true } })
-      .sort({ postCount: -1 })
+    const rows = await db
+      .select()
+      .from(tags)
+      .where(and(gte(tags.lastUsedAt, since), eq(tags.isAlias, false)))
+      .orderBy(desc(tags.postCount))
       .limit(limit);
     const lang = req.user?.preferences?.language ?? 'en';
-    await translateTags(tags, lang);
-    return ok(res, { items: tags.map((t) => toTagDTO(t, lang)) });
+    await translateTags(rows, lang);
+    return ok(res, { items: rows.map((t) => toTagDTO(t, lang)) });
   }),
 );
 
@@ -70,7 +75,11 @@ tagsRouter.get(
   optionalUser,
   validate(z.object({ slug: z.string().min(1).max(64) }), 'params'),
   asyncHandler(async (req: Request, res: Response) => {
-    const tag = await Tag.findOne({ slug: req.params.slug.toLowerCase() });
+    const [tag] = await db
+      .select()
+      .from(tags)
+      .where(eq(tags.slug, req.params.slug.toLowerCase()))
+      .limit(1);
     if (!tag) throw AppError.notFound('Tag not found');
     const lang = req.user?.preferences?.language ?? 'en';
     await translateTags([tag], lang);
@@ -88,28 +97,43 @@ tagsRouter.patch(
     const adminUsername = process.env.ADMIN_USERNAME;
     if (!adminUsername || req.user.username !== adminUsername) throw AppError.forbidden();
 
-    const tag = await Tag.findOne({ slug: req.params.slug.toLowerCase() });
+    const [tag] = await db
+      .select()
+      .from(tags)
+      .where(eq(tags.slug, req.params.slug.toLowerCase()))
+      .limit(1);
     if (!tag) throw AppError.notFound('Tag not found');
 
-    const { description, coverImage, featured, status, pinnedPostIds, aliasSlugs } = req.body as z.infer<typeof patchTagSchema>;
-    if (description !== undefined) tag.description = description;
-    if (coverImage !== undefined) tag.coverImage = coverImage;
-    if (featured !== undefined) tag.featured = featured;
-    if (status !== undefined) tag.status = status;
-    if (pinnedPostIds !== undefined) {
-      const { Types } = await import('mongoose');
-      tag.pinnedPostIds = pinnedPostIds.map((id) => new Types.ObjectId(id));
-    }
+    const { description, coverImage, featured, status, pinnedPostIds, aliasSlugs } =
+      req.body as z.infer<typeof patchTagSchema>;
+
+    const updateData: Partial<typeof tags.$inferInsert> = {};
+    if (description !== undefined) updateData.description = description;
+    if (coverImage !== undefined) updateData.coverImage = coverImage;
+    if (featured !== undefined) updateData.featured = featured;
+    if (status !== undefined) updateData.status = status;
+    if (pinnedPostIds !== undefined) updateData.pinnedPostIds = pinnedPostIds;
     if (aliasSlugs !== undefined) {
-      const aliasTags = await Tag.find({ slug: { $in: aliasSlugs.map((s) => s.toLowerCase()) } });
-      tag.aliasIds = aliasTags.map((t) => t._id);
-      await Tag.updateMany(
-        { _id: { $in: aliasTags.map((t) => t._id) } },
-        { $set: { isAlias: true } },
-      );
+      const aliasTags = await db
+        .select({ id: tags.id })
+        .from(tags)
+        .where(inArray(tags.slug, aliasSlugs.map((s) => s.toLowerCase())));
+      const aliasTagIds = aliasTags.map((t) => t.id);
+      updateData.aliasIds = aliasTagIds;
+      if (aliasTagIds.length > 0) {
+        await db.update(tags).set({ isAlias: true }).where(inArray(tags.id, aliasTagIds));
+      }
     }
 
-    await tag.save();
-    return ok(res, { tag: toTagDTO(tag) });
+    let result = tag;
+    if (Object.keys(updateData).length > 0) {
+      const [updated] = await db
+        .update(tags)
+        .set(updateData)
+        .where(eq(tags.id, tag.id))
+        .returning();
+      result = updated;
+    }
+    return ok(res, { tag: toTagDTO(result) });
   }),
 );

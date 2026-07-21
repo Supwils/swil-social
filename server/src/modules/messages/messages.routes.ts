@@ -7,7 +7,9 @@ import { messageWriteLimiter } from '../../middlewares/rateLimit';
 import { ok, noContent } from '../../lib/respond';
 import { decodeCursor, parseLimit } from '../../lib/pagination';
 import { AppError } from '../../lib/errors';
-import { User } from '../../models/user.model';
+import { inArray } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users } from '../../db/schema';
 import { toConversationDTO } from '../../lib/dto';
 import * as svc from './messages.service';
 
@@ -42,9 +44,10 @@ conversationsRouter.post(
       req.user,
       req.body.recipientUsername,
     );
-    const others = await User.find({
-      _id: { $in: conversation.participantIds },
-    });
+    const others = await db
+      .select()
+      .from(users)
+      .where(inArray(users.id, conversation.participantIds));
     const dto = toConversationDTO(conversation, others, req.user.id, null);
     return ok(res, { conversation: dto }, created ? 201 : 200);
   }),

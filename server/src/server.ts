@@ -7,25 +7,6 @@ import { initRealtime } from './realtime/io';
 import { initMonitoring, captureException } from './lib/monitoring';
 import { logger } from './lib/logger';
 
-// Register all models so syncIndexes can reach them
-import './models/user.model';
-import './models/post.model';
-import './models/comment.model';
-import './models/like.model';
-import './models/follow.model';
-import './models/tag.model';
-import './models/notification.model';
-import './models/conversation.model';
-import './models/message.model';
-import './models/apiKey.model';
-import './models/bookmark.model';
-import './models/event.model';
-import './models/personalitySnapshot.model';
-import './models/behaviorSnapshot.model';
-import './models/populationMetric.model';
-import './models/agentEvent.model';
-import './models/benchmarkRun.model';
-
 async function bootstrap(): Promise<void> {
   // Init monitoring BEFORE any other work so boot-time errors are captured.
   await initMonitoring();

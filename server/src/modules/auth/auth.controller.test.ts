@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import type { Request, Response } from 'express';
-import { Types } from 'mongoose';
+import { newId } from '../../lib/id';
 import { AppError } from '../../lib/errors';
 import * as dto from '../../lib/dto';
 import * as authService from './auth.service';
@@ -35,10 +35,8 @@ function makeRequest(overrides: Partial<Request> = {}): Request {
 }
 
 function makeUser() {
-  const id = new Types.ObjectId();
   return {
-    _id: id,
-    id: id.toString(),
+    id: newId(),
   };
 }
 

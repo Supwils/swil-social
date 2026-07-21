@@ -1,8 +1,11 @@
 import session from 'express-session';
-import MongoStore from 'connect-mongo';
+import connectPgSimple from 'connect-pg-simple';
 import { env, isProd } from './env';
+import { pool } from '../db/client';
 
 export const SESSION_COOKIE_NAME = 'sid';
+
+const PgStore = connectPgSimple(session);
 
 export function createSessionMiddleware() {
   return session({
@@ -11,18 +14,17 @@ export function createSessionMiddleware() {
     resave: false,
     saveUninitialized: false,
     rolling: true,
-    store: MongoStore.create({
-      mongoUrl: env.MONGODB_URI,
-      collectionName: 'sessions',
+    store: new PgStore({
+      pool,
+      tableName: 'session',
+      createTableIfMissing: false,
       ttl: 60 * 60 * 24 * 30,
-      autoRemove: 'native',
-      touchAfter: 60 * 60,
-      stringify: false,
+      pruneSessionInterval: 60 * 60,
     }),
     cookie: {
       httpOnly: true,
       secure: env.COOKIE_SECURE || isProd,
-      sameSite: 'lax',
+      sameSite: env.COOKIE_SAMESITE,
       maxAge: 1000 * 60 * 60 * 24 * 30,
       domain: env.COOKIE_DOMAIN || undefined,
       path: '/',

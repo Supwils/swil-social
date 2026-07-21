@@ -1,10 +1,15 @@
-import type { UserDocument } from '../models/user.model';
-import type { PostDocument } from '../models/post.model';
-import type { CommentDocument } from '../models/comment.model';
-import type { TagDocument } from '../models/tag.model';
-import type { MessageDocument } from '../models/message.model';
-import type { ConversationDocument } from '../models/conversation.model';
-import type { NotificationType } from '../models/notification.model';
+import type { InferSelectModel } from 'drizzle-orm';
+import type { users, posts, comments, tags, messages, conversations } from '../db/schema';
+import type { NotificationType } from '../db/schema/messaging';
+
+// Drizzle row types — the data layer returns these plain rows (id: string,
+// ref fields already strings, Date fields already Date).
+export type UserRow = InferSelectModel<typeof users>;
+export type PostRow = InferSelectModel<typeof posts>;
+export type CommentRow = InferSelectModel<typeof comments>;
+export type TagRow = InferSelectModel<typeof tags>;
+export type MessageRow = InferSelectModel<typeof messages>;
+export type ConversationRow = InferSelectModel<typeof conversations>;
 
 export interface UserDTO {
   id: string;
@@ -94,9 +99,9 @@ export interface FeaturedTopicDTO extends TagDTO {
   pinnedPosts: PostDTO[];
 }
 
-export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): UserDTO {
+export function toUserDTO(user: UserRow, opts: { self?: boolean } = {}): UserDTO {
   const base: UserDTO = {
-    id: user._id.toString(),
+    id: user.id,
     username: user.username,
     usernameDisplay: user.usernameDisplay,
     displayName: user.displayName,
@@ -117,14 +122,14 @@ export function toUserDTO(user: UserDocument, opts: { self?: boolean } = {}): Us
   if (opts.self) {
     base.email = user.email;
     base.emailVerified = user.emailVerified;
-    base.preferences = user.preferences;
+    if (user.preferences) base.preferences = user.preferences;
   }
   return base;
 }
 
-export function toUserLiteDTO(user: UserDocument): UserLiteDTO {
+export function toUserLiteDTO(user: UserRow): UserLiteDTO {
   return {
-    id: user._id.toString(),
+    id: user.id,
     username: user.username,
     usernameDisplay: user.usernameDisplay,
     displayName: user.displayName,
@@ -137,9 +142,9 @@ export function toUserLiteDTO(user: UserDocument): UserLiteDTO {
 }
 
 export interface PostDTOContext {
-  author: UserDocument;
-  tags: TagDocument[];
-  mentions: UserDocument[];
+  author: UserRow;
+  tags: TagRow[];
+  mentions: UserRow[];
   likedByMe?: boolean;
   bookmarkedByMe?: boolean;
   echoOf?: PostDTO;
@@ -148,18 +153,14 @@ export interface PostDTOContext {
   lang?: string;
 }
 
-// Re-export document types for consumers that need just the context + doc together.
-export type { PostDocument } from '../models/post.model';
-export type { CommentDocument } from '../models/comment.model';
-
-export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
+export function toPostDTO(post: PostRow, ctx: PostDTOContext): PostDTO {
   const translated = ctx.translatedText;
   return {
-    id: post._id.toString(),
+    id: post.id,
     author: toUserLiteDTO(ctx.author),
     text: translated ?? post.text,
     ...(translated ? { originalText: post.text, originalLang: ctx.originalLang } : {}),
-    images: post.images.map((i) => ({
+    images: (post.images ?? []).map((i) => ({
       url: i.url,
       width: i.width,
       height: i.height,
@@ -191,18 +192,18 @@ export function toPostDTO(post: PostDocument, ctx: PostDTOContext): PostDTO {
 }
 
 export interface CommentDTOContext {
-  author: UserDocument;
+  author: UserRow;
   likedByMe?: boolean;
   translatedText?: string;
 }
 
-export function toCommentDTO(comment: CommentDocument, ctx: CommentDTOContext): CommentDTO {
+export function toCommentDTO(comment: CommentRow, ctx: CommentDTOContext): CommentDTO {
   const translated = ctx.translatedText;
   const isDeleted = comment.status === 'deleted';
   return {
-    id: comment._id.toString(),
-    postId: comment.postId.toString(),
-    parentId: comment.parentId ? comment.parentId.toString() : null,
+    id: comment.id,
+    postId: comment.postId,
+    parentId: comment.parentId ?? null,
     author: toUserLiteDTO(ctx.author),
     text: isDeleted ? '[deleted]' : (translated ?? comment.text),
     ...(translated && !isDeleted ? { originalText: comment.text } : {}),
@@ -218,7 +219,7 @@ export function toCommentDTO(comment: CommentDocument, ctx: CommentDTOContext): 
   };
 }
 
-export function toTagDTO(tag: TagDocument, lang?: string): TagDTO {
+export function toTagDTO(tag: TagRow, lang?: string): TagDTO {
   return {
     slug: tag.slug,
     display: (lang && tag.translations?.[lang]) || tag.display,
@@ -260,28 +261,28 @@ export interface ConversationDTO {
   updatedAt: string;
 }
 
-export function toMessageDTO(msg: MessageDocument, sender: UserDocument): MessageDTO {
+export function toMessageDTO(msg: MessageRow, sender: UserRow): MessageDTO {
   return {
-    id: msg._id.toString(),
-    conversationId: msg.conversationId.toString(),
+    id: msg.id,
+    conversationId: msg.conversationId,
     sender: toUserLiteDTO(sender),
     text: msg.text,
-    readBy: msg.readBy.map((id) => id.toString()),
+    readBy: [...(msg.readBy ?? [])],
     createdAt: msg.createdAt.toISOString(),
   };
 }
 
 export function toConversationDTO(
-  convo: ConversationDocument,
-  participants: UserDocument[],
+  convo: ConversationRow,
+  participants: UserRow[],
   viewerId: string,
   lastMessage: MessageDTO | null,
 ): ConversationDTO {
   return {
-    id: convo._id.toString(),
+    id: convo.id,
     participants: participants.map(toUserLiteDTO),
     lastMessage,
-    unread: convo.unreadBy.some((id) => id.toString() === viewerId),
+    unread: (convo.unreadBy ?? []).some((id) => id === viewerId),
     updatedAt: convo.lastMessageAt.toISOString(),
   };
 }

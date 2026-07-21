@@ -19,7 +19,7 @@ export async function listForPost(req: Request, res: Response) {
   await translateComments(items, ctxByCommentId, lang);
   const out = items
     .map((c) => {
-      const ctx = ctxByCommentId.get(c._id.toString());
+      const ctx = ctxByCommentId.get(c.id);
       return ctx ? toCommentDTO(c, ctx) : null;
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);

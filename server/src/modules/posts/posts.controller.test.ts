@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
 import type { Response } from 'express';
+import { newId } from '../../lib/id';
 
 const mocks = vi.hoisted(() => ({
   createPost: vi.fn(),
@@ -17,15 +17,12 @@ vi.mock('./posts.service', () => ({
 }));
 
 import { AppError } from '../../lib/errors';
-import type { PostDTOContext } from '../../lib/dto';
-import type { PostDocument } from '../../models/post.model';
-import type { UserDocument } from '../../models/user.model';
+import type { PostDTOContext, PostRow, UserRow } from '../../lib/dto';
 import { create, getById, remove, update } from './posts.controller';
 
-function makeUser(id = new Types.ObjectId()): UserDocument {
+function makeUser(id = newId()): UserRow {
   return {
-    _id: id,
-    id: id.toString(),
+    id,
     username: 'ada',
     usernameDisplay: 'ada',
     displayName: 'Ada',
@@ -49,12 +46,12 @@ function makeUser(id = new Types.ObjectId()): UserDocument {
     },
     isAgent: false,
     createdAt: new Date('2026-04-23T00:00:00.000Z'),
-  } as UserDocument;
+  } as unknown as UserRow;
 }
 
-function makePost(authorId: Types.ObjectId): PostDocument {
+function makePost(authorId: string): PostRow {
   return {
-    _id: new Types.ObjectId(),
+    id: newId(),
     authorId,
     text: 'Hello world',
     images: [],
@@ -64,14 +61,15 @@ function makePost(authorId: Types.ObjectId): PostDocument {
     visibility: 'public',
     likeCount: 0,
     commentCount: 0,
+    repostCount: 0,
     status: 'active',
     editedAt: null,
     deletedAt: null,
     createdAt: new Date('2026-04-23T00:00:00.000Z'),
-  } as unknown as PostDocument;
+  } as unknown as PostRow;
 }
 
-function makeCtx(author: UserDocument): PostDTOContext {
+function makeCtx(author: UserRow): PostDTOContext {
   return {
     author,
     tags: [],
@@ -107,7 +105,7 @@ describe('posts.controller', () => {
 
   it('maps uploaded images and video buffers into createPost', async () => {
     const author = makeUser();
-    const post = makePost(author._id);
+    const post = makePost(author.id);
     const ctx = makeCtx(author);
     const imageA = Buffer.from('image-a');
     const imageB = Buffer.from('image-b');
@@ -137,7 +135,7 @@ describe('posts.controller', () => {
     expect(res.payload).toMatchObject({
       data: {
         post: {
-          id: post._id.toString(),
+          id: post.id,
           text: 'Hello world',
         },
       },
@@ -147,45 +145,45 @@ describe('posts.controller', () => {
 
   it('passes anonymous viewers through on getById', async () => {
     const author = makeUser();
-    const post = makePost(author._id);
+    const post = makePost(author.id);
     const ctx = makeCtx(author);
     mocks.getPostForViewer.mockResolvedValue({ post, ctx });
 
-    const req = { params: { id: post._id.toString() } };
+    const req = { params: { id: post.id } };
     const res = makeRes();
 
     await getById(req as never, res);
 
-    expect(mocks.getPostForViewer).toHaveBeenCalledWith(post._id.toString(), null);
+    expect(mocks.getPostForViewer).toHaveBeenCalledWith(post.id, null);
     expect(res.statusCode).toBe(200);
     expect(res.payload).toMatchObject({
-      data: { post: { id: post._id.toString() } },
+      data: { post: { id: post.id } },
     });
   });
 
   it('forwards update payloads for authenticated users', async () => {
     const author = makeUser();
-    const post = makePost(author._id);
+    const post = makePost(author.id);
     const ctx = makeCtx(author);
     mocks.updatePost.mockResolvedValue({ post, ctx });
 
     const req = {
       user: author,
-      params: { id: post._id.toString() },
+      params: { id: post.id },
       body: { text: 'Updated text', visibility: 'followers' },
     };
     const res = makeRes();
 
     await update(req as never, res);
 
-    expect(mocks.updatePost).toHaveBeenCalledWith(post._id.toString(), author, req.body);
+    expect(mocks.updatePost).toHaveBeenCalledWith(post.id, author, req.body);
     expect(res.payload).toMatchObject({
-      data: { post: { id: post._id.toString() } },
+      data: { post: { id: post.id } },
     });
   });
 
   it('rejects delete attempts from anonymous users', async () => {
-    await expect(remove({ params: { id: new Types.ObjectId().toString() } } as never, makeRes()))
+    await expect(remove({ params: { id: newId() } } as never, makeRes()))
       .rejects
       .toMatchObject<AppError>({
         code: 'UNAUTHENTICATED',

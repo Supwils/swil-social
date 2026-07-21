@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
 import type { Router } from 'express';
 
 const mocks = vi.hoisted(() => ({
@@ -11,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../middlewares/auth', () => ({
   requireUser: (req: { user?: unknown }, _res: unknown, next: (err?: unknown) => void) => {
-    req.user = { _id: new Types.ObjectId(), id: 'viewer-id' };
+    req.user = { id: 'viewer-id' };
     next();
   },
   optionalUser: (req: { user?: unknown }, _res: unknown, next: (err?: unknown) => void) => {

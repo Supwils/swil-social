@@ -1,46 +1,69 @@
-import { Types } from 'mongoose';
-import { Post, type PostDocument } from '../../models/post.model';
-import { User, type UserDocument } from '../../models/user.model';
-import { Tag, type TagDocument } from '../../models/tag.model';
-import { Like } from '../../models/like.model';
-import { Follow } from '../../models/follow.model';
+import { and, or, eq, inArray, isNull, gte, lt, desc, ilike } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users, posts, tags, likes, follows } from '../../db/schema';
 import { AppError } from '../../lib/errors';
 import { decodeCursor, buildNextCursor } from '../../lib/pagination';
 import { translatePosts } from '../../lib/translate';
-import { toPostDTO, type PostDTOContext, type PostDTO } from '../../lib/dto';
+import {
+  toPostDTO,
+  type PostDTOContext,
+  type PostDTO,
+  type PostRow,
+  type UserRow,
+  type TagRow,
+} from '../../lib/dto';
 import type { SearchPostsQuery } from './posts.schemas';
 import { hydratePosts } from './posts.hydrate';
 import { assertVisibility } from './posts.write';
 
+/** Escape LIKE/ILIKE wildcards so user input can't inject `%` / `_` patterns. */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, '\\$&');
+}
+
 export async function getPostForViewer(
   postId: string,
-  viewer: UserDocument | null,
-): Promise<{ post: PostDocument; ctx: PostDTOContext }> {
-  const post = await Post.findById(postId);
+  viewer: UserRow | null,
+): Promise<{ post: PostRow; ctx: PostDTOContext }> {
+  const [post] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   if (!post || post.status !== 'active') throw AppError.notFound('Post not found');
   await assertVisibility(post, viewer);
 
-  const [author, tags, mentions, likedByMe] = await Promise.all([
-    User.findById(post.authorId),
+  const [authorRows, tagRows, mentionRows, likedByMe] = await Promise.all([
+    db.select().from(users).where(eq(users.id, post.authorId)).limit(1),
     post.tagIds.length
-      ? Tag.find({ _id: { $in: post.tagIds } })
-      : Promise.resolve([] as TagDocument[]),
+      ? db.select().from(tags).where(inArray(tags.id, post.tagIds))
+      : Promise.resolve([] as TagRow[]),
     post.mentionIds.length
-      ? User.find({ _id: { $in: post.mentionIds } })
-      : Promise.resolve([] as UserDocument[]),
+      ? db.select().from(users).where(inArray(users.id, post.mentionIds))
+      : Promise.resolve([] as UserRow[]),
     viewer
-      ? Like.exists({ userId: viewer._id, targetType: 'post', targetId: post._id }).then(Boolean)
+      ? db
+          .select({ id: likes.id })
+          .from(likes)
+          .where(
+            and(
+              eq(likes.userId, viewer.id),
+              eq(likes.targetType, 'post'),
+              eq(likes.targetId, post.id),
+            ),
+          )
+          .limit(1)
+          .then((r) => r.length > 0)
       : Promise.resolve(false),
   ]);
+  const author = authorRows[0];
   if (!author) throw AppError.notFound('Author missing');
 
   let echoOfDto: PostDTO | undefined;
   if (post.echoOf) {
-    const origPost = (await Post.findById(post.echoOf).lean()) as unknown as PostDocument | null;
+    const [origPost] = await db.select().from(posts).where(eq(posts.id, post.echoOf)).limit(1);
     if (origPost) {
-      const origAuthor = (await User.findById(
-        origPost.authorId,
-      ).lean()) as unknown as UserDocument | null;
+      const [origAuthor] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, origPost.authorId))
+        .limit(1);
       if (origAuthor) {
         echoOfDto = toPostDTO(origPost, {
           author: origAuthor,
@@ -52,24 +75,28 @@ export async function getPostForViewer(
     }
   }
 
-  return { post, ctx: { author, tags, mentions, likedByMe, echoOf: echoOfDto } };
+  return { post, ctx: { author, tags: tagRows, mentions: mentionRows, likedByMe, echoOf: echoOfDto } };
 }
 
 export async function getShowcasePosts(
-  viewer: UserDocument | null,
+  viewer: UserRow | null,
   lang: string,
 ): Promise<PostDTO[]> {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 3_600_000);
 
-  const candidates = (await Post.find({
-    status: 'active',
-    visibility: 'public',
-    echoOf: { $exists: false },
-    createdAt: { $gte: sixtyDaysAgo },
-  })
-    .sort({ feedScore: -1, _id: -1 })
-    .limit(120)
-    .lean()) as unknown as PostDocument[];
+  const candidates = await db
+    .select()
+    .from(posts)
+    .where(
+      and(
+        eq(posts.status, 'active'),
+        eq(posts.visibility, 'public'),
+        isNull(posts.echoOf),
+        gte(posts.createdAt, sixtyDaysAgo),
+      ),
+    )
+    .orderBy(desc(posts.feedScore), desc(posts.id))
+    .limit(120);
 
   // Compute showcase score in memory:
   // - comments weighted 3× (vs 2× in feedScore) — active discussion = platform health
@@ -87,9 +114,9 @@ export async function getShowcasePosts(
 
   // Author diversity: cap at 2 posts per author
   const authorCount = new Map<string, number>();
-  const diverse: PostDocument[] = [];
+  const diverse: PostRow[] = [];
   for (const { post } of scored) {
-    const aid = post.authorId.toString();
+    const aid = post.authorId;
     const n = authorCount.get(aid) ?? 0;
     if (n < 2) {
       diverse.push(post);
@@ -99,7 +126,7 @@ export async function getShowcasePosts(
 
   // Tier-based Fisher-Yates shuffle for variety across refreshes
   const tierSize = Math.ceil(diverse.length / 3);
-  const shuffled: PostDocument[] = [];
+  const shuffled: PostRow[] = [];
   for (let t = 0; t < 3; t++) {
     const tier = diverse.slice(t * tierSize, (t + 1) * tierSize);
     for (let i = tier.length - 1; i > 0; i--) {
@@ -109,13 +136,13 @@ export async function getShowcasePosts(
     shuffled.push(...tier);
   }
 
-  const posts = shuffled.slice(0, 24);
-  const ctxMap = await hydratePosts(posts, viewer);
-  await translatePosts(posts, ctxMap, lang);
+  const pagePosts = shuffled.slice(0, 24);
+  const ctxMap = await hydratePosts(pagePosts, viewer);
+  await translatePosts(pagePosts, ctxMap, lang);
 
-  return posts
+  return pagePosts
     .map((p) => {
-      const ctx = ctxMap.get(p._id.toString());
+      const ctx = ctxMap.get(p.id);
       return ctx ? toPostDTO(p, ctx) : null;
     })
     .filter((x): x is PostDTO => x !== null);
@@ -123,52 +150,57 @@ export async function getShowcasePosts(
 
 export async function searchPosts(
   query: SearchPostsQuery,
-  viewer: UserDocument | null,
+  viewer: UserRow | null,
 ): Promise<{ items: PostDTO[]; nextCursor: string | null }> {
   const cursor = decodeCursor(query.cursor);
   const limit = query.limit ?? 20;
+  const q = query.q?.trim();
 
-  const filter: Record<string, unknown> = { status: 'active' };
-  const andClauses: Record<string, unknown>[] = [];
-  if (query.q && query.q.trim()) {
-    filter.$text = { $search: query.q.trim() };
-  }
+  let visibilityClause;
   if (viewer) {
-    const followingIds = (
-      await Follow.find({ followerId: viewer._id }).select('followingId').lean()
-    ).map((f) => f.followingId);
-    andClauses.push({
-      $or: [
-        { visibility: 'public' },
-        { authorId: viewer._id },
-        { visibility: 'followers', authorId: { $in: followingIds } },
-      ],
-    });
+    const followingRows = await db
+      .select({ followingId: follows.followingId })
+      .from(follows)
+      .where(eq(follows.followerId, viewer.id));
+    const followingIds = followingRows.map((f) => f.followingId);
+    visibilityClause = or(
+      eq(posts.visibility, 'public'),
+      eq(posts.authorId, viewer.id),
+      followingIds.length
+        ? and(eq(posts.visibility, 'followers'), inArray(posts.authorId, followingIds))
+        : undefined,
+    );
   } else {
-    filter.visibility = 'public';
-  }
-  if (cursor) {
-    const t = new Date(cursor.t);
-    const id = new Types.ObjectId(cursor.id);
-    andClauses.push({
-      $or: [{ createdAt: { $lt: t } }, { createdAt: t, _id: { $lt: id } }],
-    });
-  }
-  if (andClauses.length > 0) {
-    filter.$and = andClauses;
+    visibilityClause = eq(posts.visibility, 'public');
   }
 
-  const rawPosts = (await Post.find(filter)
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean()) as unknown as PostDocument[];
+  const cursorClause = cursor
+    ? or(
+        lt(posts.createdAt, new Date(cursor.t)),
+        and(eq(posts.createdAt, new Date(cursor.t)), lt(posts.id, cursor.id)),
+      )
+    : undefined;
+
+  const where = and(
+    eq(posts.status, 'active'),
+    q ? ilike(posts.text, `%${escapeLike(q)}%`) : undefined,
+    visibilityClause,
+    cursorClause,
+  );
+
+  const rawPosts = await db
+    .select()
+    .from(posts)
+    .where(where)
+    .orderBy(desc(posts.createdAt), desc(posts.id))
+    .limit(limit + 1);
 
   const { items: pagePosts, nextCursor } = buildNextCursor(rawPosts, limit);
   const ctxMap = await hydratePosts(pagePosts, viewer);
 
   const items = pagePosts
     .map((p) => {
-      const ctx = ctxMap.get(p._id.toString());
+      const ctx = ctxMap.get(p.id);
       return ctx ? toPostDTO(p, ctx) : null;
     })
     .filter((x): x is PostDTO => x !== null);

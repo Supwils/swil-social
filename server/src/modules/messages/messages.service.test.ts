@@ -1,143 +1,359 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
-import { Message } from '../../models/message.model';
-import { Conversation } from '../../models/conversation.model';
-import { User, type UserDocument } from '../../models/user.model';
-import type { ConversationDocument } from '../../models/conversation.model';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users, conversations, messages } from '../../db/schema';
+import { resetDb } from '../../test/db-reset';
+import { decodeCursor } from '../../lib/pagination';
+import type { ConversationRow, UserRow } from '../../lib/dto';
 import * as notifications from '../notifications/notifications.service';
 import * as realtime from '../../realtime/io';
-import { findOrCreateWith, markRead, send, unreadCount } from './messages.service';
+import {
+  findOrCreateWith,
+  getById,
+  listForViewer,
+  listMessages,
+  markRead,
+  send,
+  unreadCount,
+} from './messages.service';
 
-function makeUser(id = new Types.ObjectId()): UserDocument {
-  return {
-    _id: id,
-    id: id.toString(),
-    username: 'user',
-    status: 'active',
-  } as UserDocument;
+let seq = 0;
+async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
+  seq += 1;
+  const [u] = await db
+    .insert(users)
+    .values({
+      username: `user${seq}`,
+      usernameDisplay: `user${seq}`,
+      email: `user${seq}@example.com`,
+      displayName: `User ${seq}`,
+      ...over,
+    })
+    .returning();
+  return u;
 }
 
-function leanable<T>(value: T) {
-  return {
-    lean: vi.fn().mockResolvedValue(value),
-  };
+async function seedConversation(
+  participantIds: string[],
+  over: Partial<typeof conversations.$inferInsert> = {},
+): Promise<ConversationRow> {
+  seq += 1;
+  const [c] = await db
+    .insert(conversations)
+    .values({ participantIds, participantKey: `key-${seq}`, ...over })
+    .returning();
+  return c;
 }
 
 describe('messages.service', () => {
+  beforeEach(resetDb);
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('returns the raced conversation when create hits the unique key', async () => {
-    const me = makeUser();
-    const recipient = makeUser();
-    recipient.username = 'bob';
+  it('returns the existing conversation on a repeat findOrCreate (created: false)', async () => {
+    const me = await seedUser();
+    const recipient = await seedUser({ username: 'bob', usernameDisplay: 'bob' });
 
-    const existing = {
-      _id: new Types.ObjectId(),
-      participantIds: [me._id, recipient._id],
-      participantKey: 'shared-key',
-      lastMessageAt: new Date(),
-      unreadBy: [],
-    } as ConversationDocument;
+    const first = await findOrCreateWith(me, recipient.username);
+    expect(first.created).toBe(true);
 
-    vi.spyOn(User, 'findOne').mockResolvedValue(recipient);
-    vi.spyOn(Conversation, 'findOne')
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(existing);
-    vi.spyOn(Conversation, 'create').mockRejectedValue({ code: 11000 });
-
-    const out = await findOrCreateWith(me, recipient.username);
-
-    expect(out).toEqual({ conversation: existing, created: false });
+    const second = await findOrCreateWith(me, recipient.username);
+    expect(second.created).toBe(false);
+    expect(second.conversation.id).toBe(first.conversation.id);
   });
 
   it('counts unread conversations for a viewer', async () => {
-    const me = makeUser();
-    const countDocs = vi.spyOn(Conversation, 'countDocuments').mockResolvedValue(3);
+    const me = await seedUser();
+    const other = await seedUser();
+    await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    await seedConversation([me.id, other.id], { unreadBy: [] }); // read
+    await seedConversation([other.id], { unreadBy: [other.id] }); // not a participant
 
     const count = await unreadCount(me);
 
     expect(count).toBe(3);
-    expect(countDocs).toHaveBeenCalledWith({
-      participantIds: me._id,
-      unreadBy: me._id,
-    });
   });
 
   it('sends a message, updates unread state, and emits realtime events', async () => {
-    const me = makeUser();
-    const recipient = makeUser(new Types.ObjectId());
-    const convo = {
-      _id: new Types.ObjectId(),
-      participantIds: [me._id, recipient._id],
-      unreadBy: [],
-    } as ConversationDocument;
-    const message = {
-      _id: new Types.ObjectId(),
-      conversationId: convo._id,
-      senderId: me._id,
-      text: 'hello',
-      readBy: [me._id],
-      createdAt: new Date('2026-04-23T18:30:00.000Z'),
-    };
+    const me = await seedUser();
+    const recipient = await seedUser();
+    const convo = await seedConversation([me.id, recipient.id], { unreadBy: [] });
 
-    vi.spyOn(Conversation, 'findById').mockReturnValue(leanable(convo) as never);
-    vi.spyOn(Message, 'create').mockResolvedValue(message as never);
-    const updateOne = vi.spyOn(Conversation, 'updateOne').mockResolvedValue({ acknowledged: true } as never);
-    const emitToConversation = vi.spyOn(realtime, 'emitToConversation').mockImplementation(() => undefined);
+    const emitToConversation = vi
+      .spyOn(realtime, 'emitToConversation')
+      .mockImplementation(() => undefined);
     const emitToUser = vi.spyOn(realtime, 'emitToUser').mockImplementation(() => undefined);
     const notify = vi.spyOn(notifications, 'createNotification').mockResolvedValue(undefined);
 
-    const out = await send(me, convo._id.toString(), 'hello');
+    const out = await send(me, convo.id, 'hello');
 
-    expect(updateOne).toHaveBeenCalledWith(
-      { _id: convo._id },
-      {
-        $set: { lastMessageId: message._id, lastMessageAt: message.createdAt },
-        $addToSet: { unreadBy: { $each: [recipient._id] } },
-      },
-    );
-    expect(emitToConversation).toHaveBeenCalledWith(convo._id.toString(), 'message', out);
-    expect(emitToUser).toHaveBeenCalledWith(recipient._id, 'conversation:update', {
-      conversationId: convo._id.toString(),
+    expect(out.text).toBe('hello');
+    expect(out.readBy).toEqual([me.id]);
+
+    // Message persisted.
+    const [msgRow] = await db.select().from(messages).where(eq(messages.id, out.id));
+    expect(msgRow.text).toBe('hello');
+    expect(msgRow.readBy).toEqual([me.id]);
+
+    // Conversation unread + last-message pointers updated.
+    const [convoRow] = await db.select().from(conversations).where(eq(conversations.id, convo.id));
+    expect(convoRow.lastMessageId).toBe(out.id);
+    expect(convoRow.unreadBy).toContain(recipient.id);
+
+    expect(emitToConversation).toHaveBeenCalledWith(convo.id, 'message', out);
+    expect(emitToUser).toHaveBeenCalledWith(recipient.id, 'conversation:update', {
+      conversationId: convo.id,
     });
     expect(notify).toHaveBeenCalledWith({
-      recipientId: recipient._id,
-      actorId: me._id,
+      recipientId: recipient.id,
+      actorId: me.id,
       type: 'message',
-      messageId: message._id,
-      conversationId: convo._id,
+      messageId: out.id,
+      conversationId: convo.id,
     });
   });
 
   it('marks a conversation read and emits the read receipt event', async () => {
-    const me = makeUser();
-    const convo = {
-      _id: new Types.ObjectId(),
-      participantIds: [me._id, new Types.ObjectId()],
-      unreadBy: [me._id],
-    } as ConversationDocument;
-
-    vi.spyOn(Conversation, 'findById').mockReturnValue(leanable(convo) as never);
-    const updateOne = vi.spyOn(Conversation, 'updateOne').mockResolvedValue({ acknowledged: true } as never);
-    const updateMany = vi.spyOn(Message, 'updateMany').mockResolvedValue({ acknowledged: true } as never);
+    const me = await seedUser();
+    const other = await seedUser();
+    const convo = await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    await db
+      .insert(messages)
+      .values({ conversationId: convo.id, senderId: other.id, text: 'hi', readBy: [other.id] });
     const emit = vi.spyOn(realtime, 'emitToConversation').mockImplementation(() => undefined);
 
-    await markRead(me, convo._id.toString());
+    await markRead(me, convo.id);
 
-    expect(updateOne).toHaveBeenCalledWith({ _id: convo._id }, { $pull: { unreadBy: me._id } });
-    expect(updateMany).toHaveBeenCalledWith(
-      {
-        conversationId: convo._id,
-        readBy: { $ne: me._id },
-      },
-      { $addToSet: { readBy: me._id } },
-    );
-    expect(emit).toHaveBeenCalledWith(convo._id.toString(), 'message:read', {
-      conversationId: convo._id.toString(),
+    const [convoRow] = await db.select().from(conversations).where(eq(conversations.id, convo.id));
+    expect(convoRow.unreadBy).not.toContain(me.id);
+
+    const [msgRow] = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, convo.id));
+    expect(msgRow.readBy).toContain(me.id);
+
+    expect(emit).toHaveBeenCalledWith(convo.id, 'message:read', {
+      conversationId: convo.id,
       userId: me.id,
       at: expect.any(String),
     });
+  });
+
+  // ── findOrCreateWith error paths ──────────────────────────────────────────
+
+  it('throws NOT_FOUND when messaging a user that does not exist', async () => {
+    const me = await seedUser();
+    await expect(findOrCreateWith(me, 'ghost')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      status: 404,
+    });
+  });
+
+  it('rejects starting a conversation with yourself', async () => {
+    const me = await seedUser({ username: 'self', usernameDisplay: 'self' });
+    await expect(findOrCreateWith(me, 'self')).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      status: 400,
+    });
+  });
+
+  it('creates a new conversation with the deterministic participant pair', async () => {
+    const me = await seedUser();
+    const recipient = await seedUser({ username: 'bob', usernameDisplay: 'bob' });
+
+    const { conversation, created } = await findOrCreateWith(me, 'BOB');
+
+    expect(created).toBe(true);
+    expect(conversation.participantIds.sort()).toEqual([me.id, recipient.id].sort());
+
+    const [row] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversation.id));
+    expect(row).toBeDefined();
+  });
+
+  // ── listForViewer (conversation list) ─────────────────────────────────────
+
+  it('lists a viewer conversations newest-first and paginates by cursor', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const third = await seedUser();
+    const older = await seedConversation([me.id, other.id], {
+      lastMessageAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    const newer = await seedConversation([me.id, other.id], {
+      lastMessageAt: new Date('2026-02-01T00:00:00Z'),
+    });
+    // A conversation the viewer is not part of must never surface.
+    await seedConversation([other.id, third.id], {
+      lastMessageAt: new Date('2026-03-01T00:00:00Z'),
+    });
+
+    const page1 = await listForViewer(me, null, 1);
+    expect(page1.items.map((c) => c.id)).toEqual([newer.id]);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await listForViewer(me, decodeCursor(page1.nextCursor), 1);
+    expect(page2.items.map((c) => c.id)).toEqual([older.id]);
+    expect(page2.nextCursor).toBeNull();
+  });
+
+  it('returns an empty conversation list for a viewer with none', async () => {
+    const me = await seedUser();
+    const page = await listForViewer(me, null, 20);
+    expect(page.items).toEqual([]);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('hydrates the last message into the conversation list item', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const convo = await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    const [msg] = await db
+      .insert(messages)
+      .values({ conversationId: convo.id, senderId: other.id, text: 'yo', readBy: [other.id] })
+      .returning();
+    await db
+      .update(conversations)
+      .set({ lastMessageId: msg.id })
+      .where(eq(conversations.id, convo.id));
+
+    const page = await listForViewer(me, null, 20);
+    expect(page.items[0].lastMessage?.text).toBe('yo');
+    expect(page.items[0].unread).toBe(true);
+  });
+
+  // ── getById ───────────────────────────────────────────────────────────────
+
+  it('returns a conversation with its last message for a member', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const convo = await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    const [msg] = await db
+      .insert(messages)
+      .values({ conversationId: convo.id, senderId: other.id, text: 'hey there', readBy: [other.id] })
+      .returning();
+    await db
+      .update(conversations)
+      .set({ lastMessageId: msg.id })
+      .where(eq(conversations.id, convo.id));
+
+    const dto = await getById(me, convo.id);
+
+    expect(dto.id).toBe(convo.id);
+    expect(dto.lastMessage?.text).toBe('hey there');
+    expect(dto.unread).toBe(true);
+    expect(dto.participants.map((p) => p.id).sort()).toEqual([me.id, other.id].sort());
+  });
+
+  it('throws NOT_FOUND from getById for a non-member', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const stranger = await seedUser();
+    const convo = await seedConversation([other.id, stranger.id]);
+
+    await expect(getById(me, convo.id)).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+
+  // ── listMessages ──────────────────────────────────────────────────────────
+
+  it('lists messages newest-first, paginates, and hides deleted-for-viewer ones', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const convo = await seedConversation([me.id, other.id]);
+    const base = Date.parse('2026-01-01T00:00:00Z');
+    await db.insert(messages).values([
+      { conversationId: convo.id, senderId: other.id, text: 'first', createdAt: new Date(base) },
+      { conversationId: convo.id, senderId: me.id, text: 'second', createdAt: new Date(base + 1000) },
+      { conversationId: convo.id, senderId: other.id, text: 'third', createdAt: new Date(base + 2000) },
+      {
+        conversationId: convo.id,
+        senderId: other.id,
+        text: 'hidden',
+        createdAt: new Date(base + 3000),
+        deletedFor: [me.id],
+      },
+    ]);
+
+    const page1 = await listMessages(me, convo.id, null, 2);
+    expect(page1.items.map((m) => m.text)).toEqual(['third', 'second']);
+    expect(page1.items[0].sender.id).toBe(other.id);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await listMessages(me, convo.id, decodeCursor(page1.nextCursor), 2);
+    expect(page2.items.map((m) => m.text)).toEqual(['first']);
+    expect(page2.nextCursor).toBeNull();
+  });
+
+  it('throws NOT_FOUND from listMessages for a non-member', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const stranger = await seedUser();
+    const convo = await seedConversation([other.id, stranger.id]);
+
+    await expect(listMessages(me, convo.id, null, 20)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+  });
+
+  // ── send edge cases ───────────────────────────────────────────────────────
+
+  it('unions unreadBy without duplicating an already-unread recipient', async () => {
+    const me = await seedUser();
+    const recipient = await seedUser();
+    const convo = await seedConversation([me.id, recipient.id], { unreadBy: [recipient.id] });
+    vi.spyOn(realtime, 'emitToConversation').mockImplementation(() => undefined);
+    vi.spyOn(realtime, 'emitToUser').mockImplementation(() => undefined);
+    vi.spyOn(notifications, 'createNotification').mockResolvedValue(undefined);
+
+    const out = await send(me, convo.id, 'hey');
+
+    const [row] = await db.select().from(conversations).where(eq(conversations.id, convo.id));
+    expect(row.unreadBy.filter((id) => id === recipient.id)).toHaveLength(1);
+    expect(row.lastMessageId).toBe(out.id);
+    expect(row.lastMessageAt.getTime()).toBeGreaterThan(0);
+  });
+
+  it('rejects sending to a conversation the sender is not part of', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const stranger = await seedUser();
+    const convo = await seedConversation([other.id, stranger.id]);
+
+    await expect(send(me, convo.id, 'hi')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  // ── markRead dup-guard ────────────────────────────────────────────────────
+
+  it('does not double-append readBy when the viewer already read a message', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const convo = await seedConversation([me.id, other.id], { unreadBy: [me.id] });
+    await db.insert(messages).values([
+      { conversationId: convo.id, senderId: other.id, text: 'already', readBy: [other.id, me.id] },
+      { conversationId: convo.id, senderId: other.id, text: 'fresh', readBy: [other.id] },
+    ]);
+    vi.spyOn(realtime, 'emitToConversation').mockImplementation(() => undefined);
+
+    await markRead(me, convo.id);
+
+    const rows = await db.select().from(messages).where(eq(messages.conversationId, convo.id));
+    for (const r of rows) {
+      expect(r.readBy.filter((id) => id === me.id)).toHaveLength(1);
+    }
+  });
+
+  it('throws NOT_FOUND from markRead for a non-member', async () => {
+    const me = await seedUser();
+    const other = await seedUser();
+    const stranger = await seedUser();
+    const convo = await seedConversation([other.id, stranger.id]);
+
+    await expect(markRead(me, convo.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });

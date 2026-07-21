@@ -1,58 +1,69 @@
-import { Types } from 'mongoose';
-import { Post, type PostDocument } from '../../models/post.model';
-import { Follow } from '../../models/follow.model';
-import { Tag } from '../../models/tag.model';
-import { User, type UserDocument } from '../../models/user.model';
+import { and, eq, ne, inArray, desc, gt, gte, arrayOverlaps, type SQL } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { posts, follows, tags, users } from '../../db/schema';
 import { AppError } from '../../lib/errors';
 import {
   type Cursor,
   type ScoreCursor,
-  cursorFilterDesc,
+  cursorConditionDesc,
   buildNextCursor,
-  scoreCursorFilter,
+  scoreCursorCondition,
   buildNextScoreCursor,
 } from '../../lib/pagination';
 
 export type FeedSort = 'recommended' | 'latest';
 import { hydratePosts } from '../posts/posts.service';
-import { toPostDTO, toTagDTO, type PostDTOContext, type PostDTO, type TagDTO, type FeaturedTopicDTO } from '../../lib/dto';
+import {
+  toPostDTO,
+  toTagDTO,
+  type PostRow,
+  type UserRow,
+  type TagRow,
+  type PostDTOContext,
+  type PostDTO,
+  type TagDTO,
+  type FeaturedTopicDTO,
+} from '../../lib/dto';
 import { TTLCache } from '../../lib/ttlCache';
-import type { TagDocument } from '../../models/tag.model';
 
 interface FeedPage {
-  items: PostDocument[];
+  items: PostRow[];
   nextCursor: string | null;
   ctxById: Map<string, PostDTOContext>;
 }
 
 /** Ranked feed — sorted by feedScore descending. Used for global / following / tag feeds. */
 async function paginateByScore(
-  filter: Record<string, unknown>,
-  viewer: UserDocument | null,
+  baseCondition: SQL | undefined,
+  viewer: UserRow | null,
   cursor: ScoreCursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  const docs = (await Post.find({ ...filter, ...scoreCursorFilter(cursor) })
-    .sort({ feedScore: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean()) as unknown as PostDocument[];
-  const { items, nextCursor } = buildNextScoreCursor(docs, limit);
+  const rows = await db
+    .select()
+    .from(posts)
+    .where(and(baseCondition, scoreCursorCondition(cursor, posts.feedScore, posts.id)))
+    .orderBy(desc(posts.feedScore), desc(posts.id))
+    .limit(limit + 1);
+  const { items, nextCursor } = buildNextScoreCursor(rows, limit);
   const ctxById = await hydratePosts(items, viewer);
   return { items, nextCursor, ctxById };
 }
 
 /** Chronological feed — sorted by createdAt descending. Used for author profile pages. */
 async function paginateByTime(
-  filter: Record<string, unknown>,
-  viewer: UserDocument | null,
+  baseCondition: SQL | undefined,
+  viewer: UserRow | null,
   cursor: Cursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  const docs = (await Post.find({ ...filter, ...cursorFilterDesc(cursor) })
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .lean()) as unknown as PostDocument[];
-  const { items, nextCursor } = buildNextCursor(docs, limit);
+  const rows = await db
+    .select()
+    .from(posts)
+    .where(and(baseCondition, cursorConditionDesc(cursor, posts.createdAt, posts.id)))
+    .orderBy(desc(posts.createdAt), desc(posts.id))
+    .limit(limit + 1);
+  const { items, nextCursor } = buildNextCursor(rows, limit);
   const ctxById = await hydratePosts(items, viewer);
   return { items, nextCursor, ctxById };
 }
@@ -61,39 +72,39 @@ async function paginateByTime(
  * Following feed: ranked or chronological posts from people the viewer follows + viewer's own posts.
  */
 export async function following(
-  viewer: UserDocument,
+  viewer: UserRow,
   cursor: ScoreCursor | Cursor | null,
   limit: number,
   sort: FeedSort = 'recommended',
 ): Promise<FeedPage> {
-  const followingEdges = await Follow.find({ followerId: viewer._id }).select('followingId').lean();
-  const authorIds: Types.ObjectId[] = [
-    viewer._id,
-    ...followingEdges.map((e) => e.followingId),
-  ];
-  const filter = {
-    authorId: { $in: authorIds },
-    status: 'active',
-    visibility: { $in: ['public', 'followers'] },
-  };
+  const followingEdges = await db
+    .select({ followingId: follows.followingId })
+    .from(follows)
+    .where(eq(follows.followerId, viewer.id));
+  const authorIds: string[] = [viewer.id, ...followingEdges.map((e) => e.followingId)];
+  const base = and(
+    inArray(posts.authorId, authorIds),
+    eq(posts.status, 'active'),
+    inArray(posts.visibility, ['public', 'followers']),
+  );
   return sort === 'latest'
-    ? paginateByTime(filter, viewer, cursor as Cursor, limit)
-    : paginateByScore(filter, viewer, cursor as ScoreCursor, limit);
+    ? paginateByTime(base, viewer, cursor as Cursor, limit)
+    : paginateByScore(base, viewer, cursor as ScoreCursor, limit);
 }
 
 /**
  * Global discovery feed: all public active posts ranked by score or newest-first.
  */
 export async function global(
-  viewer: UserDocument | null,
+  viewer: UserRow | null,
   cursor: ScoreCursor | Cursor | null,
   limit: number,
   sort: FeedSort = 'recommended',
 ): Promise<FeedPage> {
-  const filter = { status: 'active', visibility: 'public' };
+  const base = and(eq(posts.status, 'active'), eq(posts.visibility, 'public'));
   return sort === 'latest'
-    ? paginateByTime(filter, viewer, cursor as Cursor, limit)
-    : paginateByScore(filter, viewer, cursor as ScoreCursor, limit);
+    ? paginateByTime(base, viewer, cursor as Cursor, limit)
+    : paginateByScore(base, viewer, cursor as ScoreCursor, limit);
 }
 
 /**
@@ -101,19 +112,19 @@ export async function global(
  */
 export async function byTag(
   slug: string,
-  viewer: UserDocument | null,
+  viewer: UserRow | null,
   cursor: ScoreCursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  const tag = await Tag.findOne({ slug: slug.toLowerCase() });
+  const [tag] = await db.select().from(tags).where(eq(tags.slug, slug.toLowerCase())).limit(1);
   if (!tag) throw AppError.notFound('Tag not found');
-  const allTagIds = [tag._id, ...(tag.aliasIds ?? [])];
-  return paginateByScore(
-    { status: 'active', visibility: 'public', tagIds: { $in: allTagIds } },
-    viewer,
-    cursor,
-    limit,
+  const allTagIds = [tag.id, ...(tag.aliasIds ?? [])];
+  const base = and(
+    eq(posts.status, 'active'),
+    eq(posts.visibility, 'public'),
+    arrayOverlaps(posts.tagIds, allTagIds),
   );
+  return paginateByScore(base, viewer, cursor, limit);
 }
 
 export interface AgentSummaryItem {
@@ -143,10 +154,10 @@ export interface ExploreSummary {
  * out of cache because it includes per-viewer likedByMe / bookmarkedByMe.
  */
 interface ExploreCacheSlice {
-  agentUsers: UserDocument[];
-  trendingTagDocs: TagDocument[];
-  featuredTagDocs: TagDocument[];
-  featuredPostDoc: PostDocument | null;
+  agentUsers: UserRow[];
+  trendingTagDocs: TagRow[];
+  featuredTagDocs: TagRow[];
+  featuredPostDoc: PostRow | null;
   latestByAuthor: Map<string, { postId: string; text: string }>;
 }
 
@@ -155,58 +166,81 @@ const exploreSliceCache = new TTLCache<'global', ExploreCacheSlice>(60_000);
 async function loadExploreSlice(): Promise<ExploreCacheSlice> {
   const ago48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
-  const agentUsers = (await User.find({ isAgent: true, status: 'active' })
-    .sort({ createdAt: -1 })
-    .limit(50)
-    .lean()) as unknown as UserDocument[];
-  const agentIds = agentUsers.map((u) => u._id);
+  const agentUsers = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.isAgent, true), eq(users.status, 'active')))
+    .orderBy(desc(users.createdAt))
+    .limit(50);
+  const agentIds = agentUsers.map((u) => u.id);
 
-  const [featuredPostDoc, trendingTagDocs, featuredTagDocs, latestPostDocs] = await Promise.all([
-    Post.findOne({
-      authorId: { $in: agentIds },
-      status: 'active',
-      visibility: 'public',
-      createdAt: { $gte: ago48h },
-    })
-      .sort({ feedScore: -1 })
-      .lean() as Promise<PostDocument | null>,
-    Tag.find({ postCount: { $gt: 0 }, isAlias: { $ne: true } })
-      .sort({ postCount: -1 })
-      .limit(10)
-      .lean() as unknown as Promise<TagDocument[]>,
-    Tag.find({ featured: true, status: 'active' })
-      .sort({ postCount: -1 })
-      .limit(8)
-      .lean() as unknown as Promise<TagDocument[]>,
-    Post.aggregate([
-      { $match: { authorId: { $in: agentIds }, status: 'active', visibility: 'public' } },
-      { $sort: { createdAt: -1 } },
-      { $group: { _id: '$authorId', postId: { $first: '$_id' }, text: { $first: '$text' } } },
-    ]) as Promise<Array<{ _id: Types.ObjectId; postId: Types.ObjectId; text: string }>>,
+  const [featuredPostRows, trendingTagDocs, featuredTagDocs, latestPostRows] = await Promise.all([
+    db
+      .select()
+      .from(posts)
+      .where(
+        and(
+          inArray(posts.authorId, agentIds),
+          eq(posts.status, 'active'),
+          eq(posts.visibility, 'public'),
+          gte(posts.createdAt, ago48h),
+        ),
+      )
+      .orderBy(desc(posts.feedScore))
+      .limit(1),
+    db
+      .select()
+      .from(tags)
+      .where(and(gt(tags.postCount, 0), ne(tags.isAlias, true)))
+      .orderBy(desc(tags.postCount))
+      .limit(10),
+    db
+      .select()
+      .from(tags)
+      .where(and(eq(tags.featured, true), eq(tags.status, 'active')))
+      .orderBy(desc(tags.postCount))
+      .limit(8),
+    db
+      .selectDistinctOn([posts.authorId], {
+        authorId: posts.authorId,
+        postId: posts.id,
+        text: posts.text,
+      })
+      .from(posts)
+      .where(
+        and(
+          inArray(posts.authorId, agentIds),
+          eq(posts.status, 'active'),
+          eq(posts.visibility, 'public'),
+        ),
+      )
+      .orderBy(posts.authorId, desc(posts.createdAt)),
   ]);
 
+  const featuredPostDoc = featuredPostRows[0] ?? null;
+
   const latestByAuthor = new Map(
-    latestPostDocs.map((d) => [d._id.toString(), { postId: d.postId.toString(), text: d.text }]),
+    latestPostRows.map((d) => [d.authorId, { postId: d.postId, text: d.text }]),
   );
 
   return { agentUsers, trendingTagDocs, featuredTagDocs, featuredPostDoc, latestByAuthor };
 }
 
-export async function getExploreSummary(viewer: UserDocument): Promise<ExploreSummary> {
+export async function getExploreSummary(viewer: UserRow): Promise<ExploreSummary> {
   const slice = await exploreSliceCache.getOrLoad('global', loadExploreSlice);
   const { agentUsers, trendingTagDocs, featuredTagDocs, featuredPostDoc, latestByAuthor } = slice;
 
   let featuredPost: PostDTO | null = null;
   if (featuredPostDoc) {
-    const ctxMap = await hydratePosts([featuredPostDoc as PostDocument], viewer);
-    const ctx = ctxMap.get((featuredPostDoc as PostDocument)._id.toString());
-    if (ctx) featuredPost = toPostDTO(featuredPostDoc as PostDocument, ctx);
+    const ctxMap = await hydratePosts([featuredPostDoc], viewer);
+    const ctx = ctxMap.get(featuredPostDoc.id);
+    if (ctx) featuredPost = toPostDTO(featuredPostDoc, ctx);
   }
 
   const agents: AgentSummaryItem[] = agentUsers.map((u) => {
-    const latest = latestByAuthor.get(u._id.toString());
+    const latest = latestByAuthor.get(u.id);
     return {
-      id: u._id.toString(),
+      id: u.id,
       username: u.username,
       usernameDisplay: u.usernameDisplay,
       displayName: u.displayName,
@@ -224,16 +258,21 @@ export async function getExploreSummary(viewer: UserDocument): Promise<ExploreSu
   const allPinnedIds = featuredTagDocs.flatMap((t) => t.pinnedPostIds ?? []);
   const pinnedPostMap = new Map<string, PostDTO>();
   if (allPinnedIds.length > 0) {
-    const pinnedDocs = (await Post.find({
-      _id: { $in: allPinnedIds },
-      status: 'active',
-      visibility: 'public',
-    }).lean()) as unknown as PostDocument[];
+    const pinnedDocs = await db
+      .select()
+      .from(posts)
+      .where(
+        and(
+          inArray(posts.id, allPinnedIds),
+          eq(posts.status, 'active'),
+          eq(posts.visibility, 'public'),
+        ),
+      );
     if (pinnedDocs.length > 0) {
       const ctxMap = await hydratePosts(pinnedDocs, viewer);
       for (const doc of pinnedDocs) {
-        const ctx = ctxMap.get(doc._id.toString());
-        if (ctx) pinnedPostMap.set(doc._id.toString(), toPostDTO(doc, ctx));
+        const ctx = ctxMap.get(doc.id);
+        if (ctx) pinnedPostMap.set(doc.id, toPostDTO(doc, ctx));
       }
     }
   }
@@ -241,7 +280,7 @@ export async function getExploreSummary(viewer: UserDocument): Promise<ExploreSu
   const featuredTopics: FeaturedTopicDTO[] = featuredTagDocs.map((t) => ({
     ...toTagDTO(t),
     pinnedPosts: (t.pinnedPostIds ?? [])
-      .map((id) => pinnedPostMap.get(id.toString()))
+      .map((id) => pinnedPostMap.get(id))
       .filter((p): p is PostDTO => p !== undefined),
   }));
 
@@ -254,34 +293,35 @@ export async function getExploreSummary(viewer: UserDocument): Promise<ExploreSu
  */
 export async function byAuthor(
   username: string,
-  viewer: UserDocument | null,
+  viewer: UserRow | null,
   cursor: Cursor | null,
   limit: number,
 ): Promise<FeedPage> {
-  const author = await User.findOne({ username: username.toLowerCase(), status: 'active' });
+  const [author] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.username, username.toLowerCase()), eq(users.status, 'active')))
+    .limit(1);
   if (!author) throw AppError.notFound('User not found');
 
   const allowedVisibilities: Array<'public' | 'followers' | 'private'> = ['public'];
   if (viewer) {
-    if (viewer._id.equals(author._id)) {
+    if (viewer.id === author.id) {
       allowedVisibilities.push('followers', 'private');
     } else {
-      const follows = await Follow.exists({
-        followerId: viewer._id,
-        followingId: author._id,
-      });
-      if (follows) allowedVisibilities.push('followers');
+      const [edge] = await db
+        .select({ id: follows.id })
+        .from(follows)
+        .where(and(eq(follows.followerId, viewer.id), eq(follows.followingId, author.id)))
+        .limit(1);
+      if (edge) allowedVisibilities.push('followers');
     }
   }
 
-  return paginateByTime(
-    {
-      authorId: author._id,
-      status: 'active',
-      visibility: { $in: allowedVisibilities },
-    },
-    viewer,
-    cursor,
-    limit,
+  const base = and(
+    eq(posts.authorId, author.id),
+    eq(posts.status, 'active'),
+    inArray(posts.visibility, allowedVisibilities),
   );
+  return paginateByTime(base, viewer, cursor, limit);
 }

@@ -1,5 +1,6 @@
-import { Types } from 'mongoose';
-import { Post } from '../models/post.model';
+import { inArray } from 'drizzle-orm';
+import { db } from '../db/client';
+import { posts } from '../db/schema';
 
 /**
  * HackerNews-style gravity score.
@@ -22,38 +23,45 @@ export function calcFeedScore(post: {
   return engagement / Math.pow(ageHours + 2, 1.5);
 }
 
-// Pending post IDs waiting for score refresh — deduped and flushed as a single bulkWrite
+// Pending post IDs waiting for score refresh — deduped and flushed together.
 const _pending = new Set<string>();
 let _flushTimer: ReturnType<typeof setTimeout> | null = null;
 const BATCH_DELAY_MS = 2_000;
 
 function _flush(): void {
   _flushTimer = null;
-  const ids = [..._pending].map((id) => new Types.ObjectId(id));
+  const ids = [..._pending];
   _pending.clear();
-  Post.find({ _id: { $in: ids } })
-    .select('likeCount commentCount repostCount createdAt')
-    .lean()
-    .then((posts) => {
-      if (!posts.length) return;
-      const ops = posts.map((p) => ({
-        updateOne: {
-          filter: { _id: p._id },
-          update: { $set: { feedScore: calcFeedScore(p as Parameters<typeof calcFeedScore>[0]) } },
-        },
-      }));
-      return Post.bulkWrite(ops);
-    })
-    .catch(() => undefined);
+  if (!ids.length) return;
+  void (async () => {
+    try {
+      const rows = await db
+        .select({
+          id: posts.id,
+          likeCount: posts.likeCount,
+          commentCount: posts.commentCount,
+          repostCount: posts.repostCount,
+          createdAt: posts.createdAt,
+        })
+        .from(posts)
+        .where(inArray(posts.id, ids));
+      await Promise.all(
+        rows.map((p) =>
+          db.update(posts).set({ feedScore: calcFeedScore(p) }).where(inArray(posts.id, [p.id])),
+        ),
+      );
+    } catch {
+      /* fire-and-forget */
+    }
+  })();
 }
 
 /**
  * Fire-and-forget score refresh — safe to call after any engagement event.
- * Calls are batched into a single bulkWrite every 2 seconds to reduce DB pressure
- * under concurrent engagement bursts.
+ * Calls are batched every 2 seconds to reduce DB pressure under bursts.
  */
-export function refreshFeedScore(postId: Types.ObjectId): void {
-  _pending.add(postId.toString());
+export function refreshFeedScore(postId: string): void {
+  _pending.add(postId);
   if (!_flushTimer) {
     _flushTimer = setTimeout(_flush, BATCH_DELAY_MS);
   }

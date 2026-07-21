@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
 import type { Response } from 'express';
+import { newId } from '../../lib/id';
 
 const mocks = vi.hoisted(() => ({
   listForPost: vi.fn(),
@@ -18,15 +18,12 @@ vi.mock('./comments.service', () => ({
 
 import { encodeCursor } from '../../lib/pagination';
 import { AppError } from '../../lib/errors';
-import type { CommentDTOContext } from '../../lib/dto';
-import type { CommentDocument } from '../../models/comment.model';
-import type { UserDocument } from '../../models/user.model';
+import type { CommentDTOContext, CommentRow, UserRow } from '../../lib/dto';
 import { create, listForPost, remove } from './comments.controller';
 
-function makeUser(id = new Types.ObjectId()): UserDocument {
+function makeUser(id = newId()): UserRow {
   return {
-    _id: id,
-    id: id.toString(),
+    id,
     username: 'ada',
     usernameDisplay: 'ada',
     displayName: 'Ada',
@@ -50,13 +47,13 @@ function makeUser(id = new Types.ObjectId()): UserDocument {
     },
     isAgent: false,
     createdAt: new Date('2026-04-23T00:00:00.000Z'),
-  } as UserDocument;
+  } as unknown as UserRow;
 }
 
-function makeComment(authorId: Types.ObjectId): CommentDocument {
+function makeComment(authorId: string): CommentRow {
   return {
-    _id: new Types.ObjectId(),
-    postId: new Types.ObjectId(),
+    id: newId(),
+    postId: newId(),
     parentId: null,
     authorId,
     text: 'hello',
@@ -66,10 +63,10 @@ function makeComment(authorId: Types.ObjectId): CommentDocument {
     editedAt: null,
     deletedAt: null,
     createdAt: new Date('2026-04-23T00:00:00.000Z'),
-  } as unknown as CommentDocument;
+  } as unknown as CommentRow;
 }
 
-function makeCtx(author: UserDocument): CommentDTOContext {
+function makeCtx(author: UserRow): CommentDTOContext {
   return {
     author,
     likedByMe: false,
@@ -103,16 +100,16 @@ describe('comments.controller', () => {
 
   it('parses paging params for listForPost', async () => {
     const author = makeUser();
-    const comment = makeComment(author._id);
-    const cursor = encodeCursor({ t: comment.createdAt.toISOString(), id: comment._id.toString() });
+    const comment = makeComment(author.id);
+    const cursor = encodeCursor({ t: comment.createdAt.toISOString(), id: comment.id });
     mocks.listForPost.mockResolvedValue({
       items: [comment],
       nextCursor: null,
-      ctxByCommentId: new Map([[comment._id.toString(), makeCtx(author)]]),
+      ctxByCommentId: new Map([[comment.id, makeCtx(author)]]),
     });
 
     const req = {
-      params: { id: comment.postId.toString() },
+      params: { id: comment.postId },
       query: { cursor, limit: '7' },
     };
     const res = makeRes();
@@ -120,14 +117,14 @@ describe('comments.controller', () => {
     await listForPost(req as never, res);
 
     expect(mocks.listForPost).toHaveBeenCalledWith(
-      comment.postId.toString(),
+      comment.postId,
       null,
-      { t: comment.createdAt.toISOString(), id: comment._id.toString() },
+      { t: comment.createdAt.toISOString(), id: comment.id },
       7,
     );
     expect(res.payload).toMatchObject({
       data: {
-        items: [{ id: comment._id.toString(), text: 'hello' }],
+        items: [{ id: comment.id, text: 'hello' }],
         nextCursor: null,
       },
     });
@@ -135,12 +132,12 @@ describe('comments.controller', () => {
 
   it('passes null parentId when creating a top-level comment', async () => {
     const author = makeUser();
-    const comment = makeComment(author._id);
+    const comment = makeComment(author.id);
     mocks.createComment.mockResolvedValue({ comment, ctx: makeCtx(author) });
 
     const req = {
       user: author,
-      params: { id: comment.postId.toString() },
+      params: { id: comment.postId },
       body: { text: 'hello' },
     };
     const res = makeRes();
@@ -149,18 +146,18 @@ describe('comments.controller', () => {
 
     expect(mocks.createComment).toHaveBeenCalledWith(
       author,
-      comment.postId.toString(),
+      comment.postId,
       'hello',
       null,
     );
     expect(res.statusCode).toBe(201);
     expect(res.payload).toMatchObject({
-      data: { comment: { id: comment._id.toString() } },
+      data: { comment: { id: comment.id } },
     });
   });
 
   it('rejects delete attempts from anonymous users', async () => {
-    await expect(remove({ params: { id: new Types.ObjectId().toString() } } as never, makeRes()))
+    await expect(remove({ params: { id: newId() } } as never, makeRes()))
       .rejects
       .toMatchObject<AppError>({
         code: 'UNAUTHENTICATED',

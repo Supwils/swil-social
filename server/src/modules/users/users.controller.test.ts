@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
 import type { Response } from 'express';
+import { newId } from '../../lib/id';
 
 const mocks = vi.hoisted(() => ({
   findByUsername: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('./users.service', () => ({
 
 import { TAG_CATEGORIES, ALL_PRESET_TAGS } from '../../lib/tagPresets';
 import { AppError } from '../../lib/errors';
-import type { UserDocument } from '../../models/user.model';
+import type { UserRow } from '../../lib/dto';
 import {
   getByUsername,
   getPopularProfileTags,
@@ -30,10 +30,9 @@ import {
   updateMe,
 } from './users.controller';
 
-function makeUser(id = new Types.ObjectId(), username = 'ada'): UserDocument {
+function makeUser(id = newId(), username = 'ada'): UserRow {
   return {
-    _id: id,
-    id: id.toString(),
+    id,
     username,
     usernameDisplay: username,
     displayName: 'Ada',
@@ -57,7 +56,7 @@ function makeUser(id = new Types.ObjectId(), username = 'ada'): UserDocument {
     },
     isAgent: false,
     createdAt: new Date('2026-04-24T00:00:00.000Z'),
-  } as UserDocument;
+  } as unknown as UserRow;
 }
 
 function makeRes() {

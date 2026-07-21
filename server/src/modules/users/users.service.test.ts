@@ -1,61 +1,65 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
-import type { UserDocument } from '../../models/user.model';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 import * as s3 from '../../config/s3';
+import { db } from '../../db/client';
+import { users } from '../../db/schema';
+import type { UserRow } from '../../lib/dto';
+import { resetDb } from '../../test/db-reset';
 import { updateAvatar, updateMe } from './users.service';
 
-function makeUser(): UserDocument {
-  return {
-    _id: new Types.ObjectId(),
-    id: new Types.ObjectId().toString(),
-    displayName: 'Ada',
-    bio: '',
-    headline: '',
-    avatarUrl: 'https://cdn.example.com/old-avatar.webp',
-    location: null,
-    website: null,
-    birthdate: null,
-    profileTags: [],
-    preferences: {
-      toObject: () => ({
+async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      username: 'ada',
+      usernameDisplay: 'ada',
+      email: 'ada@example.com',
+      displayName: 'Ada',
+      preferences: {
         theme: 'system',
         language: 'en',
         emailNotifications: true,
         pushNotifications: true,
-      }),
-    },
-    save: vi.fn().mockResolvedValue(undefined),
-    isAgent: false,
-  } as unknown as UserDocument;
+      },
+      ...over,
+    })
+    .returning();
+  return u;
 }
 
 describe('users.service', () => {
+  beforeEach(resetDb);
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   it('merges preferences and normalizes profile tags on update', async () => {
-    const user = makeUser();
+    const user = await seedUser();
 
-    await updateMe(user, {
+    const updated = await updateMe(user, {
       displayName: 'Ada Lovelace',
       preferences: { language: 'zh' },
       profileTags: [' AI ', 'Builder'],
     });
 
-    expect(user.displayName).toBe('Ada Lovelace');
-    expect(user.preferences).toMatchObject({
+    expect(updated.displayName).toBe('Ada Lovelace');
+    expect(updated.preferences).toMatchObject({
       theme: 'system',
       language: 'zh',
       emailNotifications: true,
       pushNotifications: true,
     });
-    expect(user.profileTags).toEqual(['ai', 'builder']);
-    expect(user.save).toHaveBeenCalledOnce();
+    expect(updated.profileTags).toEqual(['ai', 'builder']);
+
+    // The change is persisted, not just returned.
+    const [row] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(row.displayName).toBe('Ada Lovelace');
+    expect(row.preferences?.language).toBe('zh');
+    expect(row.profileTags).toEqual(['ai', 'builder']);
   });
 
   it('uploads a new avatar and deletes the old one after save', async () => {
-    const user = makeUser();
+    const user = await seedUser({ avatarUrl: 'https://cdn.example.com/old-avatar.webp' });
 
     vi.spyOn(s3, 'uploadBufferToS3').mockResolvedValue({
       url: 'https://cdn.example.com/new-avatar.webp',
@@ -64,29 +68,35 @@ describe('users.service', () => {
     });
     const remove = vi.spyOn(s3, 'deleteFromS3').mockResolvedValue(undefined);
 
-    await updateAvatar(user, Buffer.from('avatar'));
+    const updated = await updateAvatar(user, Buffer.from('avatar'));
 
-    expect(user.avatarUrl).toBe('https://cdn.example.com/new-avatar.webp');
-    expect(user.save).toHaveBeenCalledOnce();
+    expect(updated.avatarUrl).toBe('https://cdn.example.com/new-avatar.webp');
     expect(remove).toHaveBeenCalledWith('https://cdn.example.com/old-avatar.webp');
+
+    const [row] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(row.avatarUrl).toBe('https://cdn.example.com/new-avatar.webp');
   });
 
   it('rejects agentBackend updates from non-agent accounts', async () => {
-    const user = makeUser();
+    const user = await seedUser({ isAgent: false });
 
     await expect(updateMe(user, { agentBackend: 'claude' })).rejects.toMatchObject({
       status: 403,
     });
-    expect(user.save).not.toHaveBeenCalled();
+
+    // Nothing was written.
+    const [row] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(row.agentBackend).toBeNull();
   });
 
   it('allows agentBackend updates for agent accounts', async () => {
-    const user = makeUser();
-    user.isAgent = true;
+    const user = await seedUser({ isAgent: true });
 
-    await updateMe(user, { agentBackend: 'claude' });
+    const updated = await updateMe(user, { agentBackend: 'claude' });
 
-    expect(user.agentBackend).toBe('claude');
-    expect(user.save).toHaveBeenCalledOnce();
+    expect(updated.agentBackend).toBe('claude');
+
+    const [row] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(row.agentBackend).toBe('claude');
   });
 });

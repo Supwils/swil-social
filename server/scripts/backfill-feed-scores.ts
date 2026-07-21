@@ -1,61 +1,62 @@
 /**
- * Backfill feedScore for all existing posts that have feedScore === 0 (or missing).
+ * Backfill feedScore for all existing posts that have feedScore === 0.
  *
- * Run once after deploying the feedScore feature:
- *   npx ts-node --project tsconfig.json scripts/backfill-feed-scores.ts
+ *   npx tsx scripts/backfill-feed-scores.ts
  *
  * Safe to re-run — only processes posts where feedScore == 0.
- * Processes in batches of 500 to avoid memory spikes.
+ * Processes in batches to avoid memory spikes.
  */
 import 'dotenv/config';
-import { connectDb, disconnectDb } from '../src/config/db';
-import { Post } from '../src/models/post.model';
+import { and, eq, gt, asc, inArray } from 'drizzle-orm';
+import { db, connectDb, disconnectDb } from '../src/db/client';
+import { posts } from '../src/db/schema';
 import { calcFeedScore } from '../src/lib/feedScorer';
 
 const BATCH = 500;
 
-async function run() {
+async function run(): Promise<void> {
   await connectDb();
-
-  // Match posts that either have no feedScore field yet, or were set to 0 as default
-  const needsScore = { status: 'active', $or: [{ feedScore: { $exists: false } }, { feedScore: 0 }] };
-  const total = await Post.countDocuments(needsScore);
-  console.log(`Posts to backfill: ${total}`);
 
   let processed = 0;
   let lastId: string | null = null;
 
-  while (true) {
-    const filter: Record<string, unknown> = {
-      ...needsScore,
-      ...(lastId ? { _id: { $gt: lastId } } : {}),
-    };
-    const posts = await Post.find(filter)
-      .select('_id likeCount commentCount repostCount createdAt')
-      .sort({ _id: 1 })
-      .limit(BATCH)
-      .lean();
+  for (;;) {
+    const conds = [eq(posts.status, 'active'), eq(posts.feedScore, 0)];
+    if (lastId) conds.push(gt(posts.id, lastId));
 
-    if (posts.length === 0) break;
+    const rows = await db
+      .select({
+        id: posts.id,
+        likeCount: posts.likeCount,
+        commentCount: posts.commentCount,
+        repostCount: posts.repostCount,
+        createdAt: posts.createdAt,
+      })
+      .from(posts)
+      .where(and(...conds))
+      .orderBy(asc(posts.id))
+      .limit(BATCH);
 
-    const ops = posts.map((p) => ({
-      updateOne: {
-        filter: { _id: p._id },
-        update: { $set: { feedScore: calcFeedScore(p) } },
-      },
-    }));
+    if (rows.length === 0) break;
 
-    await Post.bulkWrite(ops, { ordered: false });
-    processed += posts.length;
-    lastId = posts[posts.length - 1]._id.toString();
-    console.log(`  processed ${processed}/${total}`);
+    await Promise.all(
+      rows.map((p) =>
+        db.update(posts).set({ feedScore: calcFeedScore(p) }).where(inArray(posts.id, [p.id])),
+      ),
+    );
+    processed += rows.length;
+    lastId = rows[rows.length - 1].id;
+    // eslint-disable-next-line no-console
+    console.log(`  processed ${processed}`);
   }
 
+  // eslint-disable-next-line no-console
   console.log(`Done — ${processed} posts updated.`);
   await disconnectDb();
 }
 
 run().catch((err) => {
+  // eslint-disable-next-line no-console
   console.error(err);
   process.exit(1);
 });

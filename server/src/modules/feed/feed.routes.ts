@@ -7,8 +7,7 @@ import { ok } from '../../lib/respond';
 import { AppError } from '../../lib/errors';
 import { decodeCursor, decodeScoreCursor, parseLimit } from '../../lib/pagination';
 import type { FeedSort } from './feed.service';
-import { toPostDTO, type PostDTOContext } from '../../lib/dto';
-import type { PostDocument } from '../../models/post.model';
+import { toPostDTO, type PostDTOContext, type PostRow } from '../../lib/dto';
 import { translatePosts } from '../../lib/translate';
 import * as feed from './feed.service';
 
@@ -19,10 +18,10 @@ const pagingQuery = z.object({
   sort: z.enum(['recommended', 'latest']).optional(),
 });
 
-function pageToDtos(items: PostDocument[], ctxById: Map<string, PostDTOContext>) {
+function pageToDtos(items: PostRow[], ctxById: Map<string, PostDTOContext>) {
   return items
     .map((p) => {
-      const ctx = ctxById.get(p._id.toString());
+      const ctx = ctxById.get(p.id);
       return ctx ? toPostDTO(p, ctx) : null;
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);

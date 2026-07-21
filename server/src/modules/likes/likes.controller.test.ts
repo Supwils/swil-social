@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Types } from 'mongoose';
 import type { Response } from 'express';
+import { newId } from '../../lib/id';
 
 const mocks = vi.hoisted(() => ({
   like: vi.fn(),
@@ -13,14 +13,11 @@ vi.mock('./likes.service', () => ({
 }));
 
 import { AppError } from '../../lib/errors';
-import type { UserDocument } from '../../models/user.model';
+import type { UserRow } from '../../lib/dto';
 import { likeComment, likePost, unlikeComment, unlikePost } from './likes.controller';
 
-function makeUser(id = new Types.ObjectId()): UserDocument {
-  return {
-    _id: id,
-    id: id.toString(),
-  } as UserDocument;
+function makeUser(id = newId()): UserRow {
+  return { id } as unknown as UserRow;
 }
 
 function makeRes() {
@@ -47,7 +44,7 @@ describe('likes.controller', () => {
 
   it('likes posts through the service and returns the payload', async () => {
     const user = makeUser();
-    const id = new Types.ObjectId().toString();
+    const id = newId();
     mocks.like.mockResolvedValue({ likeCount: 3, liked: true });
 
     const res = makeRes();
@@ -62,7 +59,7 @@ describe('likes.controller', () => {
 
   it('unlikes comments through the service and returns the payload', async () => {
     const user = makeUser();
-    const id = new Types.ObjectId().toString();
+    const id = newId();
     mocks.unlike.mockResolvedValue({ likeCount: 1, liked: false });
 
     const res = makeRes();
@@ -76,7 +73,7 @@ describe('likes.controller', () => {
   });
 
   it('rejects anonymous post likes', async () => {
-    await expect(likePost({ params: { id: new Types.ObjectId().toString() } } as never, makeRes()))
+    await expect(likePost({ params: { id: newId() } } as never, makeRes()))
       .rejects
       .toMatchObject<AppError>({
         code: 'UNAUTHENTICATED',
@@ -87,7 +84,7 @@ describe('likes.controller', () => {
 
   it('rejects anonymous comment unlikes', async () => {
     await expect(
-      unlikePost({ params: { id: new Types.ObjectId().toString() } } as never, makeRes()),
+      unlikePost({ params: { id: newId() } } as never, makeRes()),
     ).rejects.toMatchObject<AppError>({
       code: 'UNAUTHENTICATED',
       status: 401,
@@ -97,7 +94,7 @@ describe('likes.controller', () => {
 
   it('likes comments through the service', async () => {
     const user = makeUser();
-    const id = new Types.ObjectId().toString();
+    const id = newId();
     mocks.like.mockResolvedValue({ likeCount: 4, liked: true });
 
     const res = makeRes();
@@ -109,7 +106,7 @@ describe('likes.controller', () => {
 
   it('unlikes posts through the service', async () => {
     const user = makeUser();
-    const id = new Types.ObjectId().toString();
+    const id = newId();
     mocks.unlike.mockResolvedValue({ likeCount: 0, liked: false });
 
     const res = makeRes();

@@ -14,7 +14,10 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8899),
 
-  MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // Legacy Mongo connection. Still used by the pre-migration config (db.ts,
+  // session.ts) and as the ETL default source until Phase 3 removes Mongoose.
+  MONGODB_URI: z.string().default('mongodb://127.0.0.1:27017/swil_social'),
 
   REDIS_URL: z.string().optional(),
   CACHE_TTL: z.coerce.number().int().positive().default(3600),
@@ -27,6 +30,9 @@ const EnvSchema = z.object({
     ),
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: boolString.default('false'),
+  // Cross-site cookies (SPA on a different origin than the API) need 'none' +
+  // Secure. Same-origin/local dev uses 'lax'.
+  COOKIE_SAMESITE: z.enum(['lax', 'none', 'strict']).default('lax'),
 
   CORS_ORIGINS: csvList.default('http://localhost:5947,http://localhost:3000'),
 

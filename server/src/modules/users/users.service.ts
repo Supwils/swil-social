@@ -1,57 +1,67 @@
-import { User, type UserDocument } from '../../models/user.model';
+import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users } from '../../db/schema';
+import type { UserPreferences } from '../../db/schema/social';
 import { AppError } from '../../lib/errors';
 import { uploadBufferToS3, deleteFromS3 } from '../../config/s3';
-import type { FilterQuery } from 'mongoose';
+import type { UserRow } from '../../lib/dto';
 import type { UpdateMeInput } from './users.schemas';
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Escape LIKE/ILIKE wildcards so user input can't inject `%` / `_` patterns. */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, '\\$&');
 }
 
-export async function findByUsername(username: string): Promise<UserDocument> {
-  const user = await User.findOne({
-    username: username.toLowerCase(),
-    status: 'active',
-  });
+export async function findByUsername(username: string): Promise<UserRow> {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.username, username.toLowerCase()), eq(users.status, 'active')))
+    .limit(1);
   if (!user) throw AppError.notFound('User not found');
   return user;
 }
 
-export async function updateMe(user: UserDocument, patch: UpdateMeInput): Promise<UserDocument> {
-  if (patch.displayName !== undefined) user.displayName = patch.displayName;
-  if (patch.bio !== undefined) user.bio = patch.bio;
-  if (patch.headline !== undefined) user.headline = patch.headline;
-  if (patch.location !== undefined) user.location = patch.location;
-  if (patch.website !== undefined) user.website = patch.website;
-  if (patch.birthdate !== undefined) user.birthdate = patch.birthdate as Date | null;
+export async function updateMe(user: UserRow, patch: UpdateMeInput): Promise<UserRow> {
+  const set: Partial<typeof users.$inferInsert> = {};
+  if (patch.displayName !== undefined) set.displayName = patch.displayName;
+  if (patch.bio !== undefined) set.bio = patch.bio;
+  if (patch.headline !== undefined) set.headline = patch.headline;
+  if (patch.location !== undefined) set.location = patch.location;
+  if (patch.website !== undefined) set.website = patch.website;
+  if (patch.birthdate !== undefined) set.birthdate = patch.birthdate as Date | null;
   if (patch.preferences) {
-    const current = user.preferences as unknown as {
-      toObject?: () => Record<string, unknown>;
-    } & Record<string, unknown>;
-    const base = typeof current.toObject === 'function' ? current.toObject() : current;
-    user.preferences = { ...base, ...patch.preferences } as typeof user.preferences;
+    set.preferences = {
+      ...(user.preferences ?? {}),
+      ...patch.preferences,
+    } as UserPreferences;
   }
   if (patch.profileTags !== undefined) {
-    user.profileTags = patch.profileTags.map((t) => t.trim().toLowerCase()).filter(Boolean);
+    set.profileTags = patch.profileTags.map((t) => t.trim().toLowerCase()).filter(Boolean);
   }
   if (patch.agentBackend !== undefined) {
     if (!user.isAgent) {
       throw AppError.forbidden('Only agent accounts can set an AI backend');
     }
-    user.agentBackend = patch.agentBackend;
+    set.agentBackend = patch.agentBackend;
   }
-  await user.save();
-  return user;
+  set.updatedAt = new Date();
+
+  const [updated] = await db.update(users).set(set).where(eq(users.id, user.id)).returning();
+  return updated;
 }
 
-export async function updateAvatar(user: UserDocument, buffer: Buffer): Promise<UserDocument> {
+export async function updateAvatar(user: UserRow, buffer: Buffer): Promise<UserRow> {
   const oldUrl = user.avatarUrl;
   const { url } = await uploadBufferToS3(buffer, 'avatars');
-  user.avatarUrl = url;
-  await user.save();
+  const [updated] = await db
+    .update(users)
+    .set({ avatarUrl: url, updatedAt: new Date() })
+    .where(eq(users.id, user.id))
+    .returning();
   // Delete old avatar after save succeeds
   if (oldUrl) void deleteFromS3(oldUrl);
-  return user;
+  return updated;
 }
 
 /**
@@ -62,31 +72,36 @@ export async function searchUsers(
   query: string | undefined,
   tag: string | undefined,
   limit: number,
-): Promise<UserDocument[]> {
-  const filter: FilterQuery<UserDocument> = { status: 'active' };
-  if (query) {
-    const prefix = new RegExp(`^${escapeRegex(query.toLowerCase())}`);
-    filter.$or = [
-      { username: prefix },
-      { displayName: { $regex: new RegExp(`^${escapeRegex(query)}`, 'i') } },
-    ];
-  }
-  if (tag) {
-    filter.profileTags = { $regex: new RegExp(`^${escapeRegex(tag)}$`, 'i') };
-  }
-  return (await User.find(filter)
-    .limit(Math.min(50, Math.max(1, limit)))
-    .sort({ followerCount: -1 })
-    .lean()) as unknown as UserDocument[];
+): Promise<UserRow[]> {
+  const where = and(
+    eq(users.status, 'active'),
+    query
+      ? or(
+          ilike(users.username, `${escapeLike(query.toLowerCase())}%`),
+          ilike(users.displayName, `${escapeLike(query)}%`),
+        )
+      : undefined,
+    // profileTags are stored lowercased, so an array-contains membership test is
+    // equivalent to the old case-insensitive `^tag$` regex over each element.
+    tag ? sql`${users.profileTags} @> ARRAY[${tag.toLowerCase()}]::text[]` : undefined,
+  );
+
+  return db
+    .select()
+    .from(users)
+    .where(where)
+    .orderBy(desc(users.followerCount))
+    .limit(Math.min(50, Math.max(1, limit)));
 }
 
 export async function getPopularProfileTags(): Promise<Array<{ tag: string; count: number }>> {
-  const result = await User.aggregate([
-    { $match: { status: 'active', profileTags: { $exists: true, $ne: [] } } },
-    { $unwind: '$profileTags' },
-    { $group: { _id: '$profileTags', count: { $sum: 1 } } },
-    { $sort: { count: -1 } },
-    { $limit: 50 },
-  ]);
-  return result.map((r) => ({ tag: r._id as string, count: r.count as number }));
+  const result = await db.execute<{ tag: string; count: number }>(sql`
+    SELECT tag, COUNT(*)::int AS count
+    FROM ${users}, unnest(${users.profileTags}) AS tag
+    WHERE ${users.status} = 'active'
+    GROUP BY tag
+    ORDER BY count DESC
+    LIMIT 50
+  `);
+  return result.rows.map((r) => ({ tag: r.tag, count: Number(r.count) }));
 }

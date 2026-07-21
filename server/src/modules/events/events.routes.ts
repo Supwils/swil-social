@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { Event } from '../../models/event.model';
+import { db } from '../../db/client';
+import { events as eventsTable } from '../../db/schema';
 import { optionalUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import { validate } from '../../middlewares/validate';
@@ -35,11 +36,11 @@ eventsRouter.post(
   validate(batchSchema, 'body'),
   asyncHandler(async (req, res) => {
     const { events } = req.body as z.infer<typeof batchSchema>;
-    const userId = req.user?._id ?? null;
-    const ip = req.ip;
+    const userId = req.user?.id ?? null;
+    const ip = req.ip ?? null;
 
     try {
-      await Event.insertMany(
+      await db.insert(eventsTable).values(
         events.map((e) => ({
           type: e.type,
           userId,
@@ -47,7 +48,6 @@ eventsRouter.post(
           context: e.context ?? {},
           ip,
         })),
-        { ordered: false },
       );
     } catch (err) {
       // Non-fatal — analytics writes never break the request

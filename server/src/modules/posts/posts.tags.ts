@@ -1,19 +1,20 @@
-import { Types } from 'mongoose';
-import { Tag, type TagDocument } from '../../models/tag.model';
+import { inArray, sql } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { tags } from '../../db/schema';
+import type { TagRow } from '../../lib/dto';
 
 export async function upsertTagsForPost(
-  tags: Array<{ slug: string; display: string }>,
-): Promise<TagDocument[]> {
-  if (tags.length === 0) return [];
-  const ops = tags.map((t) => ({
-    updateOne: {
-      filter: { slug: t.slug },
-      update: { $setOnInsert: { slug: t.slug, display: t.display } },
-      upsert: true,
-    },
-  }));
-  await Tag.bulkWrite(ops);
-  return Tag.find({ slug: { $in: tags.map((t) => t.slug) } });
+  tagList: Array<{ slug: string; display: string }>,
+): Promise<TagRow[]> {
+  if (tagList.length === 0) return [];
+  // Insert-if-absent by slug (mirrors the old $setOnInsert upsert): existing
+  // tags keep their current display/counters untouched.
+  await db
+    .insert(tags)
+    .values(tagList.map((t) => ({ slug: t.slug, display: t.display })))
+    .onConflictDoNothing({ target: tags.slug });
+  const slugs = tagList.map((t) => t.slug);
+  return db.select().from(tags).where(inArray(tags.slug, slugs));
 }
 
 export async function syncTagCounts(
@@ -28,16 +29,16 @@ export async function syncTagCounts(
 
   await Promise.all([
     added.length
-      ? Tag.updateMany(
-          { _id: { $in: added.map((id) => new Types.ObjectId(id)) } },
-          { $inc: { postCount: 1 }, $set: { lastUsedAt: new Date() } },
-        )
+      ? db
+          .update(tags)
+          .set({ postCount: sql`${tags.postCount} + 1`, lastUsedAt: new Date() })
+          .where(inArray(tags.id, added))
       : Promise.resolve(null),
     removed.length
-      ? Tag.updateMany(
-          { _id: { $in: removed.map((id) => new Types.ObjectId(id)) } },
-          { $inc: { postCount: -1 } },
-        )
+      ? db
+          .update(tags)
+          .set({ postCount: sql`${tags.postCount} - 1` })
+          .where(inArray(tags.id, removed))
       : Promise.resolve(null),
   ]);
 }

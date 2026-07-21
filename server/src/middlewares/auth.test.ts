@@ -1,9 +1,26 @@
 import { createHash } from 'crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
-import { ApiKey } from '../models/apiKey.model';
-import { User } from '../models/user.model';
+import { eq } from 'drizzle-orm';
+import { resetDb } from '../test/db-reset';
+import { db } from '../db/client';
+import { users, apiKeys } from '../db/schema';
+import type { UserRow } from '../lib/dto';
 import { optionalUser, requireUser } from './auth';
+
+async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
+  const [u] = await db
+    .insert(users)
+    .values({
+      username: 'ada',
+      usernameDisplay: 'ada',
+      email: 'ada@example.com',
+      displayName: 'Ada',
+      ...over,
+    })
+    .returning();
+  return u;
+}
 
 function makeReq(overrides: Partial<Request> = {}): Request {
   return {
@@ -17,20 +34,19 @@ function makeReq(overrides: Partial<Request> = {}): Request {
 }
 
 describe('auth middleware', () => {
+  beforeEach(resetDb);
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   it('attaches the active session user', async () => {
-    const req = makeReq({ session: { userId: 'user-1', destroy: vi.fn() } as never });
+    const user = await seedUser();
+    const req = makeReq({ session: { userId: user.id, destroy: vi.fn() } as never });
     const next = vi.fn() as NextFunction;
-    const user = { id: 'user-1', status: 'active' };
-
-    vi.spyOn(User, 'findById').mockResolvedValue(user as never);
 
     await requireUser(req, {} as Response, next);
 
-    expect(req.user).toBe(user);
+    expect(req.user?.id).toBe(user.id);
     expect(next).toHaveBeenCalledWith();
   });
 
@@ -39,8 +55,6 @@ describe('auth middleware', () => {
     const req = makeReq({ session: { userId: 'missing-user', destroy } as never });
     const next = vi.fn() as NextFunction;
 
-    vi.spyOn(User, 'findById').mockResolvedValue(null);
-
     await optionalUser(req, {} as Response, next);
 
     expect(destroy).toHaveBeenCalled();
@@ -48,29 +62,49 @@ describe('auth middleware', () => {
     expect(next).toHaveBeenCalledWith();
   });
 
+  it('destroys sessions for users that are no longer active', async () => {
+    const user = await seedUser({ status: 'suspended' });
+    const destroy = vi.fn((cb?: () => void) => cb?.());
+    const req = makeReq({ session: { userId: user.id, destroy } as never });
+    const next = vi.fn() as NextFunction;
+
+    await optionalUser(req, {} as Response, next);
+
+    expect(destroy).toHaveBeenCalled();
+    expect(req.user).toBeUndefined();
+  });
+
   it('prefers API key auth over session auth', async () => {
+    const sessionUser = await seedUser();
+    const apiUser = await seedUser({
+      username: 'grace',
+      usernameDisplay: 'grace',
+      email: 'grace@example.com',
+      displayName: 'Grace',
+    });
+
     const rawKey = 'sk-swil-test-key';
     const keyHash = createHash('sha256').update(rawKey).digest('hex');
+    const [key] = await db
+      .insert(apiKeys)
+      .values({ userId: apiUser.id, name: 'default', keyHash })
+      .returning();
+
     const req = makeReq({
       headers: { authorization: `Bearer ${rawKey}` },
-      session: { userId: 'session-user', destroy: vi.fn() } as never,
+      session: { userId: sessionUser.id, destroy: vi.fn() } as never,
     });
     const next = vi.fn() as NextFunction;
-    const apiUser = { id: 'api-user', status: 'active' };
-
-    vi.spyOn(ApiKey, 'findOne').mockResolvedValue({
-      _id: 'key-id',
-      userId: 'api-user',
-      keyHash,
-    } as never);
-    const userFind = vi.spyOn(User, 'findById').mockResolvedValue(apiUser as never);
-    vi.spyOn(ApiKey, 'updateOne').mockResolvedValue({ acknowledged: true } as never);
 
     await requireUser(req, {} as Response, next);
 
-    expect(userFind).toHaveBeenCalledTimes(1);
-    expect(userFind).toHaveBeenCalledWith('api-user');
-    expect(req.user).toBe(apiUser);
+    expect(req.user?.id).toBe(apiUser.id);
+    expect(next).toHaveBeenCalledWith();
+
+    // lastUsedAt is updated fire-and-forget; give the microtask a tick to land.
+    await new Promise((r) => setTimeout(r, 20));
+    const [updated] = await db.select().from(apiKeys).where(eq(apiKeys.id, key.id));
+    expect(updated?.lastUsedAt).not.toBeNull();
   });
 
   it('fails with unauthenticated when no auth context exists', async () => {
@@ -79,9 +113,11 @@ describe('auth middleware', () => {
 
     await requireUser(req, {} as Response, next);
 
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'UNAUTHENTICATED',
-      status: 401,
-    }));
+    expect(next).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'UNAUTHENTICATED',
+        status: 401,
+      }),
+    );
   });
 });

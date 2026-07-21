@@ -1,21 +1,26 @@
 import bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
-import mongoose from 'mongoose';
-import { User, type UserDocument } from '../../models/user.model';
-import { ApiKey, type ApiKeyDocument } from '../../models/apiKey.model';
+import { and, desc, eq, or, sql, type InferSelectModel } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { users, apiKeys } from '../../db/schema';
 import { AppError } from '../../lib/errors';
 import { env } from '../../config/env';
+import type { UserRow } from '../../lib/dto';
 import type { RegisterInput, LoginInput } from './auth.schemas';
+
+export type ApiKeyRow = InferSelectModel<typeof apiKeys>;
 
 const BCRYPT_COST = 12;
 
-export async function register(input: RegisterInput): Promise<UserDocument> {
+export async function register(input: RegisterInput): Promise<UserRow> {
   const username = input.username.toLowerCase();
   const email = input.email.toLowerCase();
 
-  const existing = await User.findOne({
-    $or: [{ username }, { email }],
-  }).lean();
+  const [existing] = await db
+    .select({ username: users.username, email: users.email })
+    .from(users)
+    .where(or(eq(users.username, username), eq(users.email, email)))
+    .limit(1);
   if (existing) {
     const fields: Record<string, string> = {};
     if (existing.username === username) fields.username = 'Already taken';
@@ -29,25 +34,30 @@ export async function register(input: RegisterInput): Promise<UserDocument> {
     throw AppError.forbidden('Agent account setup is not enabled for this request');
   }
 
-  const user = await User.create({
-    username,
-    usernameDisplay: input.username,
-    email,
-    emailVerified: false,
-    passwordHash,
-    authProviders: [{ provider: 'local' }],
-    displayName: input.displayName ?? input.username,
-    isAgent,
-  });
+  const [user] = await db
+    .insert(users)
+    .values({
+      username,
+      usernameDisplay: input.username,
+      email,
+      emailVerified: false,
+      passwordHash,
+      authProviders: [{ provider: 'local' }],
+      displayName: input.displayName ?? input.username,
+      isAgent,
+    })
+    .returning();
 
   return user;
 }
 
-export async function authenticate(input: LoginInput): Promise<UserDocument> {
+export async function authenticate(input: LoginInput): Promise<UserRow> {
   const identifier = input.usernameOrEmail.toLowerCase().trim();
-  const user = await User.findOne({
-    $or: [{ username: identifier }, { email: identifier }],
-  });
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(or(eq(users.username, identifier), eq(users.email, identifier)))
+    .limit(1);
 
   if (!user || !user.passwordHash) {
     throw AppError.unauthenticated('Invalid username or password');
@@ -61,13 +71,16 @@ export async function authenticate(input: LoginInput): Promise<UserDocument> {
     throw AppError.unauthenticated('Invalid username or password');
   }
 
-  user.lastSeenAt = new Date();
-  await user.save();
-  return user;
+  const [updated] = await db
+    .update(users)
+    .set({ lastSeenAt: new Date() })
+    .where(eq(users.id, user.id))
+    .returning();
+  return updated;
 }
 
 export async function changePassword(
-  user: UserDocument,
+  user: UserRow,
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
@@ -77,40 +90,41 @@ export async function changePassword(
   const ok = await bcrypt.compare(currentPassword, user.passwordHash);
   if (!ok) throw AppError.unauthenticated('Current password is incorrect');
 
-  user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
-  await user.save();
+  const hash = await bcrypt.hash(newPassword, BCRYPT_COST);
+  await db.update(users).set({ passwordHash: hash }).where(eq(users.id, user.id));
 }
 
 export async function destroyOtherSessions(userId: string, currentSid: string): Promise<void> {
-  const db = mongoose.connection.db;
-  if (!db) return;
-  const col = db.collection('sessions');
-  // connect-mongo uses string session IDs as _id; cast silences the ObjectId default.
-  await col.deleteMany({
-    _id: { $ne: currentSid as unknown as never },
-    session: { $regex: new RegExp(`"userId"\\s*:\\s*"${userId}"`) },
-  });
+  // connect-pg-simple stores the express session object in `sess` (json).
+  // The userId lives at the top level of that object (SessionData.userId).
+  await db.execute(
+    sql`DELETE FROM "session" WHERE "sid" <> ${currentSid} AND "sess"->>'userId' = ${userId}`,
+  );
 }
 
 // ---------- API Keys ----------
 
 export async function createApiKey(
-  user: UserDocument,
+  user: UserRow,
   name: string,
-): Promise<{ key: string; doc: ApiKeyDocument }> {
+): Promise<{ key: string; doc: ApiKeyRow }> {
   const rawKey = `sk-swil-${randomBytes(32).toString('hex')}`;
   const keyHash = createHash('sha256').update(rawKey).digest('hex');
-  const doc = await ApiKey.create({ userId: user._id, name, keyHash });
+  const [doc] = await db.insert(apiKeys).values({ userId: user.id, name, keyHash }).returning();
   return { key: rawKey, doc };
 }
 
-export async function listApiKeys(user: UserDocument): Promise<ApiKeyDocument[]> {
-  return ApiKey.find({ userId: user._id }).sort({ createdAt: -1 });
+export async function listApiKeys(user: UserRow): Promise<ApiKeyRow[]> {
+  return db
+    .select()
+    .from(apiKeys)
+    .where(eq(apiKeys.userId, user.id))
+    .orderBy(desc(apiKeys.createdAt));
 }
 
-export async function revokeApiKey(user: UserDocument, keyId: string): Promise<void> {
-  const doc = await ApiKey.findById(keyId);
+export async function revokeApiKey(user: UserRow, keyId: string): Promise<void> {
+  const [doc] = await db.select().from(apiKeys).where(eq(apiKeys.id, keyId)).limit(1);
   if (!doc) throw AppError.notFound('API key not found');
-  if (!doc.userId.equals(user._id)) throw AppError.forbidden('Not your API key');
-  await doc.deleteOne();
+  if (doc.userId !== user.id) throw AppError.forbidden('Not your API key');
+  await db.delete(apiKeys).where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, user.id)));
 }

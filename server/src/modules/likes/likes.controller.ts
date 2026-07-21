@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { ok } from '../../lib/respond';
 import { AppError } from '../../lib/errors';
 import * as likesService from './likes.service';
-import type { LikeTarget } from '../../models/like.model';
+import type { LikeTarget } from './likes.service';
 
 function makeLike(targetType: LikeTarget) {
   return async (req: Request, res: Response) => {

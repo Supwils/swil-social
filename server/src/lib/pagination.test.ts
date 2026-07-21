@@ -1,17 +1,21 @@
-import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
+import { newId } from './id';
+import { posts } from '../db/schema';
 import {
   buildNextCursor,
-  cursorFilterAsc,
-  cursorFilterDesc,
+  buildNextScoreCursor,
+  cursorConditionAsc,
+  cursorConditionDesc,
   decodeCursor,
+  decodeScoreCursor,
   encodeCursor,
   parseLimit,
+  scoreCursorCondition,
 } from './pagination';
 
 describe('pagination helpers', () => {
   it('round-trips encoded cursors', () => {
-    const cursor = { t: '2026-04-23T00:00:00.000Z', id: new Types.ObjectId().toString() };
+    const cursor = { t: '2026-04-23T00:00:00.000Z', id: newId() };
 
     expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
   });
@@ -27,35 +31,54 @@ describe('pagination helpers', () => {
     expect(parseLimit('7')).toBe(7);
   });
 
-  it('builds descending cursor filters using the requested field', () => {
-    const id = new Types.ObjectId().toString();
-    expect(cursorFilterDesc({ t: '2026-04-23T00:00:00.000Z', id }, 'updatedAt')).toEqual({
-      $or: [
-        { updatedAt: { $lt: new Date('2026-04-23T00:00:00.000Z') } },
-        { updatedAt: new Date('2026-04-23T00:00:00.000Z'), _id: { $lt: new Types.ObjectId(id) } },
-      ],
-    });
+  it('builds a descending cursor condition only when a cursor is present', () => {
+    expect(cursorConditionDesc(null, posts.createdAt, posts.id)).toBeUndefined();
+    const condition = cursorConditionDesc(
+      { t: '2026-04-23T00:00:00.000Z', id: newId() },
+      posts.createdAt,
+      posts.id,
+    );
+    expect(condition).toBeDefined();
   });
 
-  it('builds ascending cursor filters', () => {
-    const id = new Types.ObjectId().toString();
-    expect(cursorFilterAsc({ t: '2026-04-23T00:00:00.000Z', id })).toEqual({
-      $or: [
-        { createdAt: { $gt: new Date('2026-04-23T00:00:00.000Z') } },
-        { createdAt: new Date('2026-04-23T00:00:00.000Z'), _id: { $gt: new Types.ObjectId(id) } },
-      ],
-    });
+  it('builds an ascending cursor condition only when a cursor is present', () => {
+    expect(cursorConditionAsc(null, posts.createdAt, posts.id)).toBeUndefined();
+    const condition = cursorConditionAsc(
+      { t: '2026-04-23T00:00:00.000Z', id: newId() },
+      posts.createdAt,
+      posts.id,
+    );
+    expect(condition).toBeDefined();
+  });
+
+  it('builds a score cursor condition only when a cursor is present', () => {
+    expect(scoreCursorCondition(null, posts.feedScore, posts.id)).toBeUndefined();
+    expect(
+      scoreCursorCondition({ s: 1.5, id: newId() }, posts.feedScore, posts.id),
+    ).toBeDefined();
   });
 
   it('builds the next cursor from the last item on the page', () => {
     const docs = [
-      { _id: new Types.ObjectId(), createdAt: new Date('2026-04-23T00:00:00.000Z') },
-      { _id: new Types.ObjectId(), createdAt: new Date('2026-04-22T00:00:00.000Z') },
+      { id: newId(), createdAt: new Date('2026-04-23T00:00:00.000Z') },
+      { id: newId(), createdAt: new Date('2026-04-22T00:00:00.000Z') },
     ];
 
     const page = buildNextCursor(docs, 1);
 
     expect(page.items).toEqual([docs[0]]);
-    expect(decodeCursor(page.nextCursor)?.id).toBe(docs[0]._id.toString());
+    expect(decodeCursor(page.nextCursor)?.id).toBe(docs[0].id);
+  });
+
+  it('builds the next score cursor from the last item on the page', () => {
+    const docs = [
+      { id: newId(), feedScore: 9 },
+      { id: newId(), feedScore: 3 },
+    ];
+
+    const page = buildNextScoreCursor(docs, 1);
+
+    expect(page.items).toEqual([docs[0]]);
+    expect(decodeScoreCursor(page.nextCursor)?.s).toBe(9);
   });
 });
