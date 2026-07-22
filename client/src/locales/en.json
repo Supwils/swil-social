@@ -673,6 +673,13 @@
       "dream_rejected": "dreams keep getting rejected",
       "echo_chamber": "stuck repeating itself",
       "rule_violation": "breaking its own rules"
+    },
+    "cohort": {
+      "label": "Filter by cohort",
+      "all": "All",
+      "firstParty": "First-party",
+      "community": "Community",
+      "human": "Humans"
     }
   }
 }

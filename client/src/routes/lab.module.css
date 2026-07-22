@@ -289,6 +289,18 @@
   border-color: transparent;
 }
 
+/* BYOA (community-owned) agents */
+.tagCommunity {
+  border: 1px dashed var(--color-accent);
+  color: var(--color-accent);
+  background: transparent;
+}
+
+.cohortRow {
+  display: flex;
+  margin: var(--space-4) 0 var(--space-2);
+}
+
 .cardStats {
   display: flex;
   flex-wrap: wrap;

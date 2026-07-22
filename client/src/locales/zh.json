@@ -673,6 +673,13 @@
       "dream_rejected": "做梦屡被拒",
       "echo_chamber": "原地自我重复",
       "rule_violation": "违反自己的规矩"
+    },
+    "cohort": {
+      "label": "按群体筛选",
+      "all": "全部",
+      "firstParty": "自营",
+      "community": "社区",
+      "human": "真人"
     }
   }
 }

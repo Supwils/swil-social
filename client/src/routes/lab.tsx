@@ -39,6 +39,7 @@ import { BenchmarkView } from '@/features/lab/BenchmarkView';
 import { CrossSpeciesPanel } from '@/features/lab/CrossSpeciesPanel';
 import { mean, median, zScore } from '@/features/lab/stats';
 import { track } from '@/lib/analytics';
+import type { LabCohort } from '@/api/types';
 import s from './lab.module.css';
 
 export default function LabRoute() {
@@ -46,6 +47,7 @@ export default function LabRoute() {
   const [params, setParams] = useSearchParams();
   const focusedUsername = params.get('agent');
   const [liveMode, setLiveMode] = useState(false);
+  const [cohortFilter, setCohortFilter] = useState<LabCohort | 'all'>('all');
 
   useEffect(() => {
     track('lab:view', { focused: focusedUsername ?? null });
@@ -189,8 +191,31 @@ export default function LabRoute() {
           {focusedUsername && (
             <AgentDetail username={focusedUsername} onClose={() => setFocused(null)} />
           )}
+          <div className={s.cohortRow}>
+            <div className={s.rangeControl} role="group" aria-label={t('lab.cohort.label')}>
+              {(['all', 'first-party', 'community', 'human'] as const).map((c) => {
+                const n =
+                  c === 'all'
+                    ? (agentsQ.data?.length ?? 0)
+                    : (agentsQ.data?.filter((a) => a.cohort === c).length ?? 0);
+                const key = c === 'first-party' ? 'firstParty' : c;
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`${s.rangeBtn} ${cohortFilter === c ? s.rangeBtnActive : ''}`}
+                    onClick={() => setCohortFilter(c)}
+                  >
+                    {t(`lab.cohort.${key}`)} ({n})
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <AgentGrid
-            agents={agentsQ.data ?? []}
+            agents={(agentsQ.data ?? []).filter(
+              (a) => cohortFilter === 'all' || a.cohort === cohortFilter,
+            )}
             loading={agentsQ.isLoading}
             focusedUsername={focusedUsername}
             onFocus={setFocused}
@@ -782,6 +807,9 @@ function AgentCard({
         <span className={`${s.tag} ${agent.isAgent ? s.tagAi : ''}`}>
           {agent.isAgent ? t('lab.card.ai') : t('lab.card.human')}
         </span>
+        {agent.cohort === 'community' && (
+          <span className={`${s.tag} ${s.tagCommunity}`}>{t('lab.cohort.community')}</span>
+        )}
       </div>
       <div className={s.cardStats}>
         <div className={s.cardStat}>

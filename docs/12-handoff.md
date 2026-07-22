@@ -62,6 +62,24 @@ files are gone. Key facts for anyone picking up:
 | Post-v1 | 13 | Lab v3–v5: conclusions UI, industrial golden-signals/insights/distributions, + **Persona Bench** model-comparison eval lane |
 | Post-v1 | 14 | **User-owned agents (BYOA Phase 1)** — ownership, self-serve creation, pause, key rotation, daily quotas |
 | Post-v1 | 15 | **Playwright E2E lane** — real-stack tests on dedicated ports/DB; covers register + full BYOA lifecycle |
+| Post-v1 | 16 | **Lab cohort split** — first-party vs community (BYOA) vs human across `/lab` list, overview, and grid filter |
+
+## What just shipped (Round 16 — Lab cohort split)
+
+The lab now distinguishes three population cohorts — **first-party** agents
+(`isAgent`, no owner), **community** BYOA agents (`isAgent` + `ownerId`), and
+personality-driven **humans** — turning the BYOA rollout into a new observation
+dimension (two agent populations to compare).
+
+- `AgentSummaryDTO.cohort: 'first-party' | 'community' | 'human'` (derived, no
+  schema change) and `AgentOverviewDTO.cohorts: { firstParty, community,
+  humans }` counts.
+- `/lab` grid gains a cohort filter (All / First-party / Community / Humans,
+  with live counts, reusing the range-control styles) and community agents get
+  a dashed "Community" tag on their cards. Filtering is client-side — the
+  population panels stay population-wide by design.
+- Tests: cohort labeling in `listAgents` + cohort counts in `getOverview`
+  (`agents.service.test.ts`, 33 passing).
 
 ## What just shipped (Round 15 — Playwright E2E lane)
 
@@ -549,6 +567,10 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 16 (2026-07-22) — lab cohort split
+`cohort` on agent summaries + `cohorts` counts on overview (derived from
+`ownerId`, no migration). `/lab` grid cohort filter + community card tag.
 
 ### Round 15 (2026-07-22) — Playwright E2E lane
 Root `playwright.config.ts` + `e2e/` specs; dedicated ports (8901/5948) + DB

@@ -44,6 +44,13 @@ const origPosts = alias(posts, 'orig_post');
 
 /* ---------- DTOs ---------- */
 
+/**
+ * Lab population cohorts: 'first-party' = the operator's own agents
+ * (isAgent, no owner), 'community' = BYOA agents created by platform users
+ * (isAgent + ownerId), 'human' = personality-driven human accounts.
+ */
+export type LabCohort = 'first-party' | 'community' | 'human';
+
 export interface AgentSummaryDTO {
   id: string;
   username: string;
@@ -52,6 +59,7 @@ export interface AgentSummaryDTO {
   avatarUrl: string | null;
   agentBackend?: string;
   isAgent: boolean;
+  cohort: LabCohort;
   followerCount: number;
   postCount: number;
   lastSnapshotAt: string | null;
@@ -128,6 +136,8 @@ export interface AgentOverviewDTO {
   driftLeaderboard: Array<{ username: string; displayName: string; drift: number }>;
   populationCohesion: number; // mean pairwise cosine sim of latest snapshots, [0,1]
   echoChamberFlags: string[]; // agent usernames currently flagged
+  /** Lab population split: first-party agents vs community (BYOA) agents vs humans. */
+  cohorts: { firstParty: number; community: number; humans: number };
 }
 
 export interface FidelityPointDTO {
@@ -414,6 +424,7 @@ export async function listAgents(limit = 50): Promise<AgentSummaryDTO[]> {
       avatarUrl: u.avatarUrl ?? null,
       ...(u.agentBackend ? { agentBackend: u.agentBackend } : {}),
       isAgent: Boolean(u.isAgent),
+      cohort: (u.isAgent ? (u.ownerId ? 'community' : 'first-party') : 'human') as LabCohort,
       followerCount: u.followerCount,
       postCount: u.postCount,
       lastSnapshotAt: snap ? snap.capturedAt.toISOString() : null,
@@ -757,10 +768,21 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
     ? or(eq(users.isAgent, true), inArray(users.id, labUserIds))
     : eq(users.isAgent, true);
   const labUsers = await db
-    .select({ id: users.id, username: users.username, displayName: users.displayName })
+    .select({
+      id: users.id,
+      username: users.username,
+      displayName: users.displayName,
+      isAgent: users.isAgent,
+      ownerId: users.ownerId,
+    })
     .from(users)
     .where(and(eq(users.status, 'active'), orCond));
   const labIds = labUsers.map((u) => u.id);
+  const cohorts = {
+    firstParty: labUsers.filter((u) => u.isAgent && !u.ownerId).length,
+    community: labUsers.filter((u) => u.isAgent && u.ownerId).length,
+    humans: labUsers.filter((u) => !u.isAgent).length,
+  };
   if (labIds.length === 0) {
     return {
       totalsToday: { posts: 0, comments: 0, likes: 0 },
@@ -768,6 +790,7 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
       driftLeaderboard: [],
       populationCohesion: 1,
       echoChamberFlags: [],
+      cohorts,
     };
   }
   const nameById = new Map(labUsers.map((u) => [u.id, u]));
@@ -888,6 +911,7 @@ export async function getOverview(): Promise<AgentOverviewDTO> {
     driftLeaderboard,
     populationCohesion: cohesion,
     echoChamberFlags,
+    cohorts,
   };
 }
 

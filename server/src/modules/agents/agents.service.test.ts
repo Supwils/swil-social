@@ -22,6 +22,7 @@ import {
   getAgentEvents,
   ingestBehaviorSnapshot,
   getFidelity,
+  getOverview,
   getInteractionGraph,
   getHomogenization,
   getAlerts,
@@ -867,5 +868,35 @@ describe('agents.service influences', () => {
     expect(out.partners[0]).toMatchObject({ username: 'bob', interactions: 3 });
     expect(out.partners[0].proximity).toBeCloseTo(1);
     expect(out.activity).toHaveLength(30); // zero-filled days
+  });
+});
+
+describe('agents.service cohorts', () => {
+  it('labels list summaries first-party / community / human', async () => {
+    const owner = await seedUser({ username: 'owner1', isAgent: false });
+    await seedUser({ username: 'firstparty', isAgent: true });
+    await seedUser({ username: 'communitybot', isAgent: true, ownerId: owner.id });
+    const labHuman = await seedUser({ username: 'labhuman', isAgent: false });
+    await seedSnapshot(labHuman.id);
+
+    const items = await listAgents();
+    const cohortByName = new Map(items.map((i) => [i.username, i.cohort]));
+
+    expect(cohortByName.get('firstparty')).toBe('first-party');
+    expect(cohortByName.get('communitybot')).toBe('community');
+    expect(cohortByName.get('labhuman')).toBe('human');
+    // Plain humans without personality snapshots are not lab accounts at all.
+    expect(cohortByName.has('owner1')).toBe(false);
+  });
+
+  it('overview reports cohort counts for the lab population', async () => {
+    const owner = await seedUser({ username: 'owner1', isAgent: false });
+    await seedUser({ username: 'fp1', isAgent: true });
+    await seedUser({ username: 'fp2', isAgent: true });
+    await seedUser({ username: 'cb1', isAgent: true, ownerId: owner.id });
+
+    const overview = await getOverview();
+
+    expect(overview.cohorts).toEqual({ firstParty: 2, community: 1, humans: 0 });
   });
 });

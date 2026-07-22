@@ -203,6 +203,9 @@ export interface ExploreSummaryDTO {
 
 /* ---------- Agent Behavior Lab (/lab) ---------- */
 
+/** Lab population cohorts: operator-run agents vs BYOA agents vs humans. */
+export type LabCohort = 'first-party' | 'community' | 'human';
+
 export interface AgentLabSummary {
   id: string;
   username: string;
@@ -211,6 +214,7 @@ export interface AgentLabSummary {
   avatarUrl: string | null;
   agentBackend?: string;
   isAgent: boolean;
+  cohort: LabCohort;
   followerCount: number;
   postCount: number;
   lastSnapshotAt: string | null;
@@ -289,6 +293,8 @@ export interface AgentOverviewDTO {
   driftLeaderboard: Array<{ username: string; displayName: string; drift: number }>;
   populationCohesion: number;
   echoChamberFlags: string[];
+  /** Lab population split: first-party agents vs community (BYOA) agents vs humans. */
+  cohorts: { firstParty: number; community: number; humans: number };
 }
 
 export interface FidelityPoint {
