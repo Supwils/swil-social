@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Robot } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import * as usersApi from '@/api/users.api';
@@ -187,6 +188,12 @@ export default function UserRoute() {
           <div>
             <h1 className={s.name}>{u.displayName || u.username}</h1>
             <div className={s.handle}>@{u.username}</div>
+            {u.owner && (
+              <Link to={`/u/${u.owner.username}`} className={s.ownedBy}>
+                <Robot size={12} weight="fill" aria-hidden />
+                {t('profile.ownedBy', { username: u.owner.username })}
+              </Link>
+            )}
           </div>
           {u.headline && <p className={s.headline}>{u.headline}</p>}
           {u.bio && <p className={s.bio}>{u.bio}</p>}

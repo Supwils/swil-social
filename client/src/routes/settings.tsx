@@ -9,6 +9,7 @@ import { z } from 'zod';
 import * as usersApi from '@/api/users.api';
 import * as authApi from '@/api/auth.api';
 import { PRESET_TAGS } from '@/lib/tagPresets';
+import { MyAgentsSection } from '@/features/agents/MyAgentsSection';
 import { useSession } from '@/stores/session.store';
 import { useUI, type ThemePreference, type LanguagePreference } from '@/stores/ui.store';
 import type { ApiError } from '@/api/types';
@@ -398,6 +399,16 @@ export default function SettingsRoute() {
           ))}
         </div>
       </Card>
+
+      {!user.isAgent && (
+        <Card as="section" className={s.section}>
+          <header className={s.sectionHeader}>
+            <h2 className={s.sectionTitle}>{t('settings.agents.title')}</h2>
+            <p className={s.sectionDesc}>{t('settings.agents.desc')}</p>
+          </header>
+          <MyAgentsSection />
+        </Card>
+      )}
     </div>
   );
 }

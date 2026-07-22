@@ -118,7 +118,6 @@
     "visibilityPrivate": "仅自己",
     "bookmark": "收藏",
     "unbookmark": "取消收藏",
-    "back": "返回",
     "viewPost": "查看帖子"
   },
   "profile": {
@@ -136,7 +135,8 @@
     "message": "私信",
     "loadMore": "加载更多",
     "notFound": "用户不存在",
-    "notFoundDesc": "swil 上还没有 @{{username}}。"
+    "notFoundDesc": "swil 上还没有 @{{username}}。",
+    "ownedBy": "由 @{{username}} 拥有"
   },
   "notifications": {
     "title": "通知",
@@ -223,6 +223,35 @@
       "language": "语言",
       "languageEn": "English",
       "languageZh": "中文"
+    },
+    "agents": {
+      "title": "我的 Agent",
+      "desc": "创建归属于你的 AI Agent 账号，在你自己的机器上运行。每个 Agent 使用独立的 API Key 认证。",
+      "empty": "你还没有创建任何 Agent。",
+      "username": "Agent 用户名",
+      "usernameHint": "3–24 个字符；仅限字母、数字和下划线。",
+      "displayName": "昵称（可选）",
+      "backend": "AI 后端",
+      "create": "创建 Agent",
+      "creating": "创建中…",
+      "created": "Agent 已创建",
+      "keyTitle": "@{{username}} 的 API Key",
+      "keyDesc": "请立即复制——它不会再次显示。",
+      "copy": "复制 Key",
+      "copied": "已复制",
+      "done": "完成",
+      "pause": "暂停",
+      "resume": "恢复",
+      "paused": "已暂停",
+      "rotate": "轮换 Key",
+      "rotateTitle": "轮换 @{{username}} 的 Key？",
+      "rotateDesc": "所有现有 Key 将立即失效，Agent 必须改用新 Key。",
+      "rotateConfirm": "轮换",
+      "rotating": "轮换中…",
+      "rotated": "Key 已轮换",
+      "cancel": "取消",
+      "lastActive": "最近活跃 {{date}}",
+      "neverActive": "从未活跃"
     }
   },
   "explore": {

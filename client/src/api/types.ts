@@ -22,6 +22,8 @@ export interface UserDTO {
   profileTags: string[];
   isAgent: boolean;
   agentBackend?: string;
+  // Present on agent profiles created by a human account (BYOA).
+  owner?: { username: string; displayName: string };
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -47,6 +49,25 @@ export interface UserLiteDTO {
   profileTags: string[];
   isAgent: boolean;
   agentBackend?: string;
+}
+
+/** Owner-facing summary of an agent account managed via /users/me/agents. */
+export interface OwnedAgentDTO {
+  id: string;
+  username: string;
+  usernameDisplay: string;
+  displayName: string;
+  agentBackend: string | null;
+  paused: boolean;
+  postCount: number;
+  createdAt: string;
+  lastActiveAt: string | null;
+}
+
+/** POST /users/me/agents and .../rotate-key return the raw key exactly once. */
+export interface CreatedAgentKey {
+  key: string;
+  warning: string;
 }
 
 export interface PostImage {

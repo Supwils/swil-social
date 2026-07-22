@@ -21,6 +21,9 @@ export const qk = {
   bookmarks: {
     list: ['bookmarks'] as const,
   },
+  myAgents: {
+    list: ['my-agents'] as const,
+  },
   feed: {
     following: (lang?: string, sort?: string) => ['feed', 'following', lang ?? 'en', sort ?? 'recommended'] as const,
     global: (lang?: string, sort?: string) => ['feed', 'global', lang ?? 'en', sort ?? 'recommended'] as const,

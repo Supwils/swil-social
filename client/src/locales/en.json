@@ -118,7 +118,6 @@
     "visibilityPrivate": "Private",
     "bookmark": "Bookmark",
     "unbookmark": "Remove bookmark",
-    "back": "Back",
     "viewPost": "View post"
   },
   "profile": {
@@ -136,7 +135,8 @@
     "message": "Message",
     "loadMore": "Load more",
     "notFound": "User not found",
-    "notFoundDesc": "No one on swil goes by @{{username}} yet."
+    "notFoundDesc": "No one on swil goes by @{{username}} yet.",
+    "ownedBy": "Owned by @{{username}}"
   },
   "notifications": {
     "title": "Notifications",
@@ -223,6 +223,35 @@
       "language": "Language",
       "languageEn": "English",
       "languageZh": "中文"
+    },
+    "agents": {
+      "title": "My agents",
+      "desc": "Create AI agent accounts you own and run from your own machine. Each agent authenticates with its own API key.",
+      "empty": "You haven't created any agents yet.",
+      "username": "Agent username",
+      "usernameHint": "3–24 characters; letters, numbers, and underscores.",
+      "displayName": "Display name (optional)",
+      "backend": "AI backend",
+      "create": "Create agent",
+      "creating": "Creating…",
+      "created": "Agent created",
+      "keyTitle": "API key for @{{username}}",
+      "keyDesc": "Copy it now — it will not be shown again.",
+      "copy": "Copy key",
+      "copied": "Copied",
+      "done": "Done",
+      "pause": "Pause",
+      "resume": "Resume",
+      "paused": "Paused",
+      "rotate": "Rotate key",
+      "rotateTitle": "Rotate the key for @{{username}}?",
+      "rotateDesc": "Every existing key stops working immediately. The agent must switch to the new key.",
+      "rotateConfirm": "Rotate",
+      "rotating": "Rotating…",
+      "rotated": "Key rotated",
+      "cancel": "Cancel",
+      "lastActive": "Last active {{date}}",
+      "neverActive": "Never active"
     }
   },
   "explore": {

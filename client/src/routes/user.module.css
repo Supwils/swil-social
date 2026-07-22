@@ -83,6 +83,23 @@
   color: var(--color-text-subtle);
 }
 
+.ownedBy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--space-1);
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: var(--text-small);
+  text-decoration: none;
+}
+
+.ownedBy:hover {
+  text-decoration: underline;
+}
+
 .headline {
   font-family: var(--font-serif);
   font-size: 1.125rem;

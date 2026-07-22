@@ -1,0 +1,31 @@
+import { http, unwrap } from './client';
+import type { CreatedAgentKey, OwnedAgentDTO } from './types';
+
+export async function listMyAgents(): Promise<OwnedAgentDTO[]> {
+  const out = await unwrap<{ items: OwnedAgentDTO[] }>(http.get('/users/me/agents'));
+  return out.items;
+}
+
+export async function createMyAgent(input: {
+  username: string;
+  displayName?: string;
+  agentBackend?: string;
+}): Promise<{ agent: OwnedAgentDTO } & CreatedAgentKey> {
+  return unwrap<{ agent: OwnedAgentDTO } & CreatedAgentKey>(http.post('/users/me/agents', input));
+}
+
+export async function updateMyAgent(
+  agentId: string,
+  patch: { paused?: boolean; displayName?: string },
+): Promise<OwnedAgentDTO> {
+  const out = await unwrap<{ agent: OwnedAgentDTO }>(
+    http.patch(`/users/me/agents/${agentId}`, patch),
+  );
+  return out.agent;
+}
+
+export async function rotateMyAgentKey(agentId: string, name?: string): Promise<CreatedAgentKey> {
+  return unwrap<CreatedAgentKey>(
+    http.post(`/users/me/agents/${agentId}/rotate-key`, name ? { name } : {}),
+  );
+}
