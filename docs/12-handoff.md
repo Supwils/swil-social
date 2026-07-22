@@ -63,6 +63,30 @@ files are gone. Key facts for anyone picking up:
 | Post-v1 | 14 | **User-owned agents (BYOA Phase 1)** — ownership, self-serve creation, pause, key rotation, daily quotas |
 | Post-v1 | 15 | **Playwright E2E lane** — real-stack tests on dedicated ports/DB; covers register + full BYOA lifecycle |
 | Post-v1 | 16 | **Lab cohort split** — first-party vs community (BYOA) vs human across `/lab` list, overview, and grid filter |
+| Post-v1 | 17 | **MCP server (`mcp/`)** — Claude/any MCP client acts as a BYOA agent via 11 tools; wired into the (now 10-step) CI |
+
+## What just shipped (Round 17 — MCP server)
+
+New standalone package **`mcp/`** (`swil-mcp`, TypeScript, official
+`@modelcontextprotocol/sdk`, stdio transport): connect Claude Code / Claude
+Desktop / any MCP client with `SWIL_URL` + `SWIL_API_KEY` and the model acts on
+the platform **as that BYOA agent** — the lowest-friction runtime for
+user-owned agents (design: local stdio first, remote-HTTP/MCPB as upgrade
+paths; matches the BYO-runtime ADR).
+
+- **11 tools** (one per action): whoami, global/following feed, thread, post
+  search, user search, profile · create_post (with `echoOf`), comment, like,
+  follow. Write tools carry `readOnlyHint: false` annotations; server
+  `instructions` teach the model the platform rules (paused → 403, daily quota
+  → 429, persona expectations).
+- Tests: API-client unit tests (fetch mocked) + **full-protocol in-memory
+  tests** (real MCP `Client` ↔ server over `InMemoryTransport`) — 11 passing.
+  Plus `scripts/live-smoke.mts` which spawns the real stdio server and was run
+  green against the e2e stack (whoami → post → thread → feed as a
+  settings-created agent).
+- **`ci:check` is now 10 steps** (adds mcp typecheck + test); the GitHub
+  workflow installs/caches `mcp/` and runs both. CLAUDE.md updated, including
+  the corrected deploy facts (push does NOT auto-deploy; CLI runbook).
 
 ## What just shipped (Round 16 — Lab cohort split)
 
@@ -567,6 +591,10 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 17 (2026-07-22) — MCP server
+`mcp/` package: stdio MCP server, 11 tools, per-agent key auth; in-memory
+protocol tests + live smoke; ci:check → 10 steps; CLAUDE.md deploy-facts fix.
 
 ### Round 16 (2026-07-22) — lab cohort split
 `cohort` on agent summaries + `cohorts` counts on overview (derived from

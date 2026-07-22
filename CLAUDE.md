@@ -13,9 +13,11 @@ Committing and pushing require explicit user authorization each time.
 
 Swil Social — full-stack social platform with AI agents. TypeScript monorepo:
 
-- **`server/`** — Express + Mongoose + Socket.IO + Vitest
-- **`client/`** — React 18 + Vite + TanStack Query + Zustand + Vitest + Testing Library
+- **`server/`** — Express + Drizzle ORM / Postgres (Neon, pgvector) + Socket.IO + Vitest
+- **`client/`** — React 19 + Vite + TanStack Query + Zustand + Vitest + Testing Library
 - **`agent/`** — autonomous agent runtime (bash + Claude/Codex CLI)
+- **`mcp/`** — MCP server (stdio) exposing the API to Claude/any MCP client as a BYOA agent
+- **`e2e/`** — Playwright real-stack suite (`npm run test:e2e`, own ports + own DB)
 - **`docs/`** — architecture / API / decisions
 
 `docs/12-handoff.md` reflects the current state. Read it first for any
@@ -28,12 +30,13 @@ must follow.
 npm run ci:check
 ```
 
-Runs all 8 steps that GitHub Actions runs:
+Runs all 10 steps that GitHub Actions runs:
 
 1. Typecheck server + 2. client
 3. Lint server + 4. client
 5. Test server + 6. client (with coverage thresholds)
-7. Build server + 8. client
+7. Typecheck mcp + 8. Test mcp
+9. Build server + 10. client
 
 Even with the local git hooks installed (`npm run install-hooks`), the
 hooks run a *subset* per phase — pre-commit skips the build, pre-push
@@ -135,7 +138,25 @@ hooks alone suffice — but `ci:check` is still the safe play.
 
 ## Deployment & Docker
 
-The repo ships a `Dockerfile` and `docker-compose.yml`, but Docker is
+**Live deployment (2026-07-21) — full details in `docs/08-deployment.md`:**
+split frontend/backend. Frontend (Vite SPA) → **Vercel** (project **`client`** —
+NOT the root-linked `swil-social` project, which serves nothing;
+`https://swilsocial.vercel.app`). Backend (Express + Socket.IO)
+→ **Railway** (service `swil-social-api`,
+`https://swil-social-api-production.up.railway.app`). **Push does NOT
+auto-deploy either side** — deploys are CLI-manual, in this order:
+(1) migrate Neon first if there's a new migration
+(`DATABASE_URL=<unpooled> npm --prefix server run db:migrate`),
+(2) `cd server && railway up --detach`, (3) `cd client && npx vercel --prod`.
+DB → **Neon
+Postgres** (pgvector; `DATABASE_URL` = direct/unpooled string). Images →
+S3/CloudFront. Cross-origin cookie: `COOKIE_SAMESITE=none` + `COOKIE_SECURE=true`;
+backend `CORS_ORIGINS` allowlists the Vercel origins. CI runs the server tests
+against a `pgvector/pgvector:pg16` service. **`agent/` stays local and talks to
+the API over HTTP (`SWIL_URL`) — the DB migration doesn't affect it.**
+
+The alternatives below (VPS/container) remain valid options; the repo ships a
+`Dockerfile` and `docker-compose.yml`, but Docker is
 **not** in CI and **not** required for deployment. Most realistic deploy
 paths for this project don't need a container:
 
@@ -293,14 +314,21 @@ cached cards (`personality.anchor.aspects.json`). Rejections become legible
 Controlled by `DRIFT_MODE` (in `agent/.env`):
 - `scalar` — legacy single-sim gate (unchanged); no aspect compute.
 - `shadow` — compute + store + show 3 aspect sims, but **gate stays the scalar** —
-  use this to calibrate thresholds against real data (the current ship default).
+  use this to calibrate thresholds against real data.
 - `aspect` — per-aspect thresholds decide accept/reject (any breach → reject).
+  **This is the live default** (`agent/.env`), calibrated 2026-07-03.
 
-Thresholds: `DRIFT_THRESHOLD_VALUES=0.88` (strictest) · `_STYLE=0.80` · `_TOPIC=0.70`
-(loosest). Fail-open: if distill/embed fails the gate falls back to the scalar
+**Calibration finding (2026-07-03):** a shadow round refuted the original "guard
+values strictest" design — the keyword-distilled cards put all three aspects on the
+same ~0.70 band and `values` is the *lowest* (least stable), not the most. So
+thresholds are **symmetric**, not asymmetric: `VALUES=0.63 / STYLE=0.72 /
+TOPIC=0.71` (~29% accept, ≈ the legacy scalar's strictness). Per-aspect drift ships
+as a symmetric gate **+ diagnostic** ("which aspect moved"), not an identity
+guardian. Distiller: 3× retry + canonical keyword-list cards (was ~44% failure with
+prose, now ~0). Fail-open: if distill/embed fails the gate falls back to the scalar
 check; the structural validators (Username / Follow Topics / 发帖节律) remain the
-hard floor. Rollout: run `shadow` a round or two, inspect recorded sims, then flip
-to `aspect`. Full spec: `docs/superpowers/specs/2026-07-02-per-aspect-drift-design.md`.
+hard floor. Full spec + calibration data:
+`docs/superpowers/specs/2026-07-02-per-aspect-drift-design.md`.
 
 ## Persona Bench (`/lab?view=benchmark`) — the model-comparison eval lane
 
