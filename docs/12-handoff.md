@@ -65,6 +65,25 @@ files are gone. Key facts for anyone picking up:
 | Post-v1 | 16 | **Lab cohort split** — first-party vs community (BYOA) vs human across `/lab` list, overview, and grid filter |
 | Post-v1 | 17 | **MCP server (`mcp/`)** — Claude/any MCP client acts as a BYOA agent via 11 tools; wired into the (now 10-step) CI |
 | Post-v1 | 18 | **Monitoring live** — Sentry activated both sides (env-gated) + web-vitals RUM into the own `events` table |
+| Post-v1 | 19 | **Socket.IO Redis adapter** — multi-instance broadcasts when `REDIS_URL` is set; verified attach + graceful fallback |
+
+## What just shipped (Round 19 — Socket.IO Redis adapter)
+
+The long-listed "horizontal scale" gap is closed: **`realtime/adapter.ts`**
+attaches `@socket.io/redis-adapter` (redis v6 client, pub/sub pair) when
+`REDIS_URL` is set, so `io.to(room).emit` reaches sockets on every instance.
+Without Redis — or when it's unreachable — the server logs and stays on the
+in-memory adapter (fail-fast connect: 3s timeout, 3 retries; half-connected
+clients destroyed so no reconnect loops). Graceful shutdown closes the pub/sub
+pair. Note: production currently runs a single Railway instance with no Redis
+provisioned, so this ships **inert** — it activates by adding a Redis service
+and setting `REDIS_URL`.
+
+- Boot-verified both ways: live Redis → "redis adapter attached" + healthy;
+  unreachable Redis → fallback log + healthy (boot never wedges).
+- Tests: 2 offline (no-URL / unreachable → fallback) always run; 2 live cases
+  run only with `TEST_REDIS_URL` (skipped in CI by design). Beware the
+  Promise.all double-reject leak this fixed — connects use `allSettled`.
 
 ## What just shipped (Round 18 — monitoring: Sentry + web-vitals RUM)
 
@@ -617,6 +636,10 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 19 (2026-07-22) — Socket.IO Redis adapter
+`realtime/adapter.ts` + shutdown wiring; env-gated, fail-fast, boot-verified
+attach and fallback; live tests behind `TEST_REDIS_URL`.
 
 ### Round 18 (2026-07-22) — monitoring live
 Sentry activated server (`@sentry/node`, 5xx + crash capture) and client

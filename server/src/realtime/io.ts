@@ -18,6 +18,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { logger } from '../lib/logger';
 import { db } from '../db/client';
 import { conversations } from '../db/schema';
+import { attachRedisAdapter } from './adapter';
 
 /**
  * Zod schemas for inbound socket events. Malformed payloads are dropped
@@ -46,6 +47,10 @@ export function initRealtime(httpServer: HttpServer, sessionMiddleware: RequestH
     cors: { credentials: true },
     transports: ['websocket', 'polling'],
   });
+
+  // Multi-instance broadcasts via Redis pub/sub when REDIS_URL is set;
+  // logs + stays on the in-memory adapter otherwise (see realtime/adapter.ts).
+  void attachRedisAdapter(server);
 
   // Reuse the same express-session middleware — required so `socket.request.session` is set.
   server.engine.use(sessionMiddleware as unknown as (req: unknown, res: unknown, next: (err?: unknown) => void) => void);

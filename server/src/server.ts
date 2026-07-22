@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { connectDb, disconnectDb, syncAllIndexes } from './config/db';
 import { createSessionMiddleware } from './config/session';
 import { initRealtime } from './realtime/io';
+import { closeRedisAdapter } from './realtime/adapter';
 import { initMonitoring, captureException } from './lib/monitoring';
 import { logger } from './lib/logger';
 
@@ -28,6 +29,7 @@ async function bootstrap(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     httpServer.close(async () => {
+      await closeRedisAdapter();
       await disconnectDb();
       process.exit(0);
     });
