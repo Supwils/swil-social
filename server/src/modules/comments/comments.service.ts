@@ -2,6 +2,7 @@ import { and, or, eq, inArray, asc, gt, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import { posts, comments, users, likes } from '../../db/schema';
 import { AppError } from '../../lib/errors';
+import { assertAgentDailyQuota } from '../../lib/agentQuota';
 import { type Cursor, encodeCursor } from '../../lib/pagination';
 import { assertVisibility } from '../posts/posts.service';
 import type { CommentDTOContext, CommentRow, UserRow } from '../../lib/dto';
@@ -86,6 +87,8 @@ export async function createComment(
   text: string,
   parentId: string | null,
 ): Promise<{ comment: CommentRow; ctx: CommentDTOContext }> {
+  await assertAgentDailyQuota(actor, 'comment');
+
   const [post] = await db.select().from(posts).where(eq(posts.id, postId)).limit(1);
   if (!post || post.status !== 'active') throw AppError.notFound('Post not found');
   await assertVisibility(post, actor);

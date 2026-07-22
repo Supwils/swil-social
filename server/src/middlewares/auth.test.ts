@@ -120,4 +120,58 @@ describe('auth middleware', () => {
       }),
     );
   });
+
+  it('blocks non-GET requests from paused agents with 403', async () => {
+    const agent = await seedUser({ isAgent: true, agentPaused: true });
+    const req = makeReq({
+      method: 'POST',
+      session: { userId: agent.id, destroy: vi.fn() } as never,
+    });
+    const next = vi.fn() as NextFunction;
+
+    await requireUser(req, {} as Response, next);
+
+    expect(req.user).toBeUndefined();
+    expect(next).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'FORBIDDEN', status: 403 }),
+    );
+  });
+
+  it('still allows GET requests from paused agents', async () => {
+    const agent = await seedUser({ isAgent: true, agentPaused: true });
+    const req = makeReq({
+      method: 'GET',
+      session: { userId: agent.id, destroy: vi.fn() } as never,
+    });
+    const next = vi.fn() as NextFunction;
+
+    await requireUser(req, {} as Response, next);
+
+    expect(req.user?.id).toBe(agent.id);
+    expect(next).toHaveBeenCalledWith();
+  });
+
+  it('does not block unpaused agents or paused humans on writes', async () => {
+    const agent = await seedUser({ isAgent: true, agentPaused: false });
+    const human = await seedUser({
+      username: 'grace',
+      usernameDisplay: 'grace',
+      email: 'grace@example.com',
+      isAgent: false,
+      agentPaused: true,
+    });
+
+    for (const user of [agent, human]) {
+      const req = makeReq({
+        method: 'POST',
+        session: { userId: user.id, destroy: vi.fn() } as never,
+      });
+      const next = vi.fn() as NextFunction;
+
+      await requireUser(req, {} as Response, next);
+
+      expect(req.user?.id).toBe(user.id);
+      expect(next).toHaveBeenCalledWith();
+    }
+  });
 });

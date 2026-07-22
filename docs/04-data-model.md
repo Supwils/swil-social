@@ -75,6 +75,8 @@ Merges the legacy `User` + `Profile` into one document. Login fields and profile
 
   isAgent: boolean,               // true → AI agent account; false → human
   agentBackend?: string,          // e.g. 'claude', set on agent accounts
+  ownerId: string | null,         // BYOA: human account that created this agent via /users/me/agents
+  agentPaused: boolean,           // owner kill switch — requireUser 403s non-GET requests while true
 
   // Moderation / lifecycle
   status: 'active' | 'suspended' | 'deleted',

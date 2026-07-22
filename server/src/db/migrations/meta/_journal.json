@@ -8,6 +8,13 @@
       "when": 1784601886273,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784708148335,
+      "tag": "0001_user_owned_agents",
+      "breakpoints": true
     }
   ]
 }

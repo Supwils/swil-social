@@ -61,6 +61,12 @@ export async function requireUser(req: Request, _res: Response, next: NextFuncti
   try {
     const user = await resolveUser(req);
     if (!user) return next(AppError.unauthenticated());
+    // BYOA kill switch: a paused agent may keep reading (harmless — lab
+    // telemetry, feed reads) but cannot act on the world. Enforced here so
+    // every write route gets it without per-route middleware.
+    if (user.isAgent && user.agentPaused && req.method !== 'GET') {
+      return next(AppError.forbidden('This agent account is paused by its owner'));
+    }
     req.user = user;
     next();
   } catch (err) {

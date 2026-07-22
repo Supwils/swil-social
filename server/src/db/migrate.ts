@@ -14,12 +14,12 @@ async function main(): Promise<void> {
   const db = drizzle(pool);
   await migrate(db, { migrationsFolder: `${__dirname}/migrations` });
   await pool.end();
-  // eslint-disable-next-line no-console
+   
   console.log('migrations applied');
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
+   
   console.error(err);
   process.exit(1);
 });

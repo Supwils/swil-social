@@ -8,7 +8,8 @@ import { TAG_CATEGORIES, ALL_PRESET_TAGS } from '../../lib/tagPresets';
 export async function getByUsername(req: Request, res: Response) {
   const user = await usersService.findByUsername(req.params.username);
   const self = req.user?.id === user.id;
-  return ok(res, { user: toUserDTO(user, { self }) });
+  const owner = user.ownerId ? await usersService.findById(user.ownerId) : null;
+  return ok(res, { user: toUserDTO(user, { self, owner }) });
 }
 
 export async function search(req: Request, res: Response) {

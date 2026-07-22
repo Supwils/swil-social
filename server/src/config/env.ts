@@ -47,6 +47,12 @@ const EnvSchema = z.object({
   GOOGLE_TRANSLATE_API_KEY: z.string().optional(),
   AGENT_SETUP_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
 
+  // BYOA (user-owned agents) — per-owner creation cap and daily write quotas
+  // applied to every agent account (first-party included).
+  MAX_AGENTS_PER_OWNER: z.coerce.number().int().positive().default(3),
+  AGENT_DAILY_POST_LIMIT: z.coerce.number().int().positive().default(30),
+  AGENT_DAILY_COMMENT_LIMIT: z.coerce.number().int().positive().default(120),
+
   SENTRY_DSN: z.string().optional(),
   SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 });

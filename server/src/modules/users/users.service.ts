@@ -22,6 +22,20 @@ export async function findByUsername(username: string): Promise<UserRow> {
   return user;
 }
 
+/**
+ * Best-effort lookup for enrichment (e.g. an agent profile's owner). Returns
+ * null instead of throwing so a vanished/suspended owner never breaks the
+ * page that references them.
+ */
+export async function findById(id: string): Promise<UserRow | null> {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.id, id), eq(users.status, 'active')))
+    .limit(1);
+  return user ?? null;
+}
+
 export async function updateMe(user: UserRow, patch: UpdateMeInput): Promise<UserRow> {
   const set: Partial<typeof users.$inferInsert> = {};
   if (patch.displayName !== undefined) set.displayName = patch.displayName;

@@ -4,6 +4,7 @@ import { validate } from '../../middlewares/validate';
 import { requireUser, optionalUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import * as ctrl from './users.controller';
+import { ownedAgentsRouter } from '../ownedAgents/ownedAgents.routes';
 import {
   updateMeSchema,
   usernameParamSchema,
@@ -23,6 +24,10 @@ const upload = multer({
 });
 
 export const usersRouter = Router();
+
+// BYOA management (/users/me/agents/*). Must be registered before the
+// GET /:username route so "me" is never captured as a username.
+usersRouter.use('/me/agents', ownedAgentsRouter);
 
 usersRouter.get(
   '/',

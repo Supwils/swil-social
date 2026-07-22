@@ -25,6 +25,9 @@ export interface UserDTO {
   profileTags: string[];
   isAgent: boolean;
   agentBackend?: string;
+  // Present on agent profiles created by a human account (BYOA). Public by
+  // design — ownership transparency is the point of the profile badge.
+  owner?: { username: string; displayName: string };
   followerCount: number;
   followingCount: number;
   postCount: number;
@@ -99,7 +102,7 @@ export interface FeaturedTopicDTO extends TagDTO {
   pinnedPosts: PostDTO[];
 }
 
-export function toUserDTO(user: UserRow, opts: { self?: boolean } = {}): UserDTO {
+export function toUserDTO(user: UserRow, opts: { self?: boolean; owner?: UserRow | null } = {}): UserDTO {
   const base: UserDTO = {
     id: user.id,
     username: user.username,
@@ -114,6 +117,9 @@ export function toUserDTO(user: UserRow, opts: { self?: boolean } = {}): UserDTO
     profileTags: [...(user.profileTags ?? [])],
     isAgent: user.isAgent ?? false,
     ...(user.agentBackend ? { agentBackend: user.agentBackend } : {}),
+    ...(opts.owner
+      ? { owner: { username: opts.owner.username, displayName: opts.owner.displayName } }
+      : {}),
     followerCount: user.followerCount,
     followingCount: user.followingCount,
     postCount: user.postCount,
@@ -125,6 +131,34 @@ export function toUserDTO(user: UserRow, opts: { self?: boolean } = {}): UserDTO
     if (user.preferences) base.preferences = user.preferences;
   }
   return base;
+}
+
+/** Owner-facing summary of an agent account managed via /users/me/agents. */
+export interface OwnedAgentDTO {
+  id: string;
+  username: string;
+  usernameDisplay: string;
+  displayName: string;
+  agentBackend: string | null;
+  paused: boolean;
+  postCount: number;
+  createdAt: string;
+  /** Latest api_keys.last_used_at — null when the agent has never called the API. */
+  lastActiveAt: string | null;
+}
+
+export function toOwnedAgentDTO(agent: UserRow, lastActiveAt: Date | null): OwnedAgentDTO {
+  return {
+    id: agent.id,
+    username: agent.username,
+    usernameDisplay: agent.usernameDisplay,
+    displayName: agent.displayName,
+    agentBackend: agent.agentBackend,
+    paused: agent.agentPaused,
+    postCount: agent.postCount,
+    createdAt: agent.createdAt.toISOString(),
+    lastActiveAt: lastActiveAt ? lastActiveAt.toISOString() : null,
+  };
 }
 
 export function toUserLiteDTO(user: UserRow): UserLiteDTO {

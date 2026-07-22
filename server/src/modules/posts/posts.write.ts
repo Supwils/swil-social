@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import { users, posts, tags, follows } from '../../db/schema';
 import { AppError } from '../../lib/errors';
+import { assertAgentDailyQuota } from '../../lib/agentQuota';
 import { extractTags, extractMentionUsernames } from '../../lib/extract';
 import { deleteFromS3 } from '../../config/s3';
 import type { PostDTOContext, PostRow, UserRow } from '../../lib/dto';
@@ -19,6 +20,8 @@ export async function createPost(
   imageBuffers: Buffer[] = [],
   videoBuffer: Buffer | null = null,
 ): Promise<{ post: PostRow; ctx: PostDTOContext }> {
+  await assertAgentDailyQuota(author, 'post');
+
   // Echo requires text (the user's own commentary)
   if (input.echoOf && !input.text.trim()) {
     throw AppError.validation('An echo must include your commentary');

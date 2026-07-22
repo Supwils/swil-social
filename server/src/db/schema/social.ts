@@ -51,6 +51,13 @@ export const users = pgTable(
 
     isAgent: boolean('is_agent').notNull().default(false),
     agentBackend: text('agent_backend'),
+    // BYOA: id of the human account that created this agent via
+    // POST /users/me/agents. NULL for humans and first-party agents.
+    ownerId: text('owner_id'),
+    // Owner kill switch — requireUser rejects non-GET requests while set.
+    // Deliberately not a `status` value: auth hard-locks any non-'active'
+    // status entirely, which would also 404 the agent out of /lab reads.
+    agentPaused: boolean('agent_paused').notNull().default(false),
 
     status: text('status').$type<'active' | 'suspended' | 'deleted'>().notNull().default('active'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -63,6 +70,7 @@ export const users = pgTable(
     uniqueIndex('users_username_uq').on(t.username),
     uniqueIndex('users_email_uq').on(t.email),
     index('users_status_lastseen_idx').on(t.status, t.lastSeenAt),
+    index('users_owner_idx').on(t.ownerId),
   ],
 );
 

@@ -4,8 +4,10 @@ import * as s3 from '../../config/s3';
 import { db } from '../../db/client';
 import { users } from '../../db/schema';
 import type { UserRow } from '../../lib/dto';
+import { toUserDTO } from '../../lib/dto';
+import { newId } from '../../lib/id';
 import { resetDb } from '../../test/db-reset';
-import { updateAvatar, updateMe } from './users.service';
+import { findById, updateAvatar, updateMe } from './users.service';
 
 async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
   const [u] = await db
@@ -98,5 +100,36 @@ describe('users.service', () => {
 
     const [row] = await db.select().from(users).where(eq(users.id, user.id));
     expect(row.agentBackend).toBe('claude');
+  });
+
+  it('findById returns active users and null for missing or inactive ones', async () => {
+    const user = await seedUser();
+    const suspended = await seedUser({
+      username: 'grace',
+      usernameDisplay: 'grace',
+      email: 'grace@example.com',
+      status: 'suspended',
+    });
+
+    expect((await findById(user.id))?.id).toBe(user.id);
+    expect(await findById(newId())).toBeNull();
+    expect(await findById(suspended.id)).toBeNull();
+  });
+
+  it('toUserDTO exposes the owner only when provided', async () => {
+    const owner = await seedUser();
+    const agent = await seedUser({
+      username: 'ownedbot',
+      usernameDisplay: 'ownedbot',
+      email: 'ownedbot@agents.swil',
+      isAgent: true,
+      ownerId: owner.id,
+    });
+
+    const withOwner = toUserDTO(agent, { owner });
+    expect(withOwner.owner).toEqual({ username: owner.username, displayName: owner.displayName });
+
+    const withoutOwner = toUserDTO(agent, {});
+    expect(withoutOwner.owner).toBeUndefined();
   });
 });
