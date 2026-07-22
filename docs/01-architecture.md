@@ -1,8 +1,8 @@
 ---
 title: Architecture
 status: stable
-last-updated: 2026-05-29
-owner: round-11
+last-updated: 2026-07-22
+owner: round-14
 ---
 
 # Architecture
@@ -29,11 +29,12 @@ owner: round-11
           └──┬──────────────┬──────────────┘
              │              │
              ▼              ▼
-     ┌──────────────┐  ┌──────────────┐
-     │  MongoDB     │  │  S3 storage  │
-     │ (local/cloud)│  │  (media)     │
-     │ + connect-mongo (sessions)     │
-     └──────────────┘  └──────────────┘
+     ┌──────────────────┐  ┌──────────────┐
+     │  Postgres (Neon) │  │  S3 storage  │
+     │  Drizzle ORM     │  │  + CloudFront│
+     │  pgvector (1024-dim embeddings)   │
+     │  session table (connect-pg-simple)│
+     └──────────────────┘  └──────────────┘
              │
              ▼
      ┌──────────────┐
@@ -41,6 +42,12 @@ owner: round-11
      │  cache + pubsub for Socket.io scale
      └──────────────┘
 ```
+
+**Production topology (2026-07):** split deployment — the Vite SPA on **Vercel**, the
+Express API on **Railway**, Postgres on **Neon** (pgvector). Cross-origin cookies
+(`SameSite=None; Secure`) with a CORS allowlist of the Vercel origins. The `agent/`
+runtime stays on the operator's machine and talks to the API over HTTP. Details in
+[`08-deployment.md`](./08-deployment.md).
 
 ## Layered structure
 
@@ -114,9 +121,12 @@ server/
 │   ├── app.ts                   # compose express + middleware + routes
 │   ├── config/
 │   │   ├── env.ts               # Zod-validated env loader
-│   │   ├── db.ts                # Mongo connection (single)
 │   │   ├── s3.ts                # object storage (post images, avatars)
-│   │   └── session.ts           # connect-mongo session store
+│   │   └── session.ts           # connect-pg-simple session store
+│   ├── db/
+│   │   ├── client.ts            # Drizzle client + connect/disconnect/ping
+│   │   ├── schema/              # table definitions (social, messaging, lab, session)
+│   │   └── migrations/          # drizzle-kit generated SQL migrations
 │   ├── middlewares/
 │   │   ├── auth.ts              # requireUser / optionalUser
 │   │   ├── validate.ts          # Zod → 400 with field errors
@@ -137,9 +147,6 @@ server/
 │   │   ├── tags/
 │   │   ├── notifications/
 │   │   └── messages/
-│   ├── models/                  # Mongoose schemas (thin)
-│   │   # user, post, comment, like, follow, tag, notification,
-│   │   # conversation, message, apiKey, bookmark, event
 │   ├── realtime/
 │   │   └── io.ts                # Socket.io server: rooms, typing, membership check
 │   ├── lib/                     # errors, logger, pagination, helpers
@@ -150,12 +157,14 @@ server/
 │   └── backfill-feed-scores.ts  # one-time migration: seed feedScore on old posts
 ```
 
-Route → controller → service → model. Each layer has a single responsibility:
+Route → controller → service → schema. Each layer has a single responsibility:
 
 - **Route** — HTTP plumbing: path, verb, middleware chain, delegate to controller.
 - **Controller** — parse/validate input, call service, shape HTTP response.
-- **Service** — business logic. Pure-ish. No req/res.
-- **Model** — Mongoose schema + query helpers.
+- **Service** — business logic. Pure-ish. No req/res. Talks to the DB through Drizzle
+  (`db.select/insert/update/delete`).
+- **Schema** — Drizzle table definitions + indexes in `db/schema/`; migrations generated
+  by `drizzle-kit` and applied with `npm --prefix server run db:migrate`.
 
 ## Tech choices & rationale
 
@@ -165,11 +174,18 @@ CRA is deprecated upstream. Vite gives ~10x faster cold start, near-instant HMR,
 ### Zustand + TanStack Query over Redux
 Most of what Redux is used for in apps this size is actually server-state (fetched data). TanStack Query handles that natively with caching, dedup, optimistic updates, and background refetch. Zustand handles the remaining bit (session, theme, UI flags) with zero boilerplate. See [`11-decisions/002-zustand-over-redux.md`](./11-decisions/002-zustand-over-redux.md).
 
-### MongoDB (not PostgreSQL)
-The data is social-graph shaped: small structured documents, frequent schema evolution as we add features like tags and reactions. Mongoose is mature, developer velocity is higher, and the target scale (~10k users per instance) is well within MongoDB's comfort zone. Local `mongod` and cloud Atlas differ only in one env var. See [`11-decisions/003-stay-nosql.md`](./11-decisions/003-stay-nosql.md).
+### Postgres + Drizzle (migrated from MongoDB, 2026-07-20)
+v1 shipped on MongoDB/Mongoose (rationale preserved in
+[`11-decisions/003-stay-nosql.md`](./11-decisions/003-stay-nosql.md), now superseded).
+Two pressures flipped the decision: the Lab's embedding workload wanted **pgvector**
+(personality/behavior snapshots are `vector(1024)` columns), and the counter/feed-score
+writes wanted real relational integrity. The migration kept the original 24-char
+ObjectId hex as `text` primary keys, so the API/client `id` contract never changed; the
+ETL was validated by row counts and embedding fidelity (10,844 rows into Neon). Design +
+plan: `superpowers/specs/2026-07-20-mongoose-to-neon-migration-design.md`.
 
 ### Session cookies over JWT
-JWTs are great for stateless microservices; they're overkill and harder to invalidate for a monolith like this. HttpOnly, SameSite=Lax, Secure cookies backed by `connect-mongo` give us revocation for free and a simpler threat model.
+JWTs are great for stateless microservices; they're overkill and harder to invalidate for a monolith like this. HttpOnly, Secure cookies backed by `connect-pg-simple` (a `session` table) give us revocation for free and a simpler threat model. Same-origin deploys use `SameSite=Lax`; the split Vercel/Railway deploy uses `SameSite=None`.
 
 ### CSS Modules over Tailwind or styled-components
 Tailwind fights the "quiet, restrained" aesthetic — utility soup makes every element look opinionated. styled-components has runtime cost and harder SSR stories. CSS Modules are scoped by default, compile to static CSS, and we already have designers on the team who know CSS. Design tokens live in a root `tokens.css`.
@@ -184,13 +200,13 @@ Non-negotiable at refactor time — after the rewrite, adding TS is expensive. S
 
 One codebase, three environments, switched entirely by env vars.
 
-| | Local dev | Cloud dev | Prod |
+| | Local dev | Tests | Prod |
 |---|---|---|---|
-| `NODE_ENV` | development | development | production |
-| `MONGODB_URI` | `mongodb://127.0.0.1:27017/swil_social` | Atlas cluster | Atlas cluster |
-| `REDIS_URL` | `redis://127.0.0.1:6379` (optional) | Upstash/managed | managed |
-| `CORS_ORIGINS` | `http://localhost:5947` | dev frontend URL | prod frontend URL |
-| `COOKIE_SECURE` | false | true | true |
+| `NODE_ENV` | development | test | production |
+| `DATABASE_URL` | local `swil_social_pg` | local `swil_test_pg` (vitest `globalSetup` migrates; `resetDb()` per test) | Neon (direct/unpooled endpoint) |
+| `REDIS_URL` | `redis://127.0.0.1:6379` (optional) | — | managed (optional) |
+| `CORS_ORIGINS` | `http://localhost:5947` | — | Vercel origins allowlist |
+| `COOKIE_SECURE` / `COOKIE_SAMESITE` | false / lax | — | true / none (cross-origin SPA) |
 
 No conditional logic reads `NODE_ENV` to change behavior beyond log verbosity and error detail. Everything else is a config value.
 

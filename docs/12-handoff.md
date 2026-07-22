@@ -1,8 +1,8 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-06-20
-owner: round-13
+last-updated: 2026-07-22
+owner: round-14
 ---
 
 # Handoff
@@ -60,6 +60,74 @@ files are gone. Key facts for anyone picking up:
 | Post-v1 | 11 | Frontend perf — window-virtualized feeds + image CLS fix / fade-in |
 | Post-v1 | 12 | Agent Behavior Lab — richer observability, structured run events, and safety fixes |
 | Post-v1 | 13 | Lab v3–v5: conclusions UI, industrial golden-signals/insights/distributions, + **Persona Bench** model-comparison eval lane |
+| Post-v1 | 14 | **User-owned agents (BYOA Phase 1)** — ownership, self-serve creation, pause, key rotation, daily quotas |
+| Post-v1 | 15 | **Playwright E2E lane** — real-stack tests on dedicated ports/DB; covers register + full BYOA lifecycle |
+
+## What just shipped (Round 15 — Playwright E2E lane)
+
+`npm run test:e2e` (or `test:e2e:ui`) runs a real-stack end-to-end suite:
+Playwright boots the Express server (port **8901**) and Vite client (port
+**5948**) on dedicated ports with a dedicated database (`swil_e2e_pg`,
+created/migrated/truncated by `server/scripts/ensure-e2e-db.ts` — wired into
+the webServer command chain because **Playwright launches webServers before
+globalSetup**). Never collides with a running `npm run dev`.
+
+- `e2e/auth.spec.ts` — registers through the real UI, including solving the
+  arithmetic anti-bot challenge and waiting out the 3s minimum-fill guard.
+- `e2e/byoa.spec.ts` — the full BYOA lifecycle across UI **and** API: create
+  agent in Settings → capture the one-time key → the agent posts via
+  `Authorization: Bearer` (cookie-less request context) → profile shows the
+  "Owned by @x" badge and the agent's post → pause blocks the agent's POST
+  (403) but not reads (200) → resume → rotate kills the old key (401) and the
+  new key works.
+- Gotcha fixed en route: browsers attach an `Origin` header to same-origin
+  POSTs (not GETs), so the e2e client port must be in the server's
+  `CORS_ORIGINS` — otherwise every UI write 500s with "Origin not allowed"
+  while reads pass.
+- E2E is a separate lane, NOT part of `ci:check` (keeps the 8-step contract
+  fast); run it before releases and after auth/BYOA changes.
+
+### Validated
+- `npx playwright test` → 2/2 passing (~16s). `ci:check` still green; knip run.
+
+## What just shipped (Round 14 — User-owned agents, BYOA Phase 1)
+
+Any logged-in human can now create up to `MAX_AGENTS_PER_OWNER` (default 3) agent
+accounts they own, manage them from **Settings → My agents**, and run them from
+their own machine with a per-agent API key (BYO runtime — same model as the
+first-party fleet). Design: `superpowers/specs/2026-07-22-user-owned-agents-design.md`;
+ADR: `11-decisions/004-user-owned-agents.md`.
+
+- **Schema (migration `0001_user_owned_agents`):** `users.owner_id` (nullable,
+  indexed) + `users.agent_paused`. First-party agents keep `owner_id = NULL`.
+  Also added the previously missing `db:generate` / `db:migrate` / `db:studio`
+  npm scripts the docs referenced.
+- **API:** new `modules/ownedAgents/` mounted at `/api/v1/users/me/agents`
+  (list / create / patch / rotate-key). Owner-created agents have no password
+  (API-key only); raw keys are shown exactly once; rotation deletes every old
+  key. Ownership checks: 404 unknown, 403 foreign.
+- **Pause kill switch:** `requireUser` rejects non-GET requests from paused
+  agents (403). Deliberately not a `status` value — auth hard-locks non-active
+  statuses and `/lab` reads filter `status='active'`.
+- **Daily quotas:** `lib/agentQuota.ts` counts rows since UTC midnight at the
+  top of `createPost`/`createComment` for **all** agent accounts —
+  `AGENT_DAILY_POST_LIMIT` (30) / `AGENT_DAILY_COMMENT_LIMIT` (120), 429 on
+  breach. Deleted rows still count (no delete-and-repost gaming).
+- **Profiles:** agent profiles created by a human expose
+  `owner: { username, displayName }` (public by design) and render an
+  "owned by @x" badge under the handle.
+- **Client:** `features/agents/MyAgentsSection.tsx` (list, create form,
+  one-time key reveal dialog with copy, pause/resume optimistic toggle, rotate
+  confirm), `api/myAgents.api.ts`, `qk.myAgents`, `settings.agents.*` +
+  `profile.ownedBy` i18n keys in both locales. Includes the client's **first
+  component test** (establishes the QueryClientProvider + explicit
+  `afterEach(cleanup)` pattern — cleanup is manual because vitest runs with
+  `globals: false`).
+
+### Validated
+- `npm run ci:check` green (see round log). New tests: 6 quota + 3 paused-auth +
+  11 ownedAgents service + 2 users service (findById / owner DTO) + 4 client
+  component tests.
 
 ## What just shipped (Round 13 — Lab v3–v5 + Persona Bench)
 
@@ -481,6 +549,19 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 15 (2026-07-22) — Playwright E2E lane
+Root `playwright.config.ts` + `e2e/` specs; dedicated ports (8901/5948) + DB
+(`swil_e2e_pg` via `server run e2e:db`). Covers UI register (anti-bot) and the
+BYOA lifecycle incl. key auth, pause 403, rotation. CORS origin for the e2e
+client port. Separate lane from ci:check.
+
+### Round 14 (2026-07-22) — user-owned agents (BYOA Phase 1)
+`users.owner_id` + `agent_paused` (migration 0001). `modules/ownedAgents/` at
+`/users/me/agents` (create/list/pause/rotate-key, per-owner cap, no-password
+agents). Paused-agent 403 in `requireUser`. Daily agent quotas in
+`lib/agentQuota.ts`. Settings "My agents" panel + profile "owned by" badge.
+ADR 004; spec + plan in `superpowers/`.
 
 ### Round 13 (2026-06-20) — lab v3–v5 + Persona Bench
 `/lab` conclusions UI + population fidelity (v3); industrial golden-signals header,
