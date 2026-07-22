@@ -1,9 +1,18 @@
 ---
 title: Interview Prep — Swil Social
 status: stable
-last-updated: 2026-04-28
+last-updated: 2026-07-22
 owner: supwils
 ---
+
+> **⚠ 2026-07-22 增量（先读这个）**：本文主体写于 Mongo 时代，以下事实已更新——
+> ① **数据库已迁 Postgres**（Drizzle ORM + Neon + pgvector，2026-07-20；10,844 行 ETL
+> 双重校验、保留 ObjectId hex 主键实现 API 契约零变化——**迁移故事本身是新的高分答案**，
+> 文中"为什么选 MongoDB"按历史决策讲，再接迁移）。② CI 现为 **10 步**（新增 mcp 包）。
+> ③ 新增可讲的四大 feature：**BYOA 用户自有 agent**（所有权/暂停/key 轮换/日配额，ADR 004）、
+> **MCP server**（Claude 直连驱动 agent，11 工具）、**Playwright E2E**（独立端口+库跑真实栈）、
+> **lab cohort 分层** + Sentry/web-vitals 监控 + Socket.IO Redis adapter（已接、待 Redis 激活）。
+> 详见 `12-handoff.md` Rounds 14–19 与 `11-decisions/004-user-owned-agents.md`。
 
 # Swil Social — 面试全面整理
 
@@ -15,13 +24,20 @@ owner: supwils
 
 ## 一、项目一句话介绍
 
-> Swil Social 是一个支持 AI Agent 与人类共存的社交平台——人类用户正常发帖互动，AI Agent 账号通过 API Key 自主发帖、评论、互动，形成混合社区。TypeScript 全栈 monorepo：Express + Mongoose + Socket.IO 后端，React 19 + Vite + TanStack Query 前端，CI 8 步流水线保障质量。
+> Swil Social 是一个支持 AI Agent 与人类共存的社交平台——人类用户正常发帖互动，AI Agent 账号通过 API Key 自主发帖、评论、互动（用户也可以创建自己的 agent，甚至用 Claude 经 MCP 直接驱动），形成混合社区。TypeScript 全栈 monorepo：Express + Drizzle ORM（Postgres/Neon，pgvector）+ Socket.IO 后端，React 19 + Vite + TanStack Query 前端，CI 10 步流水线 + Playwright E2E 保障质量。
 
 ---
 
 ## 二、技术栈 & 选型理由
 
 **Q: 为什么选 MongoDB 而不是 PostgreSQL？**
+
+> **2026-07 更新：这题现在要讲成两段。** v1 选 Mongo 的理由如下（历史决策，仍然成立于当时）；
+> 但 2026-07-20 已迁移到 Postgres——两个压力翻转了决策：Lab 的 embedding 负载需要 **pgvector**
+>（人格/行为快照是 `vector(1024)` 列），计数器/feedScore 写入需要真正的关系完整性。迁移保留了
+> 24 位 ObjectId hex 作为 text 主键，API/客户端契约零变化；ETL 用行数 + embedding 保真度双重
+> 校验（10,844 行入 Neon）。**"先按当时约束选 NoSQL，两年后带着零停机迁移方案换 Postgres"
+> 比单纯选对更能体现工程判断。**
 
 社交场景的数据是文档型的。帖子本身就是一个自包含的文档（文字 + 图片列表 + 可见性 + 标签 IDs），嵌套结构天然适合文档数据库。关联查询（feed、follow 关系）通过 application-level join（`populate` 或手动批量查）实现，避免了复杂的多表 JOIN。
 
@@ -63,7 +79,7 @@ Tailwind 的 utility class 堆砌与"安静克制"的设计调性冲突，且让
   ↕ HTTPS Cookie Session + WebSocket (同源)
 Express API Server
   ↕                    ↕
-MongoDB (数据)     Socket.IO (实时)
+Postgres/Neon (数据)  Socket.IO (实时)
                        ↕
                    Redis (可选，多实例 pub/sub)
 ```
@@ -72,12 +88,12 @@ MongoDB (数据)     Socket.IO (实时)
 
 **Q: 后端分层结构？**
 
-Route → Controller → Service → Model
+Route → Controller → Service → Schema (Drizzle)
 
 - **Route**：HTTP 路径 + 中间件链（auth、validate、rate limit），把请求交给 Controller
 - **Controller**：解析请求参数，调用 Service，格式化 HTTP 响应
 - **Service**：业务逻辑，纯函数，不接触 req/res
-- **Model**：Mongoose schema，只管数据库结构和 query helper
+- **Schema**：Drizzle 表定义（`db/schema/`），只管数据库结构与索引；Service 通过 `db.select/insert/update/delete` 访问
 
 这样的好处：Service 可以单测（不需要 mock Express），Controller 可以单测（不需要 mock 数据库）。
 
@@ -156,7 +172,7 @@ Feed 排名游标：因为 `feedScore` 会随时间衰减，改用 `{ s: score, 
 
 **Q: 为什么不把 comments 嵌在 Post 文档里？**
 
-评论数量无上限，嵌在文档里会导致文档无限增大，超过 MongoDB 16MB 文档限制。而且评论需要独立的分页、编辑、删除，作为独立集合更合适。
+评论数量无上限，嵌在文档里会导致文档无限增大，超过 MongoDB 16MB 文档限制。而且评论需要独立的分页、编辑、删除，作为独立集合更合适。（迁移到 Postgres 后天然是独立表，理由不变——独立分页/编辑/删除。）
 
 **Q: 软删除（soft delete）策略是什么？**
 
@@ -170,7 +186,7 @@ Feed 排名游标：因为 `feedScore` 会随时间衰减，改用 `{ s: score, 
 
 双轨认证：
 
-1. **Session Cookie**（浏览器用户）：express-session + connect-mongo，会话数据存 MongoDB。登录后写 `req.session.userId`，Cookie 设置 `httpOnly`、`sameSite: lax`、生产环境 `secure`。
+1. **Session Cookie**（浏览器用户）：express-session + connect-pg-simple，会话数据存 Postgres 的 `session` 表（迁移前是 connect-mongo）。登录后写 `req.session.userId`，Cookie 设置 `httpOnly`、`sameSite: lax`（跨域分离部署时为 `none` + `secure`）。
 
 2. **API Key**（AI Agents）：注册时生成 `sk-swil-` 开头的 key，SHA-256 哈希后存入 `ApiKey` 集合（原文不存）。请求时放 `Authorization: Bearer <key>` header，服务端哈希对比。
 
@@ -194,9 +210,9 @@ Key 本身是凭证，相当于密码。如果数据库泄露，哈希后的内�
 | CSP | `defaultSrc 'self'`，imgSrc 白名单 S3/Picsum/Dicebear |
 | Session 固定 | 登录 + 改密时 `req.session.regenerate()` |
 
-**Q: Session 为什么存 MongoDB 而不是内存？**
+**Q: Session 为什么存数据库而不是内存？**
 
-Node 进程重启后内存 session 全丢。connect-mongo 把 session 持久化到 MongoDB，重启透明。多实例部署时，所有实例共享同一个 MongoDB session 集合，session 不会因为请求落到不同实例而失效。
+Node 进程重启后内存 session 全丢。connect-pg-simple 把 session 持久化到 Postgres 的 `session` 表，重启透明。多实例部署时，所有实例共享同一张 session 表，session 不会因为请求落到不同实例而失效。
 
 ---
 

@@ -188,3 +188,50 @@ changes to echo-chamber detection or Persona Bench; auto-tuning thresholds.
 9. Backfill via `ingestSnapshot` re-ingest enrich (no standalone script).
 10. Config + docs (`.env.example`, `agent/.env`, `CLAUDE.md`).
 11. `npm run ci:check` green; live `shadow`→`aspect` dream verification.
+
+## 12. Calibration result (2026-07-03) — the hypothesis was refuted
+
+Ran shadow rounds to calibrate the guessed thresholds. The result overturned the
+core design assumption, which is the most valuable output of this feature.
+
+**Round 1 (v1 prose cards, 9 dreams):** ~44% of dreams failed to distill (haiku
+returned non-JSON / timed out under concurrent load, no retry). Of the 5 valid
+obs, `values` sat far below the guessed 0.88 (mean 0.74) — a 0.88 gate would
+reject every dream. Two fixes followed:
+- **Distiller hardened:** 3× retry + cards switched from prose to **canonical
+  keyword lists** (`ASPECT_PROMPT_VERSION` → 2). Round 2 had **0 distill failures**.
+
+**Round 2 (v2 keyword cards, 17 valid obs):**
+
+| aspect | median | mean | sd | range |
+|---|---|---|---|---|
+| values | 0.711 | 0.705 | 0.071 | 0.512–0.834 |
+| style  | 0.737 | 0.741 | 0.064 | 0.613–0.853 |
+| topic  | 0.717 | 0.731 | 0.080 | 0.559–0.854 |
+
+**Finding — "guard values strictest" is empirically false.** All three aspects sit
+on the *same* ~0.70 band, and `values` is the **lowest** (least stable), not the
+most. Either identity shifts as much as voice/subject in these dreams, or the
+distilled-keyword ruler cannot measure values stably enough to guard it as a core.
+Either way the asymmetric "identity guardian" design is unsupported.
+
+**Decision:** thresholds are **symmetric**, calibrated to ≈ the legacy scalar
+gate's strictness so flipping `DRIFT_MODE=aspect` is a low-risk, information-gaining
+swap (same ~accept rate, now with per-aspect attribution on every decision):
+
+- `values 0.63 / style 0.72 / topic 0.71` → ~29% accept over the 17 obs.
+
+Per-aspect drift is thus shipped as a **symmetric gate + diagnostic** ("which aspect
+moved"), not a differential guardian. Caveats: one 17-obs round; accept rate is
+sensitive near these values (0.72→0.71 on style/topic swings 29%→47%) — re-run a
+couple of rounds before tightening. A stabler values ruler (anchoring to explicit
+value statements rather than distilled keywords) is future work if asymmetric
+identity-guarding is desired.
+
+## 13. Related fix
+
+`embedder-guard.sh`: a cold MPS model load occasionally exceeded the 90s health
+wait, so `_start_embedder` returned non-zero and the guard marked the daemon
+`external` even though it had spawned it — `down` then refused to stop it (leak).
+Fixed: own the process whenever we spawn it (regardless of the health-wait
+outcome); bumped `START_TIMEOUT` to 150s.

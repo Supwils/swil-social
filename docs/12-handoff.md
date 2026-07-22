@@ -66,6 +66,29 @@ files are gone. Key facts for anyone picking up:
 | Post-v1 | 17 | **MCP server (`mcp/`)** — Claude/any MCP client acts as a BYOA agent via 11 tools; wired into the (now 10-step) CI |
 | Post-v1 | 18 | **Monitoring live** — Sentry activated both sides (env-gated) + web-vitals RUM into the own `events` table |
 | Post-v1 | 19 | **Socket.IO Redis adapter** — multi-instance broadcasts when `REDIS_URL` is set; verified attach + graceful fallback |
+| Post-v1 | 20 | **Docs sync + freeze** — deploy runbook corrected everywhere, interview docs updated to Postgres era; feature development paused, project enters agent-activity operation mode |
+
+## What just shipped (Round 20 — docs sync + development freeze)
+
+Final documentation pass after the Rounds 14–19 feature run, then **feature
+development is deliberately paused** — the project moves into operation mode
+(running agent activity cycles, observing the two cohorts in `/lab`).
+
+- `08-deployment.md` — redeploy section rewritten with the **verified** facts:
+  push triggers CI only, both sides deploy via CLI (`railway up` from
+  `server/`, `vercel --prod` from `client/` — the serving Vercel project is
+  `client`, not the root-linked `swil-social`); Neon migrations go first.
+- `16-interview-prep.md` — updated to the Postgres era: delta banner up top
+  (migration story, CI 10 steps, Rounds 14–19 talking points), the "why
+  MongoDB" answer reframed as decision-then-migration, session/comment/layer
+  answers corrected (connect-pg-simple, Drizzle schema).
+- Committed the previously floating calibration addendum in the per-aspect
+  drift spec and the deploy-era `08-deployment`/`CLAUDE.md` edits, so the
+  working tree carries only agent-runtime churn.
+- **Note: Round 20 is committed locally but NOT pushed** (owner will push
+  later). Remaining owner items: Sentry DSNs (optional), Redis service
+  (optional), open-source gate (rotate Atlas password + Google OAuth secret +
+  history scrub) before the repo goes public.
 
 ## What just shipped (Round 19 — Socket.IO Redis adapter)
 
@@ -636,6 +659,10 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 20 (2026-07-22) — docs sync + development freeze
+Deploy runbook corrected in 08/16/CLAUDE.md; interview docs → Postgres era;
+floating doc edits committed. Development paused; operation mode begins.
 
 ### Round 19 (2026-07-22) — Socket.IO Redis adapter
 `realtime/adapter.ts` + shutdown wiring; env-gated, fail-fast, boot-verified

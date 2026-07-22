@@ -14,6 +14,38 @@ hardening checklist see [`06-security.md`](./06-security.md).
 > `docker-compose.yml`, but the realistic deploy paths below run plain Node. The container path is
 > kept for documentation and future k8s/ECS, not as the default.
 
+## Live deployment (as of 2026-07-21)
+
+The app is deployed **split frontend/backend**, with Postgres on Neon:
+
+| Piece | Where | URL |
+|---|---|---|
+| Frontend (Vite SPA) | Vercel (project **`client`** — linked from `client/.vercel`; the root-linked `swil-social` project serves nothing) | https://swilsocial.vercel.app |
+| Backend (Express + Socket.IO) | Railway (`swil-social-api`, uploads `server/` as build root, RAILPACK) | https://swil-social-api-production.up.railway.app |
+| Database | Neon Postgres (Vercel Marketplace, pgvector) | — |
+| Images | AWS S3 + CloudFront | — |
+
+**Wiring**
+- Client build bakes in `VITE_API_BASE` (`<backend>/api/v1`) and `VITE_SOCKET_URL` (`<backend>`).
+- Cross-origin: backend `CORS_ORIGINS` allowlists the Vercel origins; session cookie is
+  `SameSite=None; Secure` (`COOKIE_SAMESITE=none`, `COOKIE_SECURE=true`) so it survives the
+  cross-site SPA→API round trip.
+- Backend `DATABASE_URL` = Neon **direct/unpooled** string (persistent server → small pool; the
+  pooled endpoint is for serverless). Schema applied with `npm --prefix server run db:migrate`;
+  data seeded via the one-off `scripts/migrate-mongo-to-pg.ts`.
+- CI (`.github/workflows/ci.yml`) runs the server tests against a `pgvector/pgvector:pg16` service.
+
+**Redeploy — CLI-manual, verified 2026-07-22: pushing to `main` triggers GitHub CI only;
+NEITHER side auto-deploys.** The runbook, in order:
+
+1. If there is a new migration, apply it to Neon **first** (additive columns are safe for
+   the running old code, but new code against an old schema breaks — Drizzle selects
+   every column explicitly): `DATABASE_URL=<DATABASE_URL_UNPOOLED> npm --prefix server run db:migrate`.
+2. Backend: `cd server && railway up --detach` (needs `railway link` to `swil-social-api` once).
+3. Frontend: `cd client && npx vercel --prod` (aliases to swilsocial.vercel.app).
+4. Verify: backend `/health` uptime resets; `railway deployment list --json` shows SUCCESS;
+   frontend bundle contains a string from the new build.
+
 ## What the runtime needs
 
 | Dependency | Notes |
