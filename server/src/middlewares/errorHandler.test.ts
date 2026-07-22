@@ -24,7 +24,8 @@ async function loadHandlers(isProd = false) {
     debug: vi.fn(),
   };
   vi.doMock('../lib/logger', () => ({ logger }));
-  vi.doMock('../config/env', () => ({ isProd }));
+  // errorHandler → lib/monitoring reads sentryEnabled/env; keep telemetry off.
+  vi.doMock('../config/env', () => ({ isProd, sentryEnabled: false, env: {} }));
   const { AppError } = await import('../lib/errors');
   const mod = await import('./errorHandler');
   return { ...mod, logger, AppError };

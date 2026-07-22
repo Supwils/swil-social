@@ -1,39 +1,33 @@
 /**
- * Monitoring scaffolding (Sentry-shaped).
+ * Monitoring (Sentry).
  *
- * Intentionally vendor-agnostic. When `SENTRY_DSN` is set we dynamic-import
- * `@sentry/node` and initialize; otherwise we no-op and the app runs just
- * fine. This keeps the dependency optional — you can swap in Axiom / Better
- * Stack / OpenTelemetry by replacing the guts of `initMonitoring`.
+ * Env-gated: when `SENTRY_DSN` is unset every function here is a no-op and
+ * the app runs with zero telemetry. `@sentry/node` is dynamic-imported so it
+ * never sits on the cold-start path when disabled. Vendor swap (Axiom /
+ * Better Stack / OpenTelemetry) happens in this file only.
  */
 import { env, sentryEnabled } from '../config/env';
 import { logger } from './logger';
 
+type SentryModule = typeof import('@sentry/node');
+
 let initialized = false;
+let sentry: SentryModule | null = null;
 
 export async function initMonitoring(): Promise<void> {
   if (initialized || !sentryEnabled) return;
   initialized = true;
 
   try {
-    // Lazy import so we don't require the package to be installed when unused.
-    // @ts-expect-error — optional peer dep; install `@sentry/node` to enable.
-    const Sentry = (await import('@sentry/node').catch(() => null)) as
-      | { init: (opts: Record<string, unknown>) => void; captureException: (err: unknown) => void }
-      | null;
-    if (!Sentry) {
-      logger.warn(
-        'SENTRY_DSN is set but @sentry/node is not installed — skipping. Run `npm i @sentry/node` to enable.',
-      );
-      return;
-    }
-    Sentry.init({
+    sentry = await import('@sentry/node');
+    sentry.init({
       dsn: env.SENTRY_DSN,
       environment: env.NODE_ENV,
       tracesSampleRate: env.SENTRY_TRACES_SAMPLE_RATE,
     });
     logger.info({ env: env.NODE_ENV }, 'sentry initialized');
   } catch (err) {
+    sentry = null;
     logger.error({ err }, 'sentry init failed');
   }
 }
@@ -45,11 +39,8 @@ export async function initMonitoring(): Promise<void> {
 export async function captureException(err: unknown): Promise<void> {
   if (!sentryEnabled) return;
   try {
-    // @ts-expect-error — optional peer dep.
-    const Sentry = (await import('@sentry/node').catch(() => null)) as
-      | { captureException: (err: unknown) => void }
-      | null;
-    Sentry?.captureException(err);
+    if (!sentry) await initMonitoring();
+    sentry?.captureException(err);
   } catch {
     /* no-op */
   }

@@ -1,6 +1,7 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { AppError } from '../lib/errors';
 import { logger } from '../lib/logger';
+import { captureException } from '../lib/monitoring';
 import { isProd } from '../config/env';
 
 export const notFoundHandler: RequestHandler = (req, _res, next) => {
@@ -15,6 +16,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   if (err instanceof AppError) {
     if (err.status >= 500) {
       logger.error({ err, requestId }, 'handled 5xx');
+      void captureException(err);
     } else if (err.status >= 400 && err.status < 500) {
       logger.debug({ err: { code: err.code, message: err.message }, requestId }, 'client error');
     }
@@ -30,6 +32,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   }
 
   logger.error({ err, requestId }, 'unhandled error');
+  void captureException(err);
   res.status(500).json({
     error: {
       code: 'INTERNAL',

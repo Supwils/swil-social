@@ -64,6 +64,32 @@ files are gone. Key facts for anyone picking up:
 | Post-v1 | 15 | **Playwright E2E lane** — real-stack tests on dedicated ports/DB; covers register + full BYOA lifecycle |
 | Post-v1 | 16 | **Lab cohort split** — first-party vs community (BYOA) vs human across `/lab` list, overview, and grid filter |
 | Post-v1 | 17 | **MCP server (`mcp/`)** — Claude/any MCP client acts as a BYOA agent via 11 tools; wired into the (now 10-step) CI |
+| Post-v1 | 18 | **Monitoring live** — Sentry activated both sides (env-gated) + web-vitals RUM into the own `events` table |
+
+## What just shipped (Round 18 — monitoring: Sentry + web-vitals RUM)
+
+The Round-8 scaffolding is now real, still fully env-gated:
+
+- **Server:** `@sentry/node` installed; `lib/monitoring.ts` rewritten from the
+  "@ts-expect-error optional dep" shape to a typed dynamic import. New capture
+  point: `errorHandler` reports handled 5xx AppErrors and all unhandled
+  errors (crash paths in `server.ts` were already wired). With no
+  `SENTRY_DSN`, every path is a silent no-op (unit-tested).
+- **Client:** `@sentry/react` installed; `initClientMonitoring` initializes it
+  only when `VITE_SENTRY_DSN` is set **at build time** — without it Vite's
+  dead-code elimination strips the Sentry import entirely (zero bytes in the
+  default bundle). Enabling client Sentry therefore requires setting the var
+  in Vercel and rebuilding.
+- **Web-vitals RUM (always on):** CLS/LCP/INP/FCP/TTFB flow through the
+  existing `track()` analytics pipeline into our own `events` table — field
+  performance data with no external service. CLS stored ×1000 as an integer.
+  Lazy chunk, 3.4 KB gzip.
+- **To turn Sentry on:** create a Sentry project, set `SENTRY_DSN` on Railway
+  (restart picks it up) and `VITE_SENTRY_DSN` on Vercel (needs a redeploy).
+
+### Validated
+- `ci:check` 10/10 green; 4 new monitoring tests (2 server no-op, 2 client
+  web-vitals reporting incl. CLS scaling); knip clean on the new deps.
 
 ## What just shipped (Round 17 — MCP server)
 
@@ -591,6 +617,11 @@ Four UX features: comment edit/delete UI (3-dot menu, inline edit, toast confirm
 
 ### Round 11 (2026-05-29) — post-v1 frontend perf
 Window-virtualized feeds (`VirtualPostList` + `@tanstack/react-virtual`) on global/following/tag list views — flat DOM node count, dynamic-height measurement, virtualizer-driven infinite fetch; grid view unchanged. Image CLS fix in `PostCardImages` — uses the server's stored `width`/`height` to reserve the box + `aspect-ratio` for single images, plus a fade-in on load with reduced-motion fallback. Docs sync + de-dup pass across `12-handoff`, `15-performance-optimizations`, `10-roadmap`, `08-deployment`, `01-architecture`. All-green `ci:check`.
+
+### Round 18 (2026-07-22) — monitoring live
+Sentry activated server (`@sentry/node`, 5xx + crash capture) and client
+(`@sentry/react`, build-time gated) + always-on web-vitals RUM into `events`.
+Env docs + tests; DSNs not yet set (owner action).
 
 ### Round 17 (2026-07-22) — MCP server
 `mcp/` package: stdio MCP server, 11 tools, per-agent key auth; in-memory
