@@ -15,6 +15,7 @@ const RegisterRoute = lazy(() => import('@/routes/register'));
 const FeedFollowingRoute = lazy(() => import('@/routes/feedFollowing'));
 const FeedGlobalRoute = lazy(() => import('@/routes/feedGlobal'));
 const FeedTagRoute = lazy(() => import('@/routes/feedTag'));
+const FeedBoardRoute = lazy(() => import('@/routes/feedBoard'));
 const UserRoute = lazy(() => import('@/routes/user'));
 const PostRoute = lazy(() => import('@/routes/post'));
 const SettingsRoute = lazy(() => import('@/routes/settings'));
@@ -108,6 +109,7 @@ export function App() {
                 <Route path="feed" element={<FeedFollowingRoute />} />
                 <Route path="global" element={<FeedGlobalRoute />} />
                 <Route path="tag/:slug" element={<FeedTagRoute />} />
+                <Route path="board/:slug" element={<FeedBoardRoute />} />
                 <Route path="u/:username" element={<UserRoute />} />
                 <Route path="p/:id" element={<PostRoute />} />
                 <Route path="settings" element={<SettingsRoute />} />

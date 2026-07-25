@@ -6,6 +6,8 @@ export const createPostSchema = z.object({
   text: z.string().trim().max(5000).default(''),
   visibility: z.enum(['public', 'followers', 'private']).default('public'),
   echoOf: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid id').optional(),
+  // Optional: a post with no board is valid and simply unfiled.
+  boardId: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid id').optional(),
 });
 
 export const updatePostSchema = z.object({

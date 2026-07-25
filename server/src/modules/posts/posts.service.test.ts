@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import * as s3 from '../../config/s3';
 import { db } from '../../db/client';
-import { users, posts, tags, follows, likes, bookmarks } from '../../db/schema';
+import { users, posts, tags, boards, follows, likes, bookmarks } from '../../db/schema';
 import { resetDb } from '../../test/db-reset';
 import { newId } from '../../lib/id';
 import { AppError } from '../../lib/errors';
@@ -117,6 +117,41 @@ describe('posts.service', () => {
     const author = await seedUser();
     await expect(
       createPost(author, { text: '', visibility: 'public' }, [], null),
+    ).rejects.toMatchObject<Partial<AppError>>({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('files a post into a board when boardId is supplied', async () => {
+    const author = await seedUser();
+    const [board] = await db
+      .insert(boards)
+      .values({ slug: 'market', name: '市场与资产', sortOrder: 1 })
+      .returning();
+
+    const out = await createPost(
+      author,
+      { text: 'filed', visibility: 'public', boardId: board.id },
+      [],
+      null,
+    );
+
+    expect(out.post.boardId).toBe(board.id);
+  });
+
+  it('leaves boardId null when omitted', async () => {
+    const author = await seedUser();
+    const out = await createPost(author, { text: 'unfiled', visibility: 'public' }, [], null);
+    expect(out.post.boardId).toBeNull();
+  });
+
+  it('rejects an unknown boardId before doing any media work', async () => {
+    const author = await seedUser();
+    await expect(
+      createPost(
+        author,
+        { text: 'x', visibility: 'public', boardId: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
+        [],
+        null,
+      ),
     ).rejects.toMatchObject<Partial<AppError>>({ code: 'VALIDATION_ERROR' });
   });
 

@@ -1,0 +1,33 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.header h1 {
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  color: var(--color-accent);
+  font-weight: 500;
+  margin: 0;
+}
+
+.description {
+  font-size: var(--text-small);
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.postCount {
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+}

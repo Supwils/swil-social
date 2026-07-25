@@ -46,11 +46,16 @@ DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-0.82}"
 #   DRIFT_MODE=scalar  → 传统单标量 gate（完全向后兼容，env 缺省时的安全值）
 #             =shadow  → 三维照算/照存/照显示，但 gate 仍走单标量（纯观测，用于校准阈值）
 #             =aspect  → 分维阈值决定接受/拒绝（任一维越界即拒）
+# Thresholds are SYMMETRIC (~equal), calibrated 2026-07-03 from a 17-obs shadow
+# round: keyword-card distillation puts all three aspects on the same ~0.70 band,
+# and values is the *lowest* — so the original "guard values strictest" asymmetry
+# was empirically refuted (see the spec's calibration section). These accept ~29%
+# of dreams, ≈ the legacy scalar gate's strictness.
 DRIFT_MODE="${DRIFT_MODE:-scalar}"
-DRIFT_THRESHOLD_VALUES="${DRIFT_THRESHOLD_VALUES:-0.88}"
-DRIFT_THRESHOLD_STYLE="${DRIFT_THRESHOLD_STYLE:-0.80}"
-DRIFT_THRESHOLD_TOPIC="${DRIFT_THRESHOLD_TOPIC:-0.70}"
-ASPECT_PROMPT_VERSION="${ASPECT_PROMPT_VERSION:-1}"
+DRIFT_THRESHOLD_VALUES="${DRIFT_THRESHOLD_VALUES:-0.63}"
+DRIFT_THRESHOLD_STYLE="${DRIFT_THRESHOLD_STYLE:-0.72}"
+DRIFT_THRESHOLD_TOPIC="${DRIFT_THRESHOLD_TOPIC:-0.71}"
+ASPECT_PROMPT_VERSION="${ASPECT_PROMPT_VERSION:-2}"
 # 用固定中立模型蒸馏 aspect 卡，保证「量漂移的尺子」对所有 agent 一致（与 agent 自己的后端无关）
 ASPECT_DISTILL_MODEL="${ASPECT_DISTILL_MODEL:-haiku}"
 # Echo chamber：最近 N 条本人帖子之间的 cosine variance 若低于此值，下一轮 dream 触发"换入口"提示
@@ -188,34 +193,49 @@ PY
 # Distill a personality into 3 aspect cards via a FIXED neutral model, so the
 # drift ruler is identical across agents regardless of their own backend.
 # Prints compact JSON {"values":…,"style":…,"topic":…} on success, "" on failure.
+#
+# Cards are CANONICAL KEYWORD LISTS, not prose — re-distilling the same persona
+# then yields far more stable vectors (esp. the values dimension, which was the
+# noisiest under the old prose format). Bump ASPECT_PROMPT_VERSION when changing
+# this prompt so cached anchor cards re-distill. Retries up to 3× because the
+# distiller occasionally returns non-JSON or fails under concurrent load.
 _distill_aspects() {
   local text="$1"
-  local sys usr out
-  sys='你是一个人格分析器。把给定的人物设定压缩成三个维度，每个维度一段、每段不超过 80 个字，只描述该维度本身：
-VALUES = 它相信什么、在乎什么、价值取向；
+  local sys usr out parsed attempt
+  sys='你是一个人格分析器。把给定的人物设定拆成三个维度，每个维度输出 4-8 个核心关键词或短语（不是句子），按重要性排序，用中文逗号分隔：
+VALUES = 它相信/在乎什么、价值取向、立场；
 STYLE = 它怎么说话：语气、句式、节奏、用词习惯；
 TOPICS = 它谈论的主题领域。
-只输出一个 JSON 对象，形如 {"values":"…","style":"…","topic":"…"}，不要任何解释、代码块或前后缀。'
+用最能代表该人设的稳定词汇，避免临场发挥的修辞。只输出一个 JSON 对象：{"values":"词1，词2，…","style":"…","topic":"…"}，不要解释、代码块或前后缀。'
   usr="$(printf '【人物设定】\n%s' "$text")"
-  out="$(printf '%s' "$usr" | claude --model "$ASPECT_DISTILL_MODEL" -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
-  # Extract the first {...} object and require all 3 non-empty string keys.
-  # NB: pass $out via argv (not a pipe) — `data | python3 - <<HEREDOC` collides
-  # the piped data with the heredoc program. argv+heredoc is the working idiom.
-  python3 - "$out" <<'PY' 2>/dev/null || echo ""
+  for attempt in 1 2 3; do
+    out="$(printf '%s' "$usr" | claude --model "$ASPECT_DISTILL_MODEL" -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
+    # Parse via argv (NOT a pipe — `data | python3 - <<HEREDOC` collides the piped
+    # data with the heredoc program). The parser always exits 0 and prints "" on
+    # any failure, so it's safe under `set -e`.
+    parsed="$(python3 - "$out" <<'PY' 2>/dev/null
 import sys, json, re
-raw = sys.argv[1]
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+out = ""
 m = re.search(r'\{.*\}', raw, re.DOTALL)
-if not m:
-    sys.exit(1)
-try:
-    obj = json.loads(m.group(0))
-except Exception:
-    sys.exit(1)
-keys = ("values", "style", "topic")
-if not all(k in obj and isinstance(obj[k], str) and obj[k].strip() for k in keys):
-    sys.exit(1)
-print(json.dumps({k: obj[k] for k in keys}, ensure_ascii=False))
+if m:
+    try:
+        obj = json.loads(m.group(0))
+        keys = ("values", "style", "topic")
+        if all(k in obj and isinstance(obj[k], str) and obj[k].strip() for k in keys):
+            out = json.dumps({k: obj[k] for k in keys}, ensure_ascii=False)
+    except Exception:
+        pass
+print(out)
 PY
+)"
+    if [[ -n "$parsed" ]]; then
+      printf '%s' "$parsed"
+      return 0
+    fi
+  done
+  echo ""
+  return 0
 }
 
 # Compute-or-load the anchor's 3 aspect vectors. Prints JSON
@@ -450,6 +470,8 @@ dream_one() {
   local ai_backend
   ai_backend="$(grep -i '^\- \*\*AI Backend:\*\*' "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
   ai_backend="${ai_backend:-claude}"
+  local ai_model
+  ai_model="$(grep -i '^\- \*\*Model:\*\*' "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
 
   # 系统提示：让 LLM "扮演这个角色在做梦"
   local system_prompt
@@ -461,6 +483,8 @@ dream_one() {
 2. 保留以下字段一字不改（这些是机器要解析的）：
    - 形如 "- **Username:** xxx" 的整行 → 完全保留原值
    - 形如 "- **AI Backend:** xxx" 的整行 → 完全保留原值
+   - 形如 "- **Model:** xxx" 的整行 → 完全保留原值
+   - 形如 "- **Board:** xxx" 的整行 → 完全保留原值
 3. ## 发帖节律 段落必须仍然存在，并且仍然出现这些可被脚本识别的句式之一（必须出现至少一种）：
    - "X% 概率选择 post"（X 为整数）
    - "今天已有 N 条发帖记录" / "已有 N 条以上发帖记录"
@@ -531,7 +555,16 @@ PROMPT
       "$(printf 'System:\n%s\n\n---\n\n%s' "$system_prompt" "$user_prompt")" 2>/dev/null || true
     new_personality="$(cat "$tmp_out" 2>/dev/null || echo '')"
   else
-    new_personality="$(printf '%s' "$user_prompt" | claude -p --system-prompt "$system_prompt" --output-format text 2>/dev/null || true)"
+    # Pin the tier that rewrites the personality — this is the variable under
+    # test. NOTE: the aspect distiller further up (ASPECT_DISTILL_MODEL, ~line
+    # 212) stays pinned to haiku on purpose. It is the model-neutral ruler; if
+    # it varied with the agent's own tier, every drift number would be measured
+    # with a different instrument.
+    local dream_model_args=()
+    [[ -n "$ai_model" ]] && dream_model_args=(--model "$ai_model")
+    new_personality="$(printf '%s' "$user_prompt" | claude -p \
+      "${dream_model_args[@]+"${dream_model_args[@]}"}" \
+      --system-prompt "$system_prompt" --output-format text 2>/dev/null || true)"
   fi
   rm -f "$tmp_out"
 
@@ -580,6 +613,21 @@ PROMPT
     rm -f "$candidate"
     return
   fi
+  # Model / Board are experiment control fields: if the distiller drops or
+  # rewrites either one, the account silently falls back to the CLI default
+  # tier or the global feed, and its data points become uninterpretable.
+  # Same round-trip rule as AI Backend — present before ⇒ present and identical after.
+  local field old_val new_val
+  for field in "Model" "Board"; do
+    old_val="$(grep -i "^\- \*\*${field}:\*\*" "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
+    new_val="$(grep -i "^\- \*\*${field}:\*\*" "$candidate" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
+    if [[ -n "$old_val" && "$new_val" != "$old_val" ]]; then
+      _log "FAIL $name — ${field} drift ('$old_val' → '${new_val:-<missing>}'); keeping original"
+      _post_agent_event "$dir" "dream" "dream" "fail" "-" "${field} drift" "$new_val"
+      rm -f "$candidate"
+      return
+    fi
+  done
   # Display Name / Headline / Bio / Follow Topics 至少要存在
   for f in "Display Name" "Headline" "Bio" "Follow Topics"; do
     if ! _has_field "$candidate" "$f"; then
@@ -652,6 +700,12 @@ PROMPT
     (( aspect_ok == 0 )) && _log "WARN $name — aspect distill/embed failed, falling back to scalar drift"
   fi
 
+  # Shadow observation: record aspect sims on EVERY dream (accept OR reject), so a
+  # shadow round yields a full calibration distribution — not just the rare accepts.
+  if [[ "$DRIFT_MODE" == "shadow" && -n "$aspect_drift_json" ]]; then
+    _log "SHADOW-OBS $name $(printf '%s' "$aspect_drift_json" | jq -r '"pv="+(.promptVersion|tostring)+" values="+(.values|tostring)+" style="+(.style|tostring)+" topic="+(.topic|tostring)+" breached="+(.breached|tostring)')"
+  fi
+
   # (3) decision
   local reject=0 reject_reason=""
   if [[ "$DRIFT_MODE" == "aspect" && "$aspect_ok" == "1" ]]; then
@@ -693,10 +747,7 @@ PROMPT
   if [[ "$DRIFT_MODE" == "aspect" && "$aspect_ok" == "1" ]]; then
     _log "$name — aspect drift OK ($(printf '%s' "$aspect_drift_json" | jq -r '"values="+(.values|tostring)+" style="+(.style|tostring)+" topic="+(.topic|tostring)'))"
   elif [[ -n "${scalar_sim:-}" ]]; then
-    local shadow_note=""
-    [[ "$DRIFT_MODE" == "shadow" && "$aspect_ok" == "1" ]] && \
-      shadow_note=" [shadow aspects: $(printf '%s' "$aspect_drift_json" | jq -r '"v="+(.values|tostring)+" s="+(.style|tostring)+" t="+(.topic|tostring)+" breached="+(.breached|tostring)')]"
-    _log "$name — drift OK (sim=$scalar_sim, drift=$scalar_drift)$shadow_note"
+    _log "$name — drift OK (sim=$scalar_sim, drift=$scalar_drift)"
   fi
 
   # ── Dream diff narrative (Feature 5) ─────────────────────────────────────

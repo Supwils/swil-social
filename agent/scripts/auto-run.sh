@@ -39,14 +39,26 @@ _log() {
   echo "$msg" >> "$LOG_FILE"
 }
 
+# Probe the API this run actually depends on — not an unrelated third-party site.
+# swil-news.vercel.app/api/news measured 4.0–8.5s (Vercel cold start) against the
+# old 5s budget, producing false "Offline" negatives on ~6 of 18 accounts per
+# round (2026-07-25). $SWIL_URL/health measures ~1.2s.
 check_internet() {
-  curl -s --max-time 5 "https://swil-news.vercel.app/api/news" > /dev/null 2>&1
+  curl -sf --max-time 10 -o /dev/null "${SWIL_URL%/}/health"
 }
 
+# ask_llm_json <backend> <model> <system_prompt> <user_prompt>
+#
+# `model` is the persona's `Model:` bullet. An empty value means "whatever the
+# CLI defaults to" — which is what every account used before 2026-07-25, and is
+# exactly the problem: `claude -p` with no --model resolved to the account
+# default (claude-opus-5[1m]), so every /lab drift number was attributed to a
+# model that was never recorded and could change silently.
 ask_llm_json() {
   local backend="$1"
-  local system_prompt="$2"
-  local user_prompt="$3"
+  local model="$2"
+  local system_prompt="$3"
+  local user_prompt="$4"
   local raw_text
 
   if [[ "$backend" == "codex" ]]; then
@@ -63,7 +75,11 @@ ask_llm_json() {
     raw_text="$(cat "$tmpfile" 2>/dev/null || echo '')"
     rm -f "$tmpfile"
   else
+    # Empty model → omit the flag entirely, preserving pre-pinning behaviour.
+    local model_args=()
+    [[ -n "$model" ]] && model_args=(--model "$model")
     raw_text="$(printf '%s' "$user_prompt" | claude -p \
+      "${model_args[@]+"${model_args[@]}"}" \
       --system-prompt "$system_prompt" \
       --output-format text \
       2>/dev/null || true)"
@@ -217,7 +233,7 @@ run_agent() {
 
   if [[ ! -f "$pfile" ]]; then
     _log "SKIP $agent_dir — no personality.md"
-    return
+    return 66
   fi
 
   local agent_name lock_file
@@ -239,13 +255,13 @@ run_agent() {
     lock_age=$(( $(date +%s) - $(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0) ))
     if (( lock_age < 1800 )); then
       _log "SKIP $agent_name — locked (another run in progress, ${lock_age}s old)"
-      return
+      return 75
     fi
     _log "WARN $agent_name — stale lock (${lock_age}s) reclaiming"
     rm -f "$lock_file"
     if ! acquire_lock; then
       _log "FAIL $agent_name — could not acquire lock after stale reclaim"
-      return
+      return 75
     fi
   fi
   # Single trap for the whole agent run — chained cleanups in one place.
@@ -263,7 +279,12 @@ run_agent() {
   local ai_backend
   ai_backend="$(grep -i '^\- \*\*AI Backend:\*\*' "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
   ai_backend="${ai_backend:-claude}"
-  _log "$agent_name backend: $ai_backend"
+  # Model tier for this persona. Empty is legal and means "CLI default" — but
+  # every claude-backed account should declare one, so the tier that produced a
+  # given drift measurement is recorded rather than inferred.
+  local ai_model
+  ai_model="$(grep -i '^\- \*\*Model:\*\*' "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
+  _log "$agent_name backend: $ai_backend model: ${ai_model:-<cli-default>}"
 
   # Step 1: login + refresh context/now.md
   # Derive relative path (works for both agents/ and humans/ subdirs)
@@ -274,7 +295,7 @@ run_agent() {
   export SWIL_AGENT="$rel_pfile"
   if ! bash "$SCRIPT_DIR/swil.sh" login "$rel_pfile" 2>&1; then
     _log "FAIL $agent_name login failed, skipping"
-    return
+    return 75
   fi
 
   emit_lab_event() {
@@ -350,6 +371,19 @@ run_agent() {
   rhythm_guidance="$RHYTHM_GUIDANCE"
 
   # Step 3: Ask LLM to decide
+  #
+  # codex-backed accounts are restricted to post / nothing for the duration of
+  # the model-arm experiment. Their comment path is a confirmed silent-fail:
+  # on 2026-07-25 zhuiyi logged "DONE zhuiyi commented on 6a646a8d…" twice while
+  # the API reported commentCount:0 and an empty thread both times. Leaving the
+  # action enabled yields data points that look like activity but persisted
+  # nothing. Remove this once that defect is fixed.
+  local backend_action_constraint=""
+  if [[ "$ai_backend" == "codex" ]]; then
+    backend_action_constraint='
+**本轮后端限制（硬规则）：** 你只能选择 post 或 nothing。不要选择 comment / like / echo / follow。'
+  fi
+
   local user_prompt
   user_prompt="$(cat <<PROMPT
 ## 当前上下文
@@ -385,6 +419,7 @@ $timeline_feed}
 请根据你的性格、行为规则和「发帖节律」，决定现在要做什么。
 
 上面的“本轮节律约束”是硬规则，不要违背。
+${backend_action_constraint}
 
 你可以选择以下任意一个行动，也可以什么都不做：
 - 发一条帖子（post）← 优先选项
@@ -415,11 +450,11 @@ PROMPT
 
   # Step 3: Ask the LLM to decide (dispatches to claude or codex based on backend)
   local decision
-  decision="$(ask_llm_json "$ai_backend" "$personality" "$user_prompt" || true)"
+  decision="$(ask_llm_json "$ai_backend" "$ai_model" "$personality" "$user_prompt" || true)"
   if [[ -z "$decision" ]]; then
     _log "FAIL $agent_name — no response from $ai_backend (is it authenticated?)"
     emit_lab_event "cycle" "act" "fail" "-" "LLM returned no response" "$ai_backend"
-    return
+    return 75
   fi
 
   # `decision` may contain multiple JSON documents (codex sometimes echoes
@@ -443,7 +478,7 @@ $user_prompt
 {"action":"post","text":"你的帖子内容"}
 PROMPT
 )"
-        decision="$(ask_llm_json "$ai_backend" "$personality" "$forced_post_prompt" || true)"
+        decision="$(ask_llm_json "$ai_backend" "$ai_model" "$personality" "$forced_post_prompt" || true)"
         action="$(echo "$decision" | head -c 4096 | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
         action="${action:-nothing}"
       fi
@@ -468,7 +503,7 @@ $user_prompt
 不做：{"action":"nothing"}
 PROMPT
 )"
-          decision="$(ask_llm_json "$ai_backend" "$personality" "$forced_non_post_prompt" || true)"
+          decision="$(ask_llm_json "$ai_backend" "$ai_model" "$personality" "$forced_non_post_prompt" || true)"
           action="$(echo "$decision" | head -c 4096 | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
           action="${action:-nothing}"
         fi
@@ -479,19 +514,19 @@ PROMPT
   if [[ -z "$decision" ]]; then
     _log "SKIP $agent_name — could not parse JSON decision"
     emit_lab_event "cycle" "act" "skip" "-" "could not parse JSON decision"
-    return
+    return 75
   fi
 
   if [[ "$RHYTHM_POLICY" == "must_post" && "$action" != "post" ]]; then
     _log "SKIP $agent_name — still failed to produce required post"
     emit_lab_event "cycle" "act" "skip" "$action" "failed to satisfy must-post rhythm" "$RHYTHM_POLICY"
-    return
+    return 75
   fi
 
   if [[ "$RHYTHM_POLICY" == "no_post" && "$action" == "post" ]]; then
     _log "SKIP $agent_name — still tried to post despite no-post rule"
     emit_lab_event "cycle" "act" "skip" "$action" "violated no-post rhythm" "$RHYTHM_POLICY"
-    return
+    return 75
   fi
 
   _log "$agent_name decided: $action"
@@ -664,25 +699,34 @@ PROMPT
 _log "=== auto-run start ==="
 
 if ! check_internet; then
-  _log "Offline — exiting"
-  exit 0
+  _log "Offline — exiting (rc=75; cycle-one will skip the dream)"
+  exit 75
 fi
 
 _log "Online — proceeding"
+
+# Exit-code contract consumed by cycle-one.sh:
+#   0  — an action was executed (including a deliberate "do nothing")
+#   75 — EX_TEMPFAIL: no action ran (offline, locked, login/LLM failure, rhythm veto)
+#   66 — EX_NOINPUT: the named agent has no personality.md
+# cycle-one.sh refuses to dream on anything non-zero, because a dream on
+# un-refreshed memory manufactures drift that never happened.
+ACT_RC=0
 
 # Run a specific agent/human if given as argument, otherwise all
 if [[ -n "${1:-}" ]]; then
   # Accept bare name — search agents/ then humans/
   if [[ -d "$ROOT_DIR/agents/$1" ]]; then
-    run_agent "$ROOT_DIR/agents/$1"
+    run_agent "$ROOT_DIR/agents/$1" || ACT_RC=$?
   elif [[ -d "$ROOT_DIR/humans/$1" ]]; then
-    run_agent "$ROOT_DIR/humans/$1"
+    run_agent "$ROOT_DIR/humans/$1" || ACT_RC=$?
   else
     _log "ERROR: '$1' not found in agents/ or humans/"
+    ACT_RC=66
   fi
 else
   while IFS= read -r agent_dir; do
-    run_agent "$agent_dir"
+    run_agent "$agent_dir" || ACT_RC=$?
     sleep 3  # brief pause between runs
   done < <(
     find "$ROOT_DIR/agents" "$ROOT_DIR/humans" -mindepth 1 -maxdepth 1 -type d | \
@@ -691,4 +735,5 @@ else
   )
 fi
 
-_log "=== auto-run complete ==="
+_log "=== auto-run complete (rc=$ACT_RC) ==="
+exit "$ACT_RC"

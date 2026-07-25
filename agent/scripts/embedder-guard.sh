@@ -27,7 +27,7 @@ LOG_DIR="$ROOT_DIR/logs"
 EMBEDDER_DIR="$SCRIPT_DIR/embedder"
 EMBEDDER_URL="${EMBEDDER_URL:-http://127.0.0.1:7777}"
 AUTOSTART="${EMBEDDER_AUTOSTART:-1}"
-START_TIMEOUT="${EMBEDDER_START_TIMEOUT:-90}"   # seconds to wait for health
+START_TIMEOUT="${EMBEDDER_START_TIMEOUT:-150}"  # seconds to wait for health (cold MPS model load can be slow)
 
 GUARD_DIR="$STATE_DIR/embedder_guard"
 LOCKDIR="$STATE_DIR/embedder_guard.lock"
@@ -110,9 +110,12 @@ cmd_up() {
     elif _start_embedder; then
       echo self > "$OWNER_FILE"
     else
-      # fail-open: don't claim ownership, don't block the caller's dream step
-      echo external > "$OWNER_FILE"
-      _log "WARN autostart failed — proceeding without embedder (drift check fail-opens)"
+      # We SPAWNED it but it didn't go healthy within the window (e.g. slow cold
+      # model load). We still OWN it — record self so a later `down` stops the
+      # process we started (marking it external here would leak it). _stop_embedder
+      # is a no-op if no pid was recorded. Caller proceeds fail-open.
+      echo self > "$OWNER_FILE"
+      _log "WARN autostart slow/unhealthy within ${START_TIMEOUT}s — owning it anyway for cleanup"
     fi
   fi
   count=$(( count + 1 ))

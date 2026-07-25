@@ -13,6 +13,7 @@ import { emitToUser } from '../../realtime/io';
 import { uploadPostMedia, cleanupUploadedMedia } from './posts.media';
 import { upsertTagsForPost, syncTagCounts } from './posts.tags';
 import { getPostForViewer } from './posts.read';
+import { assertBoardExists } from '../boards/boards.service';
 
 export async function createPost(
   author: UserRow,
@@ -35,6 +36,9 @@ export async function createPost(
   if (imageBuffers.length > 0 && videoBuffer !== null) {
     throw AppError.validation('A post cannot contain both images and a video');
   }
+
+  // Fail before any media work if the caller named a board that does not exist.
+  if (input.boardId) await assertBoardExists(input.boardId);
 
   const MAX_IMG = 5 * 1024 * 1024;
   for (const buf of imageBuffers) {
@@ -81,6 +85,7 @@ export async function createPost(
           tagIds: tagDocs.map((t) => t.id),
           mentionIds: mentionDocs.map((u) => u.id),
           visibility: input.visibility,
+          boardId: input.boardId ?? null,
           ...(echoOfId ? { echoOf: echoOfId } : {}),
           feedScore: calcFeedScore({ likeCount: 0, commentCount: 0, repostCount: 0, createdAt: now }),
         })

@@ -1,5 +1,13 @@
 import type { InferSelectModel } from 'drizzle-orm';
-import type { users, posts, comments, tags, messages, conversations } from '../db/schema';
+import type {
+  users,
+  posts,
+  comments,
+  tags,
+  boards,
+  messages,
+  conversations,
+} from '../db/schema';
 import type { NotificationType } from '../db/schema/messaging';
 
 // Drizzle row types — the data layer returns these plain rows (id: string,
@@ -8,6 +16,7 @@ export type UserRow = InferSelectModel<typeof users>;
 export type PostRow = InferSelectModel<typeof posts>;
 export type CommentRow = InferSelectModel<typeof comments>;
 export type TagRow = InferSelectModel<typeof tags>;
+export type BoardRow = InferSelectModel<typeof boards>;
 export type MessageRow = InferSelectModel<typeof messages>;
 export type ConversationRow = InferSelectModel<typeof conversations>;
 
@@ -64,6 +73,7 @@ export interface PostDTO {
   video: { url: string; width: number; height: number; durationSec?: number } | null;
   tags: Array<{ slug: string; display: string }>;
   mentions: Array<{ username: string; displayName: string }>;
+  boardId?: string;
   visibility: 'public' | 'followers' | 'private';
   likeCount: number;
   commentCount: number;
@@ -213,6 +223,7 @@ export function toPostDTO(post: PostRow, ctx: PostDTOContext): PostDTO {
       display: (ctx.lang && t.translations?.[ctx.lang]) || t.display,
     })),
     mentions: ctx.mentions.map((u) => ({ username: u.username, displayName: u.displayName })),
+    ...(post.boardId ? { boardId: post.boardId } : {}),
     visibility: post.visibility,
     likeCount: post.likeCount,
     commentCount: post.commentCount,
@@ -262,6 +273,28 @@ export function toTagDTO(tag: TagRow, lang?: string): TagDTO {
     ...(tag.coverImage ? { coverImage: tag.coverImage } : {}),
     ...(tag.featured ? { featured: true } : {}),
     ...(tag.status && tag.status !== 'active' ? { status: tag.status } : {}),
+  };
+}
+
+/* ---------- boards ---------- */
+
+export interface BoardDTO {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  sortOrder: number;
+  postCount: number;
+}
+
+export function toBoardDTO(board: BoardRow): BoardDTO {
+  return {
+    id: board.id,
+    slug: board.slug,
+    name: board.name,
+    description: board.description,
+    sortOrder: board.sortOrder,
+    postCount: board.postCount,
   };
 }
 

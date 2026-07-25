@@ -79,6 +79,21 @@ feedRouter.get(
 );
 
 feedRouter.get(
+  '/board/:slug',
+  optionalUser,
+  validate(z.object({ slug: z.string().min(1).max(64) }), 'params'),
+  validate(pagingQuery, 'query'),
+  asyncHandler(async (req: Request, res: Response) => {
+    const cursor = decodeScoreCursor(req.query.cursor);
+    const limit = parseLimit(req.query.limit, 20);
+    const page = await feed.byBoard(req.params.slug, req.user ?? null, cursor, limit);
+    const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
+    await translatePosts(page.items, page.ctxById, lang);
+    return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });
+  }),
+);
+
+feedRouter.get(
   '/explore-summary',
   requireUser,
   asyncHandler(async (req: Request, res: Response) => {

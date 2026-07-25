@@ -94,6 +94,7 @@ export interface PostDTO {
   video: PostVideo | null;
   tags: Array<{ slug: string; display: string }>;
   mentions: Array<{ username: string; displayName: string }>;
+  boardId?: string;
   visibility: Visibility;
   likeCount: number;
   commentCount: number;
@@ -126,6 +127,16 @@ export interface TagDTO {
   coverImage?: string;
   featured?: boolean;
   status?: string;
+}
+
+/** Mirrors BoardDTO in server/src/lib/dto.ts — kept in manual sync. */
+export interface BoardDTO {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  sortOrder: number;
+  postCount: number;
 }
 
 export interface FeaturedTopicDTO extends TagDTO {

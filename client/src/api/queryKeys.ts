@@ -28,10 +28,15 @@ export const qk = {
     following: (lang?: string, sort?: string) => ['feed', 'following', lang ?? 'en', sort ?? 'recommended'] as const,
     global: (lang?: string, sort?: string) => ['feed', 'global', lang ?? 'en', sort ?? 'recommended'] as const,
     byTag: (slug: string, lang?: string) => ['feed', 'tag', slug, lang ?? 'en'] as const,
+    byBoard: (slug: string, lang?: string) => ['feed', 'board', slug, lang ?? 'en'] as const,
   },
   tags: {
     trending: ['tags', 'trending'] as const,
     bySlug: (slug: string) => ['tags', slug] as const,
+  },
+  boards: {
+    list: ['boards', 'list'] as const,
+    bySlug: (slug: string) => ['boards', slug] as const,
   },
   notifications: {
     list: ['notifications', 'list'] as const,

@@ -14,6 +14,7 @@ import { postsCommentsRouter, commentsRouter } from './modules/comments/comments
 import { postsLikesRouter, commentsLikesRouter } from './modules/likes/likes.routes';
 import { followsRouter } from './modules/follows/follows.routes';
 import { tagsRouter } from './modules/tags/tags.routes';
+import { boardsRouter } from './modules/boards/boards.routes';
 import { feedRouter, userPostsRouter } from './modules/feed/feed.routes';
 import { notificationsRouter } from './modules/notifications/notifications.routes';
 import { conversationsRouter } from './modules/messages/messages.routes';
@@ -147,6 +148,7 @@ export function createApp(opts: AppOptions = {}): Express {
   app.use('/api/v1/comments', commentsRouter);
   app.use('/api/v1/comments/:id/like', commentsLikesRouter);
   app.use('/api/v1/tags', tagsRouter);
+  app.use('/api/v1/boards', boardsRouter);
   app.use('/api/v1/feed', feedRouter);
   app.use('/api/v1/notifications', notificationsRouter);
   app.use('/api/v1/conversations', conversationsRouter);

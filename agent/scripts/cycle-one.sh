@@ -24,11 +24,27 @@ bash "$GUARD" up || true
 trap 'bash "$GUARD" down || true' EXIT
 
 # 1. 行动：auto-run.sh 内部已经处理 login + logout + 节律 + 通知 + 锁
-bash "$SCRIPT_DIR/auto-run.sh" "$NAME"
-
-# 2. 做梦：默认走 --auto（冷却中会自动 SKIP），FORCE_DREAM=1 时强制
-if [[ "${FORCE_DREAM:-0}" == "1" ]]; then
-  bash "$SCRIPT_DIR/dream.sh" "$NAME"
+#    退出码契约（见 auto-run.sh 主流程注释）：
+#      0  = 执行了动作（含主动「什么都不做」）
+#      非 0 = 本轮没有任何动作落地（离线 / 被锁 / 登录失败 / LLM 无响应 / 节律否决）
+#
+#    动作没落地却继续做梦，等于让 LLM 在「没有本轮新记忆」的状态下重写人格——
+#    必然漂移超标，于是往 personality_snapshots 里注入一条根本没发生过的漂移。
+#    2026-07-25 那一轮 16 次拒绝里有 3 次是这么来的（sketch 是干净对照：
+#    act 被跳过时 values=0.526/topic=0.565 被拒，act 补跑后重做 0.653/0.726 通过）。
+if bash "$SCRIPT_DIR/auto-run.sh" "$NAME"; then
+  # 2. 做梦：默认走 --auto（冷却中会自动 SKIP），FORCE_DREAM=1 时强制
+  if [[ "${FORCE_DREAM:-0}" == "1" ]]; then
+    bash "$SCRIPT_DIR/dream.sh" "$NAME"
+  else
+    bash "$SCRIPT_DIR/dream.sh" --auto "$NAME"
+  fi
 else
-  bash "$SCRIPT_DIR/dream.sh" --auto "$NAME"
+  rc=$?
+  # NOTE: always brace-delimit ${rc} here. A bare `$rc` immediately followed by a
+  # full-width character (）， etc.) makes bash swallow part of that multibyte
+  # character into the variable name and abort under `set -u`.
+  echo "cycle-one: act did not land for ${NAME} (rc=${rc}) — skipping dream" >&2
+  echo "  未刷新记忆的 dream 会产生并未发生的漂移，污染 /lab 数据" >&2
+  exit "${rc}"
 fi

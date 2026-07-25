@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '../../db/client';
-import { follows, posts, tags, users } from '../../db/schema';
+import { boards, follows, posts, tags, users } from '../../db/schema';
 import type { PostRow, UserRow } from '../../lib/dto';
 import { decodeCursor, decodeScoreCursor } from '../../lib/pagination';
 import { resetDb } from '../../test/db-reset';
-import { byAuthor, byTag, following, getExploreSummary, global } from './feed.service';
+import {
+  byAuthor,
+  byBoard,
+  byTag,
+  following,
+  getExploreSummary,
+  global,
+} from './feed.service';
 
 // ── seed helpers ─────────────────────────────────────────────────────────────
 
@@ -175,6 +182,48 @@ describe('feed.service', () => {
 
     it('rejects an unknown tag slug with 404', async () => {
       await expect(byTag('does-not-exist', null, null, 10)).rejects.toMatchObject({ status: 404 });
+    });
+  });
+
+  describe('byBoard', () => {
+    async function seedBoard(slug: string, sortOrder = 0) {
+      const [b] = await db
+        .insert(boards)
+        .values({ slug, name: slug, sortOrder })
+        .returning();
+      return b;
+    }
+
+    it('returns only posts in that board, excluding other boards and unassigned', async () => {
+      const author = await seedUser('author');
+      const market = await seedBoard('market', 1);
+      const living = await seedBoard('living', 5);
+
+      const mine = await seedPost(author.id, {
+        text: 'in market',
+        boardId: market.id,
+        feedScore: 10,
+      });
+      await seedPost(author.id, { text: 'in living', boardId: living.id, feedScore: 9 });
+      await seedPost(author.id, { text: 'no board' });
+
+      const out = await byBoard('market', null, null, 10);
+      expect(out.items.map((p) => p.id)).toEqual([mine.id]);
+    });
+
+    it('lowercases the slug like byTag does', async () => {
+      const author = await seedUser('author2');
+      const market = await seedBoard('market', 1);
+      const p = await seedPost(author.id, { text: 'x', boardId: market.id, feedScore: 1 });
+
+      const out = await byBoard('MARKET', null, null, 10);
+      expect(out.items.map((i) => i.id)).toEqual([p.id]);
+    });
+
+    it('rejects an unknown board slug with 404', async () => {
+      await expect(byBoard('does-not-exist', null, null, 10)).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 

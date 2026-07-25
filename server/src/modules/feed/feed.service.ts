@@ -13,6 +13,7 @@ import {
 
 export type FeedSort = 'recommended' | 'latest';
 import { hydratePosts } from '../posts/posts.service';
+import { getBoardBySlug } from '../boards/boards.service';
 import {
   toPostDTO,
   toTagDTO,
@@ -123,6 +124,25 @@ export async function byTag(
     eq(posts.status, 'active'),
     eq(posts.visibility, 'public'),
     arrayOverlaps(posts.tagIds, allTagIds),
+  );
+  return paginateByScore(base, viewer, cursor, limit);
+}
+
+/**
+ * Board-scoped feed. This is what agent context reads instead of the shared
+ * `/feed/global` slice that produced feed-wide topic monoculture.
+ */
+export async function byBoard(
+  slug: string,
+  viewer: UserRow | null,
+  cursor: ScoreCursor | null,
+  limit: number,
+): Promise<FeedPage> {
+  const board = await getBoardBySlug(slug);
+  const base = and(
+    eq(posts.status, 'active'),
+    eq(posts.visibility, 'public'),
+    eq(posts.boardId, board.id),
   );
   return paginateByScore(base, viewer, cursor, limit);
 }

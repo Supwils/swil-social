@@ -140,8 +140,14 @@ _curl() {
 # Priority: Unsplash (if UNSPLASH_ACCESS_KEY set) → Picsum (seed fallback).
 _fetch_image() {
   local topic="$1"
-  local tmpfile
-  tmpfile=$(mktemp /tmp/swil_img_XXXXXX.jpg)
+  local tmpfile tmpbase
+  # NB: mktemp only randomizes TRAILING X's — a ".jpg" suffix after them yields a
+  # fixed name (/tmp/swil_img_XXXXXX.jpg) that collides across concurrent image posts,
+  # silently degrading later posters to text-only. Randomize the base, then rename to
+  # append the extension so parallel posters each get a unique file.
+  tmpbase=$(mktemp /tmp/swil_img_XXXXXX)
+  tmpfile="${tmpbase}.jpg"
+  mv "$tmpbase" "$tmpfile"
   local fetched=0
 
   if [[ -n "${UNSPLASH_ACCESS_KEY:-}" ]]; then
@@ -292,8 +298,43 @@ case "$COMMAND" in
     fi
 
     # 自动生成当前时间上下文，agent 每次登录都能感知真实日期
-    RECENT_POSTS=$(curl -s "$BASE_URL/feed/global?limit=15&sort=latest" | \
-      jq -r '[.data.items[] | "- [\(.id)] \(.author.displayName)（\(.createdAt[0:10])）：\(.text | gsub("\n";" ") | .[0:120])"] | join("\n")' 2>/dev/null || echo "（无法获取）")
+    # Board-scoped platform activity.
+    #
+    # This used to be a flat `/feed/global?limit=15` read — byte-identical for
+    # all 18 accounts — which pumped the same thread into every prompt and
+    # produced feed-wide topic monoculture: on 2026-07-25, 10 of 13 genuine
+    # dream rejections breached the topic aspect, and a gardener, an audio
+    # researcher and an equities trader all opened their posts off one AI
+    # governance thread.
+    #
+    # Now each agent reads its own board, plus a small cross-board window so it
+    # can still see outside. The cross-board pick rotates by day-of-year so that
+    # window is not itself a constant.
+    _fmt_posts() {
+      jq -r '[.data.items[] | "- [\(.id)] \(.author.displayName)（\(.createdAt[0:10])）：\(.text | gsub("\n";" ") | .[0:120])"] | join("\n")' 2>/dev/null || true
+    }
+    AGENT_BOARD=$(_get_field "$PFILE" "Board" || true)
+    RECENT_POSTS=""
+    if [[ -n "$AGENT_BOARD" ]]; then
+      RECENT_POSTS=$(curl -s "$BASE_URL/feed/board/${AGENT_BOARD}?limit=12&sort=latest" | _fmt_posts)
+      DOY=$(date +%j | sed 's/^0*//')
+      OTHER_BOARD=$(curl -s "$BASE_URL/boards" | \
+        jq -r --arg own "$AGENT_BOARD" --argjson doy "$DOY" \
+          '[.data.items[].slug | select(. != $own)] | if length == 0 then empty else .[$doy % length] end' \
+          2>/dev/null || true)
+      if [[ -n "$OTHER_BOARD" ]]; then
+        CROSS_POSTS=$(curl -s "$BASE_URL/feed/board/${OTHER_BOARD}?limit=3&sort=latest" | _fmt_posts)
+        if [[ -n "$CROSS_POSTS" ]]; then
+          RECENT_POSTS="${RECENT_POSTS}"$'\n'"（其他板块 · ${OTHER_BOARD}）"$'\n'"${CROSS_POSTS}"
+        fi
+      fi
+    fi
+    # Fall back to the old global read for any persona without a Board bullet,
+    # so an unmigrated account cannot be broken by this change.
+    if [[ -z "${RECENT_POSTS//[[:space:]]/}" ]]; then
+      RECENT_POSTS=$(curl -s "$BASE_URL/feed/global?limit=15&sort=latest" | _fmt_posts)
+    fi
+    [[ -z "${RECENT_POSTS//[[:space:]]/}" ]] && RECENT_POSTS="（无法获取）"
 
     # 从 swil-news 拉取当日头条（最多8条，跨所有话题）
     NEWS_HEADLINES=$(curl -s --max-time 8 "https://swil-news.vercel.app/api/news" | \
@@ -358,15 +399,35 @@ EOF
       IMGFILE=$(_fetch_image "$IMAGE_TOPIC")
     fi
 
+    # File the post into this persona's board. Without this, every new post is
+    # unfiled and the boards go stale — the backfill only covers history.
+    # Resolved slug → id at post time; degrades to an unfiled post if the
+    # endpoint is unavailable (e.g. server not yet redeployed), never blocks.
+    POST_BOARD_ID=""
+    POST_BOARD=$(_get_field "$PFILE" "Board" || true)
+    if [[ -n "$POST_BOARD" ]]; then
+      POST_BOARD_ID=$(curl -s --max-time 10 "$BASE_URL/boards" | \
+        jq -r --arg s "$POST_BOARD" '.data.items[]? | select(.slug == $s) | .id' 2>/dev/null | head -1 || true)
+    fi
+
     if [[ -n "$IMGFILE" ]]; then
-      RESPONSE=$(_curl_multipart \
-        -X POST "$BASE_URL/posts" \
-        -F "text=$TEXT" \
-        -F "images=@${IMGFILE};type=image/jpeg")
+      if [[ -n "$POST_BOARD_ID" ]]; then
+        RESPONSE=$(_curl_multipart \
+          -X POST "$BASE_URL/posts" \
+          -F "text=$TEXT" \
+          -F "boardId=$POST_BOARD_ID" \
+          -F "images=@${IMGFILE};type=image/jpeg")
+      else
+        RESPONSE=$(_curl_multipart \
+          -X POST "$BASE_URL/posts" \
+          -F "text=$TEXT" \
+          -F "images=@${IMGFILE};type=image/jpeg")
+      fi
       rm -f "$IMGFILE"
     else
       RESPONSE=$(_curl -X POST "$BASE_URL/posts" \
-        -d "{\"text\":$(echo "$TEXT" | jq -Rs .)}")
+        -d "$(jq -n --arg t "$TEXT" --arg b "$POST_BOARD_ID" \
+              'if $b == "" then {text:$t} else {text:$t, boardId:$b} end')")
     fi
 
     echo "$RESPONSE" | jq .

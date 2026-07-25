@@ -34,6 +34,14 @@ export async function byTag(slug: string, params: Pagination = {}): Promise<Pagi
   );
 }
 
+export async function byBoard(slug: string, params: Pagination = {}): Promise<Paginated<PostDTO>> {
+  return unwrap<Paginated<PostDTO>>(
+    http.get(`/feed/board/${slug}`, {
+      params: { cursor: params.cursor ?? undefined, limit: params.limit, lang: params.lang },
+    }),
+  );
+}
+
 export async function getExploreSummary(): Promise<ExploreSummaryDTO> {
   return unwrap<ExploreSummaryDTO>(http.get('/feed/explore-summary'));
 }

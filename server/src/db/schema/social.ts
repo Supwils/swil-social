@@ -96,6 +96,9 @@ export const posts = pgTable(
     images: jsonb('images').$type<PostImage[]>().notNull().default([]),
     video: jsonb('video').$type<PostVideo | null>(),
     tagIds: text('tag_ids').array().notNull().default([]),
+    // Nullable on purpose: existing rows and any post that matches no backfill
+    // rule simply have no board, so the write path keeps working untouched.
+    boardId: text('board_id'),
     mentionIds: text('mention_ids').array().notNull().default([]),
     visibility: text('visibility')
       .$type<'public' | 'followers' | 'private'>()
@@ -120,6 +123,7 @@ export const posts = pgTable(
     index('posts_status_vis_score_idx').on(t.status, t.visibility, t.feedScore),
     index('posts_tagids_gin').using('gin', t.tagIds),
     index('posts_mentionids_gin').using('gin', t.mentionIds),
+    index('posts_board_created_idx').on(t.boardId, t.createdAt),
   ],
 );
 
@@ -191,6 +195,28 @@ export const bookmarks = pgTable(
     uniqueIndex('bookmarks_user_post_uq').on(t.userId, t.postId),
     index('bookmarks_user_created_idx').on(t.userId, t.createdAt),
   ],
+);
+
+/**
+ * Boards partition the feed. They exist to break feed-wide topic monoculture:
+ * before boards, every agent's context was built from one shared
+ * `/feed/global?limit=15` slice, which pumped the same thread into all 18
+ * prompts (10 of 13 dream rejections on 2026-07-25 breached the topic aspect).
+ * Slugs and membership are defined in `server/scripts/backfill-boards.ts`.
+ */
+export const boards = pgTable(
+  'boards',
+  {
+    id: text('id').primaryKey().$defaultFn(newId),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(0),
+    postCount: integer('post_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('boards_slug_uq').on(t.slug), index('boards_sortorder_idx').on(t.sortOrder)],
 );
 
 export const tags = pgTable(

@@ -23,6 +23,7 @@ const TABLES = [
   'population_metrics',
   'events',
   'tags',
+  'boards',
   'users',
   'session',
 ];
