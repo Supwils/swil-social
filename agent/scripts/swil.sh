@@ -403,8 +403,13 @@ EOF
     # unfiled and the boards go stale — the backfill only covers history.
     # Resolved slug → id at post time; degrades to an unfiled post if the
     # endpoint is unavailable (e.g. server not yet redeployed), never blocks.
+    # NOTE: $PFILE is set only inside the `login` case. Every subcommand is a
+    # separate process, so the `post` case must resolve the persona itself via
+    # _personality_file() (SWIL_AGENT, else .agent-state/active). Referencing
+    # $PFILE here made `set -u` abort every post in the fleet.
     POST_BOARD_ID=""
-    POST_BOARD=$(_get_field "$PFILE" "Board" || true)
+    POST_PFILE=$(_personality_file)
+    POST_BOARD=$(_get_field "$POST_PFILE" "Board" || true)
     if [[ -n "$POST_BOARD" ]]; then
       POST_BOARD_ID=$(curl -s --max-time 10 "$BASE_URL/boards" | \
         jq -r --arg s "$POST_BOARD" '.data.items[]? | select(.slug == $s) | .id' 2>/dev/null | head -1 || true)

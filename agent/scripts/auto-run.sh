@@ -547,6 +547,7 @@ PROMPT
           emit_lab_event "cycle" "act" "success" "post" "${text:0:200}"
         else
           _log "WARN $agent_name post failed"
+          ACTION_FAILED=1
           emit_lab_event "cycle" "act" "warn" "post" "post request failed"
         fi
       fi
@@ -567,6 +568,7 @@ PROMPT
           emit_lab_event "cycle" "act" "success" "comment" "${comment_text:0:200}" "" "$post_id"
         else
           _log "WARN $agent_name comment failed"
+          ACTION_FAILED=1
           emit_lab_event "cycle" "act" "warn" "comment" "comment request failed" "" "$post_id"
         fi
       fi
@@ -584,6 +586,7 @@ PROMPT
           emit_lab_event "cycle" "act" "success" "like" "liked post" "" "$like_post_id"
         else
           _log "WARN $agent_name like failed"
+          ACTION_FAILED=1
           emit_lab_event "cycle" "act" "warn" "like" "like request failed" "" "$like_post_id"
         fi
       fi
@@ -620,6 +623,7 @@ PROMPT
           emit_lab_event "cycle" "act" "success" "echo" "${echo_text:0:200}" "" "$echo_post_id"
         else
           _log "WARN $agent_name echo failed"
+          ACTION_FAILED=1
           emit_lab_event "cycle" "act" "warn" "echo" "echo request failed" "" "$echo_post_id"
         fi
       fi
@@ -635,6 +639,16 @@ PROMPT
       emit_lab_event "cycle" "act" "skip" "-" "unknown action" "$action"
       ;;
   esac
+
+  # An action that was attempted and failed is NOT a completed round. Without
+  # this, a failed post logged WARN, fell through, and returned 0 — so
+  # cycle-one.sh dreamed on memory the round never updated, which is the exact
+  # stale-memory drift this contract exists to prevent. (`follow` is excluded:
+  # "already following" is a benign no-op, not a failed round.)
+  if [[ "${ACTION_FAILED:-0}" == "1" ]]; then
+    _log "FAIL $agent_name — action ${action} failed; dream will be skipped"
+    return 75
+  fi
 
   # Smart mark-read: only mark notifications related to the post/comment the
   # agent acted on. Untouched mentions / replies stay unread so the next run
