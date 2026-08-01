@@ -227,16 +227,6 @@ export async function send(
 ): Promise<MessageDTO> {
   const convo = await assertMember(sender, conversationId);
 
-  const [message] = await db
-    .insert(messages)
-    .values({
-      conversationId: convo.id,
-      senderId: sender.id,
-      text,
-      readBy: [sender.id],
-    })
-    .returning();
-
   const otherIds = convo.participantIds.filter((id) => id !== sender.id);
 
   // Atomic $addToSet equivalent: union the persisted unreadBy with otherIds.
@@ -246,14 +236,34 @@ export async function send(
     otherIds.map((id) => sql`${id}`),
     sql`, `,
   )}]::text[]`;
-  await db
-    .update(conversations)
-    .set({
-      lastMessageId: message.id,
-      lastMessageAt: message.createdAt,
-      unreadBy: sql`ARRAY(SELECT DISTINCT unnest(${conversations.unreadBy} || ${otherIdsSql}))`,
-    })
-    .where(eq(conversations.id, convo.id));
+
+  // The message row and the conversation's pointer to it are one unit. Split
+  // apart, a failure on the second statement leaves a message that exists but
+  // is invisible in the inbox: the conversation still points at the previous
+  // lastMessageId, sorts by the old lastMessageAt, and never marks the
+  // recipients unread. Emitting realtime events stays outside the transaction.
+  const message = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(messages)
+      .values({
+        conversationId: convo.id,
+        senderId: sender.id,
+        text,
+        readBy: [sender.id],
+      })
+      .returning();
+
+    await tx
+      .update(conversations)
+      .set({
+        lastMessageId: created.id,
+        lastMessageAt: created.createdAt,
+        unreadBy: sql`ARRAY(SELECT DISTINCT unnest(${conversations.unreadBy} || ${otherIdsSql}))`,
+      })
+      .where(eq(conversations.id, convo.id));
+
+    return created;
+  });
 
   const dto = toMessageDTO(message, sender);
   emitToConversation(convo.id, 'message', dto);
@@ -275,12 +285,18 @@ export async function send(
 export async function markRead(viewer: UserRow, conversationId: string): Promise<void> {
   const convo = await assertMember(viewer, conversationId);
 
-  await Promise.all([
-    db
+  // Both halves of "read" move together. Run concurrently they can half-apply:
+  // the conversation drops out of the unread list while individual messages
+  // still report unread (or the reverse), and the two views disagree until the
+  // next markRead happens to succeed. Sequential inside a transaction costs one
+  // extra round-trip and removes the split state.
+  await db.transaction(async (tx) => {
+    await tx
       .update(conversations)
       .set({ unreadBy: sql`array_remove(${conversations.unreadBy}, ${viewer.id})` })
-      .where(eq(conversations.id, convo.id)),
-    db
+      .where(eq(conversations.id, convo.id));
+
+    await tx
       .update(messages)
       .set({ readBy: sql`array_append(${messages.readBy}, ${viewer.id})` })
       .where(
@@ -288,8 +304,8 @@ export async function markRead(viewer: UserRow, conversationId: string): Promise
           eq(messages.conversationId, convo.id),
           not(arrayContains(messages.readBy, [viewer.id])),
         ),
-      ),
-  ]);
+      );
+  });
 
   emitToConversation(convo.id, 'message:read', {
     conversationId: convo.id,

@@ -110,21 +110,31 @@ export async function createComment(
         .where(and(inArray(users.username, mentionUsernames), eq(users.status, 'active')))
     : [];
 
-  const [comment] = await db
-    .insert(comments)
-    .values({
-      postId: post.id,
-      authorId: actor.id,
-      parentId: parent ? parent.id : null,
-      text,
-      mentionIds: mentionUsers.map((u) => u.id),
-    })
-    .returning();
+  // The row and its denormalized counter must land together. Split across two
+  // statements, a failure between them leaves `posts.commentCount` permanently
+  // short — there is no reconciliation job to notice. Same shape as createPost.
+  // Notifications and the feed-score refresh stay OUTSIDE: they are external
+  // side effects that must not hold the transaction open or roll the comment
+  // back when a downstream notification fails.
+  const comment = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(comments)
+      .values({
+        postId: post.id,
+        authorId: actor.id,
+        parentId: parent ? parent.id : null,
+        text,
+        mentionIds: mentionUsers.map((u) => u.id),
+      })
+      .returning();
 
-  await db
-    .update(posts)
-    .set({ commentCount: sql`${posts.commentCount} + 1` })
-    .where(eq(posts.id, post.id));
+    await tx
+      .update(posts)
+      .set({ commentCount: sql`${posts.commentCount} + 1` })
+      .where(eq(posts.id, post.id));
+
+    return created;
+  });
   refreshFeedScore(post.id);
 
   // Notifications — fire concurrently
@@ -193,14 +203,18 @@ export async function deleteComment(actor: UserRow, commentId: string): Promise<
   if (!comment || comment.status !== 'active') throw AppError.notFound('Comment not found');
   if (comment.authorId !== actor.id) throw AppError.forbidden('Not your comment');
 
-  await db
-    .update(comments)
-    .set({ status: 'deleted', deletedAt: new Date() })
-    .where(eq(comments.id, commentId));
+  // Soft-delete and decrement together — a half-applied delete drifts the
+  // counter the same way a half-applied create does, only downward.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(comments)
+      .set({ status: 'deleted', deletedAt: new Date() })
+      .where(eq(comments.id, commentId));
 
-  await db
-    .update(posts)
-    .set({ commentCount: sql`${posts.commentCount} - 1` })
-    .where(eq(posts.id, comment.postId));
+    await tx
+      .update(posts)
+      .set({ commentCount: sql`${posts.commentCount} - 1` })
+      .where(eq(posts.id, comment.postId));
+  });
   refreshFeedScore(comment.postId);
 }

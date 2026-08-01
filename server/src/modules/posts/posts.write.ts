@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { users, posts, tags, follows } from '../../db/schema';
+import { users, posts, tags, follows, boards } from '../../db/schema';
 import { AppError } from '../../lib/errors';
 import { assertAgentDailyQuota } from '../../lib/agentQuota';
 import { extractTags, extractMentionUsernames } from '../../lib/extract';
@@ -106,6 +106,18 @@ export async function createPost(
               tagDocs.map((t) => t.id),
             ),
           );
+      }
+
+      // Board membership is fixed at insert (`boardId` is create-only — updatePost
+      // cannot re-file a post), so the counter only ever moves here and in
+      // deletePost. Without this the column stayed at whatever
+      // scripts/backfill-boards.ts last recomputed, and the board page rendered a
+      // count that drifted further from its own feed with every post.
+      if (input.boardId) {
+        await tx
+          .update(boards)
+          .set({ postCount: sql`${boards.postCount} + 1` })
+          .where(eq(boards.id, input.boardId));
       }
 
       if (echoOfId) {
@@ -218,22 +230,42 @@ export async function deletePost(postId: string, actor: UserRow): Promise<void> 
   if (!post || post.status !== 'active') throw AppError.notFound('Post not found');
   if (post.authorId !== actor.id) throw AppError.forbidden('Not your post');
 
-  await db
-    .update(posts)
-    .set({ status: 'deleted', deletedAt: new Date() })
-    .where(eq(posts.id, postId));
+  // The soft-delete and both counter decrements are one unit — mirroring the
+  // transaction createPost uses on the way in. Previously they were three
+  // independent statements, so a failure after the first left the post deleted
+  // while `users.postCount` and `tags.postCount` still counted it, with no
+  // reconciliation job to catch it.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(posts)
+      .set({ status: 'deleted', deletedAt: new Date() })
+      .where(eq(posts.id, postId));
 
-  await Promise.all([
-    db
+    await tx
       .update(users)
       .set({ postCount: sql`${users.postCount} - 1` })
-      .where(eq(users.id, actor.id)),
-    post.tagIds.length
-      ? db
-          .update(tags)
-          .set({ postCount: sql`${tags.postCount} - 1` })
-          .where(inArray(tags.id, post.tagIds))
-      : Promise.resolve(null),
+      .where(eq(users.id, actor.id));
+
+    if (post.tagIds.length) {
+      await tx
+        .update(tags)
+        .set({ postCount: sql`${tags.postCount} - 1` })
+        .where(inArray(tags.id, post.tagIds));
+    }
+
+    if (post.boardId) {
+      await tx
+        .update(boards)
+        .set({ postCount: sql`${boards.postCount} - 1` })
+        .where(eq(boards.id, post.boardId));
+    }
+  });
+
+  // Media deletion runs only after the row change is durable. S3 deletes are
+  // irreversible, so they must never share a Promise.all with writes that can
+  // still roll back — that ordering can destroy the objects of a post the
+  // database ends up keeping.
+  await Promise.all([
     ...post.images.map((img) => deleteFromS3(img.url)),
     post.video ? deleteFromS3(post.video.url) : Promise.resolve(),
   ]);

@@ -10,6 +10,7 @@ import type { PostRow, UserRow } from '../../lib/dto';
 import {
   assertVisibility,
   createPost,
+  deletePost,
   getPostForViewer,
   getShowcasePosts,
   searchPosts,
@@ -141,6 +142,45 @@ describe('posts.service', () => {
     const author = await seedUser();
     const out = await createPost(author, { text: 'unfiled', visibility: 'public' }, [], null);
     expect(out.post.boardId).toBeNull();
+  });
+
+  it('increments boards.postCount when a post is filed, and decrements on delete', async () => {
+    const author = await seedUser();
+    const [board] = await db
+      .insert(boards)
+      .values({ slug: 'making', name: '造物与手艺', sortOrder: 6 })
+      .returning();
+    expect(board.postCount).toBe(0);
+
+    const first = await createPost(
+      author,
+      { text: 'one', visibility: 'public', boardId: board.id },
+      [],
+      null,
+    );
+    await createPost(author, { text: 'two', visibility: 'public', boardId: board.id }, [], null);
+
+    const [afterCreate] = await db.select().from(boards).where(eq(boards.id, board.id));
+    expect(afterCreate.postCount).toBe(2);
+
+    await deletePost(first.post.id, author);
+
+    const [afterDelete] = await db.select().from(boards).where(eq(boards.id, board.id));
+    expect(afterDelete.postCount).toBe(1);
+  });
+
+  it('leaves every board count alone for an unfiled post', async () => {
+    const author = await seedUser();
+    const [board] = await db
+      .insert(boards)
+      .values({ slug: 'market', name: '市场与资产', sortOrder: 1 })
+      .returning();
+
+    const out = await createPost(author, { text: 'unfiled', visibility: 'public' }, [], null);
+    await deletePost(out.post.id, author);
+
+    const [row] = await db.select().from(boards).where(eq(boards.id, board.id));
+    expect(row.postCount).toBe(0);
   });
 
   it('rejects an unknown boardId before doing any media work', async () => {
