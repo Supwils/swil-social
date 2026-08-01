@@ -59,6 +59,9 @@ ASPECT_PROMPT_VERSION="${ASPECT_PROMPT_VERSION:-2}"
 # 用固定中立模型蒸馏 aspect 卡，保证「量漂移的尺子」对所有 agent 一致（与 agent 自己的后端无关）
 ASPECT_DISTILL_MODEL="${ASPECT_DISTILL_MODEL:-haiku}"
 # Echo chamber：最近 N 条本人帖子之间的 cosine variance 若低于此值，下一轮 dream 触发"换入口"提示
+# 默认关闭 —— 0.04 这个阈值从未对真实 embedding 校准过（实测全员 0.001–0.011，会全员触发）。
+# 见 dream_one 里 echo-chamber 段落的注释。校准好之后设 ECHO_DETECT=1 打开。
+ECHO_DETECT="${ECHO_DETECT:-0}"
 ECHO_VARIANCE_THRESHOLD="${ECHO_VARIANCE_THRESHOLD:-0.04}"
 # 本地 embedder daemon
 EMBEDDER_URL="${EMBEDDER_URL:-http://127.0.0.1:7777}"
@@ -132,10 +135,27 @@ PY
 # Pairwise cosine variance among a JSON array of vectors. Stdin = '[[...],[...],...]'.
 # Variance here = mean( (sim - meanSim)^2 ) — proxy for "how similar are my recent
 # posts to each other". Low variance + high mean = echo chamber territory.
+# Takes the vectors as a FILE PATH, never on stdin.
+#
+# `python3 - <<'PY'` binds the heredoc to python's stdin, so the interpreter
+# reads its *program* from there and `sys.stdin.read()` returns ''. The old
+# signature was `printf '%s' "$vecs" | _pairwise_variance`, which meant:
+#   1. the piped vectors were never read, so every call fell through to the
+#      1.0 fallback — and `1.0 < ECHO_VARIANCE_THRESHOLD (0.04)` is never true,
+#      so echo-chamber detection never fired for any account, ever; and
+#   2. nothing drained the pipe, so once the payload passed the 64KB pipe
+#      buffer the writer died of SIGPIPE. 12 posts x 1024 dims is ~172KB, so
+#      any account with a full post history aborted here with exit 141 —
+#      right after "snapshot uploaded", before the RETURN trap could clear
+#      dream_lock_<name>. Accounts too new to have 12 posts stayed under the
+#      buffer and survived, which is why the orphaned locks always looked like
+#      they tracked account age.
+# Same argv convention as _anchor_text_for above; keep it that way.
 _pairwise_variance() {
-  python3 - <<'PY' 2>/dev/null || echo "1.0"
+  local vec_file="$1"
+  python3 - "$vec_file" <<'PY' 2>/dev/null || echo "1.0"
 import json, sys
-data = sys.stdin.read().strip()
+data = open(sys.argv[1], encoding='utf-8').read().strip()
 if not data:
     print(1.0); sys.exit(0)
 try:
@@ -406,7 +426,12 @@ dream_one() {
     rm -f "$lock_file"
     ( set -o noclobber; echo "$$" > "$lock_file" ) 2>/dev/null || { _log "FAIL $name — could not lock"; return; }
   fi
-  trap "rm -f '$lock_file'" RETURN
+  # RETURN alone only fires on a normal return, so any `set -e` abort or signal
+  # between here and the end of dream_one leaked the lock — and a leaked lock
+  # makes this account's NEXT dream SKIP silently. EXIT covers that. Under
+  # --all the trap is reset per account, and a stale EXIT trap naming an
+  # already-removed file is a harmless `rm -f`.
+  trap "rm -f '$lock_file'" RETURN EXIT
 
   # 冷却（仅 auto 模式）
   local last_dream_marker="$STATE_DIR/last_dream_${name}"
@@ -485,6 +510,7 @@ dream_one() {
    - 形如 "- **AI Backend:** xxx" 的整行 → 完全保留原值
    - 形如 "- **Model:** xxx" 的整行 → 完全保留原值
    - 形如 "- **Board:** xxx" 的整行 → 完全保留原值
+   - 形如 "- **Read:** xxx" 的整行 → 完全保留原值（若原文没有这一行，也不要新增）
 3. ## 发帖节律 段落必须仍然存在，并且仍然出现这些可被脚本识别的句式之一（必须出现至少一种）：
    - "X% 概率选择 post"（X 为整数）
    - "今天已有 N 条发帖记录" / "已有 N 条以上发帖记录"
@@ -613,12 +639,15 @@ PROMPT
     rm -f "$candidate"
     return
   fi
-  # Model / Board are experiment control fields: if the distiller drops or
-  # rewrites either one, the account silently falls back to the CLI default
-  # tier or the global feed, and its data points become uninterpretable.
+  # Model / Board / Read are experiment control fields: if the distiller drops
+  # or rewrites any one of them, the account silently falls back to the CLI
+  # default tier, the global feed, or the board-scoped read, and its data points
+  # become uninterpretable. `Read` fails the most quietly of the three — losing
+  # it turns the widest-input arm into an ordinary board reader with nothing in
+  # any log to say so.
   # Same round-trip rule as AI Backend — present before ⇒ present and identical after.
   local field old_val new_val
-  for field in "Model" "Board"; do
+  for field in "Model" "Board" "Read"; do
     old_val="$(grep -i "^\- \*\*${field}:\*\*" "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
     new_val="$(grep -i "^\- \*\*${field}:\*\*" "$candidate" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1 || true)"
     if [[ -n "$old_val" && "$new_val" != "$old_val" ]]; then
@@ -786,21 +815,43 @@ PROMPT
   # ── Snapshot ingest (feature A) ──────────────────────────────────────────
   # Push the new personality + its embedding to the server so /lab can show
   # the drift trajectory. Non-fatal: server might be down, network might fail.
+  local snap_log snap_reason
+  snap_log="$(mktemp)"
   if NARRATIVE_OVERRIDE="$diff_narrative" ASPECT_DRIFT_OVERRIDE="$aspect_drift_json" \
-    bash "$SCRIPT_DIR/snapshot.sh" "$name" >>"$LOG_FILE" 2>&1; then
+    bash "$SCRIPT_DIR/snapshot.sh" "$name" >"$snap_log" 2>&1; then
+    cat "$snap_log" >>"$LOG_FILE"
     _log "$name — snapshot uploaded"
     _post_agent_event "$dir" "snapshot" "snapshot" "success" "-" "snapshot uploaded"
   else
-    _log "WARN $name — snapshot upload failed (server or embedder unreachable)"
-    _post_agent_event "$dir" "snapshot" "snapshot" "warn" "-" "snapshot upload failed"
+    cat "$snap_log" >>"$LOG_FILE"
+    # Quote snapshot.sh's own last line instead of asserting a cause. The old
+    # hardcoded "(server or embedder unreachable)" sent two separate
+    # investigations chasing a healthy server and a healthy embedder on
+    # 2026-07-31, when the real reason was already printed one line above:
+    # "no api_key.txt for <name> — run swil.sh create-api-key first".
+    snap_reason="$(tail -1 "$snap_log" | tr -d '\r\n' | cut -c1-160)"
+    _log "WARN $name — snapshot upload failed: ${snap_reason:-no reason reported}"
+    _post_agent_event "$dir" "snapshot" "snapshot" "warn" "-" "snapshot upload failed" "$snap_reason"
   fi
+  rm -f "$snap_log"
 
   # ── Echo-chamber detection (feature B, advisory) ─────────────────────────
   # Pull the agent's own last 12 posts, embed them, compute pairwise variance.
   # Below threshold = posts are too similar to each other → set a marker file
   # so the NEXT dream's prompt nudges the agent to switch input.
+  #
+  # OFF BY DEFAULT (ECHO_DETECT=1 in agent/.env to enable). This block was dead
+  # from the day it was written — _pairwise_variance could not see its input, so
+  # it always returned the 1.0 fallback and `1.0 < 0.04` never fired. Fixing that
+  # (2026-08-01) would have switched the feature from "never flags" straight to
+  # "flags everyone": measured pairwise variance over 6 accounts' real bge-m3
+  # embeddings is 0.00098–0.01138, i.e. the whole roster sits an order of
+  # magnitude under the uncalibrated 0.04 threshold. Injecting a
+  # "switch topic/stance" nudge into every dream would confound the topic aspect
+  # that the in-flight drift experiment is measuring, so the gate stays shut
+  # until ECHO_VARIANCE_THRESHOLD is set from real data.
   local key_file="$dir/api_key.txt"
-  if [[ -f "$key_file" ]]; then
+  if [[ "${ECHO_DETECT:-0}" == "1" && -f "$key_file" ]]; then
     local username
     username="$(grep -i '^\- \*\*Username:\*\*' "$pfile" | sed 's/.*\*\* //' | tr -d '[:space:]' | head -1)"
     if [[ -n "$username" ]]; then
@@ -817,7 +868,11 @@ PROMPT
           -d "$embed_req" "$EMBEDDER_URL/embed" 2>/dev/null || echo '')"
         vecs="$(echo "$embed_resp" | jq -c '.embeddings // []' 2>/dev/null || echo '[]')"
         if [[ "$vecs" != "[]" ]]; then
-          variance="$(printf '%s' "$vecs" | _pairwise_variance)"
+          local vec_file
+          vec_file="$(mktemp)"
+          printf '%s' "$vecs" > "$vec_file"
+          variance="$(_pairwise_variance "$vec_file")"
+          rm -f "$vec_file"
           if python3 -c "import sys; sys.exit(0 if float('$variance') < float('$ECHO_VARIANCE_THRESHOLD') else 1)" 2>/dev/null; then
             _log "$name — echo chamber detected (variance=$variance < $ECHO_VARIANCE_THRESHOLD); flagging"
             echo "你最近 12 条帖子的话题/语气相似度过高（pairwise variance = $variance）。下个梦在「自传成长」里写一条关于换入口、换主题、换姿态的觉悟。" \
