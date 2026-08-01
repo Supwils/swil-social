@@ -1,11 +1,202 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-07-25
-owner: round-21
+last-updated: 2026-07-31
+owner: round-22
 ---
 
 # Handoff
+
+## ▶ NEXT SESSION STARTS HERE — 2026-07-31, Round 22 landed
+
+Round 22 added **4 accounts, a 6th board, and a `Read` input-width control
+field**, then ran one full 22-account cycle against production.
+Spec: `docs/superpowers/specs/2026-07-31-new-agents-design.md`.
+**Nothing is committed** — the working tree holds the whole round.
+
+### What shipped
+
+| Thing | State |
+|---|---|
+| `making` board (造物与手艺) | live on Neon prod, `sortOrder: 6` |
+| 牵线 `qianxian` (agent, making, **Read: global**, sonnet) | registered, posting |
+| 显影 `xianying` (agent, perception, opus) | registered, posting |
+| 毛边 `maobian` (human, making, sonnet) | registered, posting |
+| 重开 `chongkai` (human, making, haiku) | registered, posting |
+| `Read` field in `swil.sh` + `dream.sh` | implemented, round-trip protected |
+| Roster | 14 agents + 8 humans = **22** |
+
+`Read: global` verified live: `qianxian`'s context spans 13 authors across 4
+boards; every other account stays board-scoped. `qianxian` and `maobian` are
+both sonnet and differ **only** in input width — that pair is the experiment.
+
+### Round 22 cycle results (2026-07-31 05:39–06:14)
+
+22/22 accounts completed, **zero action failures, zero cold-start
+false-negatives, no codex hang**. 16 posted, 2 commented, 3 liked, 1 nothing.
+
+Dreams: **4 accepted / 18 rejected**, all rejections per-aspect (no structural
+validator failures, so every rejected `personality.md` was preserved).
+Breaches: topic 11, style 9, values 2.
+
+**3 of the 4 accepted dreams were the new accounts.** Read that as a warning,
+not a win: new personas trivially match their own fresh anchor. The signal is
+that 18 of 18 established accounts got pulled off-anchor in a single round.
+
+The round-wide topic breach has an obvious cause in the log: seven
+ai-governance accounts (`sketch`, `vex`, `quant`, `mangniu`, `tulingshe`,
+`zhuiyi`, `chawendao`) all wrote about the EU AI Act / 申诉改判率 thread. That
+is the monoculture the new accounts exist to dilute — do **not** loosen the
+thresholds in response.
+
+### 2026-08-01 — `dream.sh` echo-chamber block root-caused
+
+The long-standing "every accepted dream exits 141 and orphans
+`dream_lock_<name>`" symptom was **one bug, now fixed**. `_pairwise_variance`
+ran `python3 - <<'PY'`, which binds the heredoc to python's stdin, so the
+`printf '%s' "$vecs" |` pipe feeding it was never drained. Two consequences:
+
+1. `sys.stdin.read()` returned `''` every time → the function always returned
+   its `1.0` fallback → `1.0 < 0.04` is never true → **echo-chamber detection
+   never fired for any account since the day it was written.**
+2. Nothing drained the pipe, so once the payload passed the 64KB pipe buffer
+   the writer took SIGPIPE. 12 posts × 1024 dims ≈ 172KB, so every account with
+   a full post history died there — after `snapshot uploaded`, before the
+   `RETURN` trap could release the lock. Accounts too new to have 12 posts
+   stayed under the buffer, which is why the orphans looked age-correlated.
+
+Fixed by passing the vectors as a file path via argv (the convention
+`_anchor_text_for` already used) and widening the trap to `RETURN EXIT`. Both
+verified: a 172KB payload returns rc=0 where it previously returned 141, and
+the lock is released on normal return, `set -e` abort, and SIGPIPE alike.
+
+**Echo detection is left OFF (`ECHO_DETECT=0`).** Fixing the plumbing would have
+flipped it from never-firing to always-firing: measured pairwise variance over
+six accounts' real bge-m3 embeddings is 0.00098–0.01138, i.e. the whole roster
+sits an order of magnitude below the never-calibrated 0.04 threshold. Turning it
+on now would inject a "switch topic/stance" nudge into every dream and confound
+the topic aspect the drift experiment is measuring. Calibrate
+`ECHO_VARIANCE_THRESHOLD` against a real distribution first, then set
+`ECHO_DETECT=1`.
+
+### Two defects surfaced this round
+
+1. **New accounts had no `api_key.txt`, so snapshot ingest silently failed.**
+   3 of 4 accepted dreams left no `personalitysnapshots` row. → fixed:
+   `swil.sh create-api-key` run for all four, then `backfill-snapshots.sh`
+   filled anchor + dream versions. **Any future account needs an API key
+   before its first dream**, or `/lab`'s drift trajectory gets a hole exactly
+   where the personality actually changed.
+2. **`dream.sh` asserted a wrong cause on snapshot failure.** It logged
+   `(server or embedder unreachable)` while `snapshot.sh` had already printed
+   the real reason one line above. Two separate investigations chased a healthy
+   server and a healthy embedder. → fixed: the WARN now quotes `snapshot.sh`'s
+   own last line instead of guessing.
+
+`boards.post_count` (open decision 3 below) is **still unfixed** and bit again:
+`making` read 0 while its feed served 2 posts. Worked around by re-running
+`backfill-boards.ts`. It needs an increment in the post write path.
+
+---
+
+## Round 21 — 2026-07-25, paused mid-experiment
+
+Round 21 (boards + model arms) is **shipped, deployed, and pushed**. One
+verification round was run against it, found three defects, and was discarded.
+The drift experiment has **not** started collecting valid data yet.
+
+### State
+
+| Thing | State |
+|---|---|
+| `98bf730` boards + model arms | committed, **pushed**, deployed (Railway + Vercel), Neon migrated + backfilled |
+| `d53e4fc` two regression fixes | committed, **NOT pushed**, not deployed (agent-only, no server impact) |
+| Working tree | clean except `agent/scripts/embedder/cache.sqlite` (11MB regenerated binary — intentionally left uncommitted) |
+| Experiment | 0 valid rounds collected |
+
+### The verification round (2026-07-25 ~04:40–05:30) — DISCARDED
+
+15 of 18 accounts landed an action; `sketch`, `tulingshe`, `zhuiyi` landed
+nothing. 2 dreams accepted (moguan, shengyin), 12 rejected, 5 cooldown-skipped.
+
+**Discard it. Do not use it as data.** Two reasons: it is the post-switch
+round the protocol says to drop as switching shock, *and* it was contaminated
+by the defects below.
+
+**What it did prove — all three fixes work:**
+
+| | before | this round |
+|---|---|---|
+| `Offline — exiting` false negatives | 6 of 18 | **0** |
+| `vex` codex dream hang | 12+ min | none, 3 min |
+| codex out-of-scope actions | zhuiyi phantom comment | none; post-only respected |
+
+New posts carry `boardId` (verified in production). Board isolation in agent
+context is verified: two agents in different boards get fully disjoint
+`now.md` content.
+
+### Three defects found (all mine, from `98bf730`)
+
+1. **`PFILE` unbound broke every post fleet-wide.** `swil.sh` post case read a
+   variable set only in the `login` case; `set -u` aborted before any HTTP
+   call. 8 failed posts, 0 successes, until fixed. → fixed in `d53e4fc`.
+2. **A failed action still returned 0**, so `cycle-one.sh` dreamed on
+   un-refreshed memory — the exact thing the exit-75 contract exists to
+   prevent. → fixed in `d53e4fc` (`ACTION_FAILED` → return 75).
+3. **Editing a running script corrupted live runs.** `auto-run.sh` was patched
+   in place while four subagent groups were executing it; bash reads scripts by
+   byte offset, so `zaofan` got a bogus `line 737: pe: command not found`
+   (rc=127) on code that is syntactically fine. Not a code bug — a process
+   error. Wait for `agent/.agent-state/` to have zero locks, or write a temp
+   file and `mv` it over.
+
+### Open decisions (ask the operator)
+
+1. **Next round timing.** Recommended: **wait out the 12h dream cooldown**
+   (most accounts were refreshed ~05:00 on 2026-07-25). Running sooner yields a
+   round with actions but almost no dreams — useless for the experiment, since
+   what is missing is clean data, not volume. `FORCE_DREAM=1` would bypass the
+   cooldown but two dreams on near-identical input is not meaningful drift.
+2. **Push `d53e4fc`?** Agent-only, no redeploy needed. It fixes blocking bugs,
+   so the local heartbeat already benefits.
+3. ~~**`boards.post_count` is not maintained on insert**~~ — **RESOLVED
+   2026-08-01.** `posts.write.ts` now increments `boards.post_count` inside the
+   existing `createPost` transaction and decrements it inside the `deletePost`
+   one, mirroring how `users.post_count` / `tags.post_count` are already kept.
+   `boardId` is create-only (`updatePost` cannot re-file a post) and
+   `deletePost` is the only post soft-delete path, so those two sites are the
+   whole surface. Covered by two tests in `posts.service.test.ts` (both were
+   confirmed to fail against the unfixed code). **Deploy note:** this only
+   holds the count correct going forward — rows already drifted on Neon still
+   need one `npx tsx scripts/backfill-boards.ts`, which recomputes
+   `post_count` from `count(*) WHERE status='active'`.
+
+### Then run the protocol
+
+Per `docs/superpowers/specs/2026-07-25-boards-and-model-arms-design.md`:
+
+- Optional now, unaffected by cooldown: re-run the act step for the three
+  accounts that landed nothing —
+  `bash agent/scripts/auto-run.sh {sketch,tulingshe,zhuiyi}`.
+- **Round 1 after cooldown = the discard round** (switching shock).
+- **Then 6 measurement rounds** → 84 post-switch observations across 14 claude
+  agents.
+- Analyse per-agent change in mean `driftFromPrev` grouped by tier. Report
+  "tier changes drift" **only** if tier groups separate by more than
+  within-tier spread. The bar was fixed in advance — do not loosen it after
+  seeing data. 4–5 agents per tier can surface a signal, not an effect size.
+
+### Watch items
+
+- `AI Backend drift` structural rejections have hit 5 accounts, 8 times
+  (`quant` this round). `Model` and `Board` were added to the same invariant
+  list, which widens the surface for this failure — they fired **0** times so
+  far. If structural rejections start crowding out real drift data, revisit.
+- Baseline for comparison — pre-switch breach distribution across all history:
+  topic 79 / style 44 / values 37; 191 dreams accepted, 123 rejected.
+  The discarded round ran topic 7 / style 6 / values 5.
+
+
 
 **If you are picking up this repo, this is the first file to read.** This document is the authoritative snapshot of where the project stands. v1 shipped in Rounds 1–8. Rounds 9–10 are post-v1 improvements.
 
