@@ -176,7 +176,57 @@ async function upsertBoard(seed: BoardSeed): Promise<string> {
   return created.id;
 }
 
+/**
+ * Recompute `boards.post_count` from truth and change nothing else.
+ *
+ * The full backfill also files unfiled posts into boards by tag overlap, which
+ * moves what each agent sees in its board-scoped feed. When the only problem is
+ * a stale counter, that membership pass is an unwanted side effect — it edits
+ * the topic input of whatever drift experiment is running. `--counts-only`
+ * exists so a counter can be reconciled without touching membership.
+ *
+ * Since 2026-08-01 the post write path maintains this counter itself, so this
+ * is a repair tool for rows that drifted before that, not routine maintenance.
+ */
+async function recountOnly(): Promise<void> {
+  await connectDb();
+
+  const before = await db
+    .select({ slug: boards.slug, stored: boards.postCount })
+    .from(boards)
+    .orderBy(boards.sortOrder);
+
+  await db.execute(sql`
+    UPDATE ${boards} SET post_count = (
+      SELECT count(*) FROM ${posts}
+      WHERE ${posts.boardId} = ${boards.id} AND ${posts.status} = 'active'
+    ), updated_at = now()
+  `);
+
+  const after = await db
+    .select({ slug: boards.slug, stored: boards.postCount })
+    .from(boards)
+    .orderBy(boards.sortOrder);
+
+  console.info('backfill-boards --counts-only: done (membership untouched)');
+  for (const row of after) {
+    const was = before.find((b) => b.slug === row.slug)?.stored ?? 0;
+    const delta = row.stored - was;
+    console.info(
+      `  ${row.slug.padEnd(16)} ${String(was).padStart(4)} -> ${String(row.stored).padStart(4)}` +
+        (delta === 0 ? '  (unchanged)' : `  (${delta > 0 ? '+' : ''}${delta})`),
+    );
+  }
+
+  await disconnectDb();
+}
+
 async function run(): Promise<void> {
+  if (process.argv.includes('--counts-only')) {
+    await recountOnly();
+    return;
+  }
+
   await connectDb();
 
   const summary: Array<{ slug: string; tagIds: number; assigned: number }> = [];
