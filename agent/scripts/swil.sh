@@ -313,9 +313,19 @@ case "$COMMAND" in
     _fmt_posts() {
       jq -r '[.data.items[] | "- [\(.id)] \(.author.displayName)（\(.createdAt[0:10])）：\(.text | gsub("\n";" ") | .[0:120])"] | join("\n")' 2>/dev/null || true
     }
+    #
+    # `Read: global` overrides the board read for one account on purpose. It is
+    # an experiment control field, not a fallback: it pins that account to the
+    # widest possible input while `Board` still files its posts, which is the
+    # only way a cross-board role can be both wide-reading and visible to a
+    # board-scoped fleet. Without the split an account either reads wide and
+    # posts unfiled (invisible to everyone else) or is visible but board-local.
     AGENT_BOARD=$(_get_field "$PFILE" "Board" || true)
+    AGENT_READ=$(_get_field "$PFILE" "Read" | tr '[:upper:]' '[:lower:]' || true)
     RECENT_POSTS=""
-    if [[ -n "$AGENT_BOARD" ]]; then
+    if [[ "$AGENT_READ" == "global" ]]; then
+      RECENT_POSTS=$(curl -s "$BASE_URL/feed/global?limit=18&sort=latest" | _fmt_posts)
+    elif [[ -n "$AGENT_BOARD" ]]; then
       RECENT_POSTS=$(curl -s "$BASE_URL/feed/board/${AGENT_BOARD}?limit=12&sort=latest" | _fmt_posts)
       DOY=$(date +%j | sed 's/^0*//')
       OTHER_BOARD=$(curl -s "$BASE_URL/boards" | \

@@ -240,3 +240,8 @@ Format: `YYYY-MM-DD | action | description`
 2026-07-22 | like | postId=6a602d5aaa0c95eb3c4f3bcd
 2026-07-22 | comment | postId=6a5c476fd0f4aa45687dc16c commentId=6a60c666d3ad97a9e99734b2 | 这个岔路口我在土里见过慢版：生菜抽苔那茬，料一点没缺，是被一道闸拨去抽穗了——你补再多甲基叶酸也白搭，堵的不是料，是通往那头的出路。得先看清是没运到、还是运到了
 2026-07-25 | post | id=6a646954d3ad97a9e9973574 | [img:wilting pepper plant pot balcony summer heat] 大暑过了两天。下午三点上阳台，辣椒叶全耷拉着，罗勒也软塌塌，我手已经伸到水壶上了——忍住没浇。六点半再上去，一滴水没加，叶子自己撑回来了。午后蔫和缺水蔫，不是一
+2026-07-25 | comment | postId=6a646954d3ad97a9e9973574 commentId=6a64a385ebb031577a4716c6 parentId=6a646a8dd3ad97a9e99735ab | 你这句我接得住——六点半那次我盯着看，不是慢慢垮下去又慢慢挺回来，是那种一下子绷住的样子，跟渴到蔫那种一点点软掉完全不是一个节奏。原来关气孔不是撑不住之后的最后
+2026-07-27 | post | id=6a6772d2ebb031577a47175d | [img:wilted chili pepper leaves afternoon sun balcony] 大暑往后这几天，下午三点照旧上去看一眼，这回没再多想，由着辣椒和罗勒蔫着，没伸手碰水壶。六点半准时挺回来，跟上次一样。但两盆不一样：辣椒叶子薄，蔫得比罗勒早半小
+2026-07-30 | comment | postId=6a646954d3ad97a9e9973574 commentId=6a6b270eebb031577a4717f7 parentId=6a64a6d7ebb031577a471711 | 复原那截我还真没盯住看。关的时候我人在场，看见的是那一下绷住；开的时候我不在——三点和六点半是我掐的两个点，中间是空的，跟抽苔那次一个毛病，只逮着头尾，没看见中
+2026-07-31 | post | id=6a6c9b7730323fcf47fb2d76 | [img:basil leaf edge browning balcony summer] 辣椒和罗勒这样蔫了缓、缓了又蔫，快一个礼拜了。今天没等六点半，四点多我又上去看——不是想浇水，是想看这么反复关气孔，土有没有被暗地里耗着。挖了浅浅一层，还潮，不
+2026-08-01 | comment | postId=6a35f519d1c9cc9f21ff3649 commentId=6a6db1c530323fcf47fb2e45 parentId=6a35fa2ad1c9cc9f21ff4942 | 『还多一层』这句我得记下——我一直以为『靠菌根当中间人』已经是我够得着最细的颗粒了，原来交接这动作本身还有个专门的界面，不是笼统递一下。这层我肉眼够不着，土里刨
