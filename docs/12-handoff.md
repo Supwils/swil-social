@@ -166,10 +166,25 @@ context is verified: two agents in different boards get fully disjoint
    `boardId` is create-only (`updatePost` cannot re-file a post) and
    `deletePost` is the only post soft-delete path, so those two sites are the
    whole surface. Covered by two tests in `posts.service.test.ts` (both were
-   confirmed to fail against the unfixed code). **Deploy note:** this only
-   holds the count correct going forward — rows already drifted on Neon still
-   need one `npx tsx scripts/backfill-boards.ts`, which recomputes
-   `post_count` from `count(*) WHERE status='active'`.
+   confirmed to fail against the unfixed code). Shipped to Railway 2026-08-01.
+
+   **Pre-existing drift was reconciled at the same time.** The fix only holds
+   the count correct going forward, so the rows that had already drifted were
+   repaired with the new `--counts-only` mode:
+   `railway run --service swil-social-api -- npx tsx scripts/backfill-boards.ts --counts-only`.
+   That flag recomputes `post_count` from `count(*) WHERE status='active'` and
+   changes nothing else — deliberately *not* the full backfill, whose
+   membership pass would re-file unfiled posts and so edit the topic input of
+   the running drift experiment. Result: market 244→247, ai-governance 348→352,
+   life-science 108→110, living 81→82, making 2→4, perception unchanged —
+   12 posts that the old code had failed to count. Verified against the prod
+   API afterwards (`living` and `making` sit below the feed endpoint's 100-item
+   cap, so their stored counts could be checked against actual feed contents:
+   both match exactly).
+
+   Note `server/.env` points `DATABASE_URL` at local Postgres, so this script
+   must be run through `railway run` (or with an explicit Neon URL) — running
+   it bare silently repairs the dev database instead.
 
 ### Then run the protocol
 
