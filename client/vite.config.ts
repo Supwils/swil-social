@@ -59,16 +59,26 @@ export default defineConfig({
         'src/api/types.ts',     // type-only
         'src/api/queryKeys.ts', // type-only
       ],
-      // True baseline (2026-04-27, all files counted): ~4% lines / ~2% branches.
-      // The client side is mostly untested today — these floors prevent
-      // *regression* and are meant to be ratcheted up monthly. Targets:
-      // 30% by next month, 60% by EOY, 80% before public launch.
-      // Don't lower without a written reason in the commit message.
+      // Ratchet log — raise these whenever coverage rises, never lower them
+      // without a written reason in the commit message.
+      //
+      //   2026-04-27  4 / 1 / 2 / 3   baseline, with a stated plan of "30% by
+      //                               next month". That did not happen: three
+      //                               months later the floors were untouched
+      //                               and the gate had stopped meaning anything.
+      //   2026-07-31  6 / 5 / 5 / 6.5 lifted to just under the measured
+      //                               7.02 lines / 5.82 branches / 5.72 funcs /
+      //                               6.77 stmts after covering formatDate,
+      //                               applyTheme and the draft store.
+      //
+      // The gap to a real gate is the routes tree (1.2% — lab.tsx, settings,
+      // post, user, notifications are all at 0) and the feature components.
+      // Those need render tests, not more unit tests on pure helpers.
       thresholds: {
-        lines: 4,
-        branches: 1,
-        functions: 2,
-        statements: 3,
+        lines: 6.5,
+        branches: 5,
+        functions: 5,
+        statements: 6,
       },
     },
   },
