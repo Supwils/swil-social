@@ -252,6 +252,82 @@ describe('agents.service.ingestSnapshot', () => {
     expect(row.aspectDrift?.values).toBe(0.95);
   });
 
+  it('recomputes driftFromAnchor for every earlier snapshot when the anchor arrives', async () => {
+    const agent = await seedUser({ username: 'zenith', isAgent: true });
+
+    // Three snapshots land before any anchor exists, so each is stored with
+    // driftFromAnchor = 0. Distinct embeddings give distinct expected values.
+    const early = [
+      { hash: uniqHash('pre-a'), embedding: axis(1), expected: 1 }, // dot 0   → dist 1
+      { hash: uniqHash('pre-b'), embedding: mixed06(), expected: 0.4 }, // dot 0.6 → dist 0.4
+      { hash: uniqHash('pre-c'), embedding: axis(0), expected: 0 }, // dot 1   → dist 0
+    ];
+    for (const s of early) {
+      await ingestSnapshot('zenith', agent, {
+        contentHash: s.hash,
+        embedding: s.embedding,
+        snapshotType: 'dream',
+        archivePath: `agents/zenith/personality.archive.md#${s.hash}`,
+        excerpt: '',
+      });
+    }
+    const before = await db
+      .select({ contentHash: personalitySnapshots.contentHash, d: personalitySnapshots.driftFromAnchor })
+      .from(personalitySnapshots)
+      .where(eq(personalitySnapshots.userId, agent.id));
+    expect(before.every((r) => r.d === 0)).toBe(true);
+
+    // The anchor arrives late (the backfill case) and must rewrite all three.
+    const anchorHash = uniqHash('anchor');
+    await ingestSnapshot('zenith', agent, {
+      contentHash: anchorHash,
+      embedding: axis(0),
+      snapshotType: 'anchor',
+      archivePath: 'agents/zenith/personality.md',
+      excerpt: '',
+    });
+
+    const after = await db
+      .select({ contentHash: personalitySnapshots.contentHash, d: personalitySnapshots.driftFromAnchor })
+      .from(personalitySnapshots)
+      .where(eq(personalitySnapshots.userId, agent.id));
+    const byHash = new Map(after.map((r) => [r.contentHash, r.d]));
+
+    for (const s of early) {
+      expect(byHash.get(s.hash)).toBeCloseTo(s.expected, 10);
+    }
+    // The anchor row itself is excluded from the rewrite and keeps its own 0.
+    expect(byHash.get(anchorHash)).toBe(0);
+    expect(after).toHaveLength(4);
+  });
+
+  it('leaves other agents untouched when one agent gets a new anchor', async () => {
+    const zenith = await seedUser({ username: 'zenith', isAgent: true });
+    const other = await seedUser({ username: 'liushang', isAgent: true });
+
+    const otherSnap = await seedSnapshot(other.id, { driftFromAnchor: 0.77 });
+    await ingestSnapshot('zenith', zenith, {
+      contentHash: uniqHash('z-pre'),
+      embedding: axis(1),
+      snapshotType: 'dream',
+      archivePath: 'agents/zenith/personality.archive.md#1',
+      excerpt: '',
+    });
+    await ingestSnapshot('zenith', zenith, {
+      contentHash: uniqHash('z-anchor'),
+      embedding: axis(0),
+      snapshotType: 'anchor',
+      archivePath: 'agents/zenith/personality.md',
+      excerpt: '',
+    });
+
+    const [untouched] = await db
+      .select({ d: personalitySnapshots.driftFromAnchor })
+      .from(personalitySnapshots)
+      .where(eq(personalitySnapshots.id, otherSnap.id));
+    expect(untouched.d).toBe(0.77);
+  });
+
   it('computes drift = 0 when no anchor or prev snapshot exists yet', async () => {
     const agent = await seedUser({ username: 'zenith', isAgent: true });
 

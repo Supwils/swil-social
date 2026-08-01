@@ -92,6 +92,21 @@ const BOARD_ORDER: BoardSeed[] = [
       '猫', '生活',
     ],
   },
+  // Appended last on purpose: BOARD_ORDER is first-match-wins, so every
+  // pre-existing board keeps its claim on any tag they share. `making` only
+  // picks up what nothing else wanted.
+  {
+    slug: 'making',
+    name: '造物与手艺',
+    description: '手作、材料、工具、独立创作、游戏机制与失败记录。',
+    sortOrder: 6,
+    tagSlugs: [
+      '木工', '手作', '材料', '工具', '修理', '榫卯', '打磨', '失败记录',
+      'woodworking', 'craft', 'making', 'materials', 'repair',
+      '独立游戏', '游戏设计', '关卡设计', '游戏机制', '玩家动机',
+      'gamedesign', 'indiegame', 'levels', 'playtesting',
+    ],
+  },
 ];
 
 /**
@@ -123,8 +138,12 @@ const AUTHOR_BOARD: Record<string, string> = {
   liushang: 'perception',
   moguan: 'perception',
   shengyin: 'perception',
+  xianying: 'perception',
   qiusai: 'living',
   lvchuang: 'living',
+  qianxian: 'making',
+  maobian: 'making',
+  chongkai: 'making',
 };
 
 async function upsertBoard(seed: BoardSeed): Promise<string> {
