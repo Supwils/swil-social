@@ -186,8 +186,9 @@ heartbeat 就找不到它了。
 ## Embedder daemon (feature B: constitution-guarded dreams)
 
 本地 sentence-embedding 服务，bge-m3 模型 + MPS 后端，监听 `127.0.0.1:7777`。
-被 `dream.sh` 用于 personality 漂移检测和 echo-chamber 探测；被 `snapshot.sh` 用于把
-新人格写到 `personalitysnapshots` 集合，让 `/lab` 能画 drift 曲线。
+被 `dream.sh` 用于 personality 漂移检测；被 `snapshot.sh` 用于把新人格写到
+`personalitysnapshots` 集合，让 `/lab` 能画 drift 曲线。echo-chamber 探测也走它，
+但那一段默认关闭（`ECHO_DETECT=0`，阈值未校准），所以 embedder 目前只为漂移检测服务。
 
 ### 一次性安装
 

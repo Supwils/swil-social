@@ -1,18 +1,100 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-07-31
-owner: round-22
+last-updated: 2026-08-01
+owner: round-23
 ---
 
 # Handoff
 
-## ▶ NEXT SESSION STARTS HERE — 2026-07-31, Round 22 landed
+## ▶ NEXT SESSION STARTS HERE — 2026-08-01, Round 23 landed
 
-Round 22 added **4 accounts, a 6th board, and a `Read` input-width control
-field**, then ran one full 22-account cycle against production.
-Spec: `docs/superpowers/specs/2026-07-31-new-agents-design.md`.
-**Nothing is committed** — the working tree holds the whole round.
+Round 23 ran a full 22-account cycle, then root-caused and fixed two
+correctness defects, then **committed, pushed and deployed everything** —
+including the entire Round 22 working tree, which had been sitting uncommitted.
+Working tree is clean apart from `agent/scripts/embedder/cache.sqlite`
+(a 14 MB binary cache that churns every run; deliberately left unstaged).
+
+Pushed through `6771c09`. Backend redeployed to Railway, frontend to Vercel,
+both verified live. No migration was involved.
+
+### What landed
+
+| Thing | State |
+|---|---|
+| `boards.post_count` maintained in the write path | fixed, tested, deployed |
+| Pre-existing board count drift on Neon | reconciled (12 uncounted posts) |
+| `dream.sh` SIGPIPE → orphaned `dream_lock_<name>` | root-caused and fixed |
+| Echo-chamber detection | revealed as never-working; gated off (`ECHO_DETECT=0`) |
+| Round 22's uncommitted tree (agents split, lab split, txn fixes, 4 accounts) | committed and shipped |
+
+### Round 23 cycle results (2026-08-01 01:29–01:58 PDT)
+
+22/22 accounts completed. **Zero action failures, zero timeouts, zero leftover
+locks.** 12 posted (3 with images), 4 commented, 4 liked, 2 deliberately did
+nothing.
+
+Dreams: **7 accepted / 15 rejected** (31.8%), which sits right on the ~29%
+the 2026-07-03 calibration targeted — the gate has not drifted. Breaches:
+topic 10, values 7, style 5. `zaofan` was the outlier, breaching all three
+with `values=0.522`.
+
+Two things worth carrying forward:
+
+1. **The codex duplicate-body defect did NOT reproduce.** `quant`, `sketch` and
+   `vex` all posted about 「申诉积压清零率」, which looks exactly like it. It
+   isn't: the three bodies are 275 / 93 / 210 chars and entirely different
+   texts, each keeping its own rhetorical signature from the previous day. This
+   is topic convergence, not duplication — and it was feed-wide, not
+   codex-specific (`chawendao`, `tulingshe`, `mangniu`, `yingying`, `zaofan`
+   wrote the same thread), which is why `topic` was the most-breached aspect.
+   When checking this in future, query by the **`Username` bullet, not the
+   folder** (`quant`→`shujupai`, `sketch`→`diannaokun`, `vex`→`weijian`,
+   `zenith`→`xuansi`) — the folder name returns an empty list that reads like a
+   missing post.
+2. **`vex`'s codex dream-hang did not reproduce** either; the full cycle
+   finished in ~3 min. Not evidence it is fixed, only that it is not
+   deterministic.
+
+### 2026-08-01 — `dream.sh` echo-chamber block root-caused
+
+The long-standing "every accepted dream exits 141 and orphans
+`dream_lock_<name>`" symptom was **one bug, now fixed**. `_pairwise_variance`
+ran `python3 - <<'PY'`, which binds the heredoc to python's stdin, so the
+`printf '%s' "$vecs" |` pipe feeding it was never drained. Two consequences:
+
+1. `sys.stdin.read()` returned `''` every time → the function always returned
+   its `1.0` fallback → `1.0 < 0.04` is never true → **echo-chamber detection
+   never fired for any account since the day it was written.**
+2. Nothing drained the pipe, so once the payload passed the 64KB pipe buffer
+   the writer took SIGPIPE. 12 posts × 1024 dims ≈ 172KB, so every account with
+   a full post history died there — after `snapshot uploaded`, before the
+   `RETURN` trap could release the lock. Accounts too new to have 12 posts
+   stayed under the buffer, which is why the orphans looked age-correlated.
+
+Fixed by passing the vectors as a file path via argv (the convention
+`_anchor_text_for` already used) and widening the trap to `RETURN EXIT`. Both
+verified: a 172KB payload returns rc=0 where it previously returned 141, and
+the lock is released on normal return, `set -e` abort, and SIGPIPE alike.
+
+**Echo detection is left OFF (`ECHO_DETECT=0`).** Fixing the plumbing would have
+flipped it from never-firing to always-firing: measured pairwise variance over
+six accounts' real bge-m3 embeddings is 0.00098–0.01138, i.e. the whole roster
+sits an order of magnitude below the never-calibrated 0.04 threshold. Turning it
+on now would inject a "switch topic/stance" nudge into every dream and confound
+the topic aspect the drift experiment is measuring. Calibrate
+`ECHO_VARIANCE_THRESHOLD` against a real distribution first, then set
+`ECHO_DETECT=1`.
+
+### Not done — the next real decision
+
+The drift experiment still has not started collecting valid data. Round 23 was
+a maintenance round, not a measurement round. See "Then run the protocol"
+below; the 6-round measurement protocol is still pending, and now has a cleaner
+substrate to run on (no orphaned locks silently skipping dreams, no
+echo-chamber nudge about to fire into the topic aspect).
+
+## Round 22 — 2026-07-31 (its working tree shipped in Round 23)
 
 ### What shipped
 
@@ -49,36 +131,6 @@ ai-governance accounts (`sketch`, `vex`, `quant`, `mangniu`, `tulingshe`,
 is the monoculture the new accounts exist to dilute — do **not** loosen the
 thresholds in response.
 
-### 2026-08-01 — `dream.sh` echo-chamber block root-caused
-
-The long-standing "every accepted dream exits 141 and orphans
-`dream_lock_<name>`" symptom was **one bug, now fixed**. `_pairwise_variance`
-ran `python3 - <<'PY'`, which binds the heredoc to python's stdin, so the
-`printf '%s' "$vecs" |` pipe feeding it was never drained. Two consequences:
-
-1. `sys.stdin.read()` returned `''` every time → the function always returned
-   its `1.0` fallback → `1.0 < 0.04` is never true → **echo-chamber detection
-   never fired for any account since the day it was written.**
-2. Nothing drained the pipe, so once the payload passed the 64KB pipe buffer
-   the writer took SIGPIPE. 12 posts × 1024 dims ≈ 172KB, so every account with
-   a full post history died there — after `snapshot uploaded`, before the
-   `RETURN` trap could release the lock. Accounts too new to have 12 posts
-   stayed under the buffer, which is why the orphans looked age-correlated.
-
-Fixed by passing the vectors as a file path via argv (the convention
-`_anchor_text_for` already used) and widening the trap to `RETURN EXIT`. Both
-verified: a 172KB payload returns rc=0 where it previously returned 141, and
-the lock is released on normal return, `set -e` abort, and SIGPIPE alike.
-
-**Echo detection is left OFF (`ECHO_DETECT=0`).** Fixing the plumbing would have
-flipped it from never-firing to always-firing: measured pairwise variance over
-six accounts' real bge-m3 embeddings is 0.00098–0.01138, i.e. the whole roster
-sits an order of magnitude below the never-calibrated 0.04 threshold. Turning it
-on now would inject a "switch topic/stance" nudge into every dream and confound
-the topic aspect the drift experiment is measuring. Calibrate
-`ECHO_VARIANCE_THRESHOLD` against a real distribution first, then set
-`ECHO_DETECT=1`.
-
 ### Two defects surfaced this round
 
 1. **New accounts had no `api_key.txt`, so snapshot ingest silently failed.**
@@ -93,9 +145,9 @@ the topic aspect the drift experiment is measuring. Calibrate
    server and a healthy embedder. → fixed: the WARN now quotes `snapshot.sh`'s
    own last line instead of guessing.
 
-`boards.post_count` (open decision 3 below) is **still unfixed** and bit again:
-`making` read 0 while its feed served 2 posts. Worked around by re-running
-`backfill-boards.ts`. It needs an increment in the post write path.
+`boards.post_count` (open decision 3 below) was **still unfixed** at the time and
+bit again: `making` read 0 while its feed served 2 posts. Worked around by
+re-running `backfill-boards.ts`. *Fixed in Round 23 — see decision 3.*
 
 ---
 

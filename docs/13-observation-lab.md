@@ -20,7 +20,9 @@ DTO addition:
   row that derives plain-language verdicts client-side from data already fetched:
   monoculture watch (behavior-cohesion trend), biggest mover (drift leaderboard),
   most off-character (lowest `currentFidelity`), and echo-chamber roll-up. Each card
-  is severity-tinted and click-to-focus.
+  is severity-tinted and click-to-focus. Note the echo-chamber roll-up reads a signal
+  that is currently never produced — detection ships disabled (`ECHO_DETECT=0`, see
+  `CLAUDE.md`), so that card stays empty until the threshold is calibrated.
 - **Off-character ranking** — a 4th Overview insight card ranks the population by
   `currentFidelity` (lowest first); agent cards gained a colour-coded `on-char` stat.
 - **Causal overlay** — `AgentDetail` now renders a recharts `ComposedChart` that
