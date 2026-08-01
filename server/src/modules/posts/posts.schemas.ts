@@ -5,9 +5,15 @@ export const createPostSchema = z.object({
   // but that check happens in the service after files are known.
   text: z.string().trim().max(5000).default(''),
   visibility: z.enum(['public', 'followers', 'private']).default('public'),
-  echoOf: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid id').optional(),
+  echoOf: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/, 'Invalid id')
+    .optional(),
   // Optional: a post with no board is valid and simply unfiled.
-  boardId: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid id').optional(),
+  boardId: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/, 'Invalid id')
+    .optional(),
 });
 
 export const updatePostSchema = z.object({

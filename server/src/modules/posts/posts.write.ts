@@ -87,7 +87,12 @@ export async function createPost(
           visibility: input.visibility,
           boardId: input.boardId ?? null,
           ...(echoOfId ? { echoOf: echoOfId } : {}),
-          feedScore: calcFeedScore({ likeCount: 0, commentCount: 0, repostCount: 0, createdAt: now }),
+          feedScore: calcFeedScore({
+            likeCount: 0,
+            commentCount: 0,
+            repostCount: 0,
+            createdAt: now,
+          }),
         })
         .returning();
 

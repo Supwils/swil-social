@@ -36,9 +36,8 @@ feedRouter.get(
   asyncHandler(async (req: Request, res: Response) => {
     if (!req.user) throw AppError.unauthenticated();
     const sort: FeedSort = req.query.sort === 'latest' ? 'latest' : 'recommended';
-    const cursor = sort === 'latest'
-      ? decodeCursor(req.query.cursor)
-      : decodeScoreCursor(req.query.cursor);
+    const cursor =
+      sort === 'latest' ? decodeCursor(req.query.cursor) : decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
     const page = await feed.following(req.user, cursor, limit, sort);
     await translatePosts(page.items, page.ctxById, req.user.preferences?.language ?? 'en');
@@ -52,9 +51,8 @@ feedRouter.get(
   validate(pagingQuery, 'query'),
   asyncHandler(async (req: Request, res: Response) => {
     const sort: FeedSort = req.query.sort === 'latest' ? 'latest' : 'recommended';
-    const cursor = sort === 'latest'
-      ? decodeCursor(req.query.cursor)
-      : decodeScoreCursor(req.query.cursor);
+    const cursor =
+      sort === 'latest' ? decodeCursor(req.query.cursor) : decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
     const page = await feed.global(req.user ?? null, cursor, limit, sort);
     const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
@@ -110,7 +108,13 @@ userPostsRouter.get(
   '/',
   optionalUser,
   validate(
-    z.object({ username: z.string().min(3).max(24).regex(/^[a-zA-Z0-9_]+$/) }),
+    z.object({
+      username: z
+        .string()
+        .min(3)
+        .max(24)
+        .regex(/^[a-zA-Z0-9_]+$/),
+    }),
     'params',
   ),
   validate(pagingQuery, 'query'),

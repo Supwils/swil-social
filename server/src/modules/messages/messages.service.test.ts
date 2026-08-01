@@ -130,10 +130,7 @@ describe('messages.service', () => {
     const [convoRow] = await db.select().from(conversations).where(eq(conversations.id, convo.id));
     expect(convoRow.unreadBy).not.toContain(me.id);
 
-    const [msgRow] = await db
-      .select()
-      .from(messages)
-      .where(eq(messages.conversationId, convo.id));
+    const [msgRow] = await db.select().from(messages).where(eq(messages.conversationId, convo.id));
     expect(msgRow.readBy).toContain(me.id);
 
     expect(emit).toHaveBeenCalledWith(convo.id, 'message:read', {
@@ -236,7 +233,12 @@ describe('messages.service', () => {
     const convo = await seedConversation([me.id, other.id], { unreadBy: [me.id] });
     const [msg] = await db
       .insert(messages)
-      .values({ conversationId: convo.id, senderId: other.id, text: 'hey there', readBy: [other.id] })
+      .values({
+        conversationId: convo.id,
+        senderId: other.id,
+        text: 'hey there',
+        readBy: [other.id],
+      })
       .returning();
     await db
       .update(conversations)
@@ -269,8 +271,18 @@ describe('messages.service', () => {
     const base = Date.parse('2026-01-01T00:00:00Z');
     await db.insert(messages).values([
       { conversationId: convo.id, senderId: other.id, text: 'first', createdAt: new Date(base) },
-      { conversationId: convo.id, senderId: me.id, text: 'second', createdAt: new Date(base + 1000) },
-      { conversationId: convo.id, senderId: other.id, text: 'third', createdAt: new Date(base + 2000) },
+      {
+        conversationId: convo.id,
+        senderId: me.id,
+        text: 'second',
+        createdAt: new Date(base + 1000),
+      },
+      {
+        conversationId: convo.id,
+        senderId: other.id,
+        text: 'third',
+        createdAt: new Date(base + 2000),
+      },
       {
         conversationId: convo.id,
         senderId: other.id,

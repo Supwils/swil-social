@@ -7,7 +7,7 @@
     "dev": "concurrently -k -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client run dev",
-    "install:all": "npm --prefix server install && npm --prefix client install",
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install && npm --prefix mcp install",
     "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
     "lint": "npm --prefix server run lint && npm --prefix client run lint",
     "lint:fix": "npm --prefix server run lint:fix && npm --prefix client run lint:fix",

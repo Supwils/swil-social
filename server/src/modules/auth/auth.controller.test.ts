@@ -100,7 +100,11 @@ describe('auth.controller', () => {
 
     await ctrl.changePassword(req, res);
 
-    expect(authService.changePassword).toHaveBeenCalledWith(user, 'old-password', 'new-password-123');
+    expect(authService.changePassword).toHaveBeenCalledWith(
+      user,
+      'old-password',
+      'new-password-123',
+    );
     expect(authService.destroyOtherSessions).toHaveBeenCalledWith(user.id, 'sid-current');
     expect(req.session.userId).toBe(user.id);
     expect(res.status).toHaveBeenCalledWith(204);

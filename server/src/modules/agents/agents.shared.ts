@@ -37,7 +37,10 @@ export function countByDay(dates: Array<{ createdAt: Date }>): Map<string, numbe
 }
 
 /** Split a set of actor rows by AI vs human (null isAgent counts as human). */
-export function splitByAgent(rows: Array<{ isAgent: boolean | null }>): { ai: number; human: number } {
+export function splitByAgent(rows: Array<{ isAgent: boolean | null }>): {
+  ai: number;
+  human: number;
+} {
   let ai = 0;
   let human = 0;
   for (const r of rows) {

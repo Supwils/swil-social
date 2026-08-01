@@ -35,7 +35,12 @@ describe('cosineDist', () => {
 
 describe('centroid', () => {
   it('averages element-wise', () => {
-    expect(centroid([[0, 0], [2, 4]])).toEqual([1, 2]);
+    expect(
+      centroid([
+        [0, 0],
+        [2, 4],
+      ]),
+    ).toEqual([1, 2]);
   });
 
   it('returns null for empty input or zero-dim', () => {
@@ -55,11 +60,23 @@ describe('meanPairwiseCosine', () => {
   });
 
   it('is 1 for identical vectors (max cohesion)', () => {
-    expect(meanPairwiseCosine([[1, 0], [1, 0], [1, 0]])).toBeCloseTo(1);
+    expect(
+      meanPairwiseCosine([
+        [1, 0],
+        [1, 0],
+        [1, 0],
+      ]),
+    ).toBeCloseTo(1);
   });
 
   it('is 0 for mutually orthogonal vectors', () => {
-    expect(meanPairwiseCosine([[1, 0, 0], [0, 1, 0], [0, 0, 1]])).toBeCloseTo(0);
+    expect(
+      meanPairwiseCosine([
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ]),
+    ).toBeCloseTo(0);
   });
 
   it('ignores empty vectors', () => {
@@ -69,16 +86,33 @@ describe('meanPairwiseCosine', () => {
 
 describe('pairwiseVariance', () => {
   it('returns 1 (diverse) for fewer than 3 vectors', () => {
-    expect(pairwiseVariance([[1, 0], [0, 1]])).toBe(1);
+    expect(
+      pairwiseVariance([
+        [1, 0],
+        [0, 1],
+      ]),
+    ).toBe(1);
   });
 
   it('is ~0 when all pairwise sims are equal', () => {
     // three mutually orthogonal vectors → all pairwise sims are 0 → variance 0
-    expect(pairwiseVariance([[1, 0, 0], [0, 1, 0], [0, 0, 1]])).toBeCloseTo(0);
+    expect(
+      pairwiseVariance([
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ]),
+    ).toBeCloseTo(0);
   });
 
   it('is positive when pairwise sims differ', () => {
     // two identical + one orthogonal → sims are {1, 0, 0} → non-zero variance
-    expect(pairwiseVariance([[1, 0], [1, 0], [0, 1]])).toBeGreaterThan(0);
+    expect(
+      pairwiseVariance([
+        [1, 0],
+        [1, 0],
+        [0, 1],
+      ]),
+    ).toBeGreaterThan(0);
   });
 });

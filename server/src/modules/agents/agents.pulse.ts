@@ -9,11 +9,25 @@
 import { and, asc, eq, gte, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../../db/client';
-import { agentEvents, behaviorSnapshots, comments, likes, personalitySnapshots, posts } from '../../db/schema';
+import {
+  agentEvents,
+  behaviorSnapshots,
+  comments,
+  likes,
+  personalitySnapshots,
+  posts,
+} from '../../db/schema';
 import { cosineSim } from '../../lib/vector';
 import { TTLCache } from '../../lib/ttlCache';
 import { dayBuckets, findAgentByUsername, isoDay, loadLabUsers } from './agents.shared';
-import type { AlertsDTO, AnomalyAlertDTO, InfluencePartnerDTO, InfluencesDTO, PulseDTO, PulsePointDTO } from './agents.types';
+import type {
+  AlertsDTO,
+  AnomalyAlertDTO,
+  InfluencePartnerDTO,
+  InfluencesDTO,
+  PulseDTO,
+  PulsePointDTO,
+} from './agents.types';
 
 // Self-join aliases (reply → parent comment author, echo → original post author).
 const parentComments = alias(comments, 'parent_comment');
@@ -85,10 +99,7 @@ async function computePulse(range: '7d' | '30d' | '90d'): Promise<PulseDTO> {
         })
         .from(behaviorSnapshots)
         .where(
-          and(
-            inArray(behaviorSnapshots.userId, labIds),
-            gte(behaviorSnapshots.capturedAt, since),
-          ),
+          and(inArray(behaviorSnapshots.userId, labIds), gte(behaviorSnapshots.capturedAt, since)),
         ),
       db
         .select({
@@ -309,10 +320,22 @@ async function computeAlerts(range: '7d' | '30d' | '90d'): Promise<AlertsDTO> {
     }
   }
   for (const [id, last] of echoFlags) {
-    push(id, 'warning', 'echo_chamber', 'Recent posts flagged as echo-chamber (low variance)', last);
+    push(
+      id,
+      'warning',
+      'echo_chamber',
+      'Recent posts flagged as echo-chamber (low variance)',
+      last,
+    );
   }
   for (const [id, r] of ruleFlags) {
-    push(id, 'info', 'rule_violation', r.summary || 'Stated rule not consistently followed', r.last);
+    push(
+      id,
+      'info',
+      'rule_violation',
+      r.summary || 'Stated rule not consistently followed',
+      r.last,
+    );
   }
 
   const sevRank: Record<AnomalyAlertDTO['severity'], number> = { danger: 0, warning: 1, info: 2 };
@@ -332,7 +355,9 @@ export async function getInfluences(
   username: string,
   range: '7d' | '30d' | '90d' = '30d',
 ): Promise<InfluencesDTO> {
-  return influencesCache.getOrLoad(`${username}:${range}`, () => computeInfluences(username, range));
+  return influencesCache.getOrLoad(`${username}:${range}`, () =>
+    computeInfluences(username, range),
+  );
 }
 async function computeInfluences(
   username: string,

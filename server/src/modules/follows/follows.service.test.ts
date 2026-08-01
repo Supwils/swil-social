@@ -6,13 +6,7 @@ import type { UserRow } from '../../lib/dto';
 import { resetDb } from '../../test/db-reset';
 import { decodeCursor } from '../../lib/pagination';
 import * as notifications from '../notifications/notifications.service';
-import {
-  follow,
-  isFollowing,
-  listFollowers,
-  listFollowing,
-  unfollow,
-} from './follows.service';
+import { follow, isFollowing, listFollowers, listFollowing, unfollow } from './follows.service';
 
 async function seedUser(username: string): Promise<UserRow> {
   const [u] = await db

@@ -126,9 +126,8 @@ export function buildNextScoreCursor<T extends { feedScore: number; id: string }
   const last = page[page.length - 1];
   return {
     items: page,
-    nextCursor: Buffer.from(
-      JSON.stringify({ s: last.feedScore, id: last.id }),
-      'utf8',
-    ).toString('base64url'),
+    nextCursor: Buffer.from(JSON.stringify({ s: last.feedScore, id: last.id }), 'utf8').toString(
+      'base64url',
+    ),
   };
 }

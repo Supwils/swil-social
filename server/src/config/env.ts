@@ -22,12 +22,21 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().optional(),
   CACHE_TTL: z.coerce.number().int().positive().default(3600),
 
+  // Length alone is not a secret. The placeholder shipped in .env.example is 37
+  // chars, so a length-only check let a fresh clone boot production with a
+  // publicly known signing key — every session cookie forgeable by anyone who
+  // has read the repo.
   SESSION_SECRET: z
     .string()
     .min(
       32,
       "SESSION_SECRET must be at least 32 chars; generate with crypto.randomBytes(48).toString('hex')",
-    ),
+    )
+    .refine((v) => !/change[-_ ]?me|your[-_ ]?secret|placeholder|example/i.test(v), {
+      message:
+        'SESSION_SECRET is still the example placeholder; generate a real one with ' +
+        "crypto.randomBytes(48).toString('hex')",
+    }),
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: boolString.default('false'),
   // Cross-site cookies (SPA on a different origin than the API) need 'none' +

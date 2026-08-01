@@ -175,7 +175,11 @@ async function hydrateOne(doc: NotificationRow): Promise<NotificationDTO | null>
       ? db.select({ text: posts.text }).from(posts).where(eq(posts.id, doc.postId)).limit(1)
       : Promise.resolve([] as { text: string }[]),
     doc.commentId
-      ? db.select({ text: comments.text }).from(comments).where(eq(comments.id, doc.commentId)).limit(1)
+      ? db
+          .select({ text: comments.text })
+          .from(comments)
+          .where(eq(comments.id, doc.commentId))
+          .limit(1)
       : Promise.resolve([] as { text: string }[]),
   ]);
   const actor = actorRows[0];

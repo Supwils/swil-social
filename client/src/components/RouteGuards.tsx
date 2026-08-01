@@ -7,8 +7,11 @@ import s from './RouteGuards.module.css';
 function BootstrapGate({ children }: { children: ReactNode }) {
   const bootstrap = useSession((st) => st.bootstrap);
   if (bootstrap === 'pending') {
+    // No role="status" on the wrapper: Spinner already declares one, and
+    // nesting two live regions makes a screen reader announce the same load
+    // twice.
     return (
-      <div className={s.bootstrap} role="status" aria-live="polite">
+      <div className={s.bootstrap}>
         <Spinner label="Loading" />
       </div>
     );
@@ -31,6 +34,20 @@ function RequireAuth({ children }: { children: ReactNode }) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   }
   return <>{children}</>;
+}
+
+/**
+ * Renders for signed-out visitors as well as members. Still waits on the
+ * bootstrap probe, so a signed-in user never flashes the anonymous view before
+ * `/auth/me` resolves — the reason this cannot just be the bare element.
+ *
+ * Used for the routes whose whole value is being linkable without an account:
+ * the global feed, single posts, profiles, and the observation lab. The server
+ * serves these with `optionalUser`, so an anonymous request simply sees public
+ * content.
+ */
+export function OpenRoute({ children }: { children: ReactNode }) {
+  return <BootstrapGate>{children}</BootstrapGate>;
 }
 
 export function PublicRoute({

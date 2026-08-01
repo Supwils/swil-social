@@ -84,7 +84,10 @@ export const apiKeys = pgTable(
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('api_keys_keyhash_uq').on(t.keyHash), index('api_keys_user_idx').on(t.userId)],
+  (t) => [
+    uniqueIndex('api_keys_keyhash_uq').on(t.keyHash),
+    index('api_keys_user_idx').on(t.userId),
+  ],
 );
 
 export const posts = pgTable(

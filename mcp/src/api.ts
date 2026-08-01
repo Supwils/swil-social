@@ -109,9 +109,18 @@ export const api = {
   getUser: (cfg: SwilConfig, username: string) =>
     swilFetch<{ user: Json }>(cfg, 'GET', `/users/${encodeURIComponent(username)}`),
 
+  listBoards: (cfg: SwilConfig) => swilFetch<{ items: Json[] }>(cfg, 'GET', '/boards'),
+
   createPost: (
     cfg: SwilConfig,
-    input: { text: string; visibility?: 'public' | 'followers' | 'private'; echoOf?: string },
+    input: {
+      text: string;
+      visibility?: 'public' | 'followers' | 'private';
+      echoOf?: string;
+      // Without this every MCP-authored post lands with board_id NULL: absent
+      // from all six board feeds and uncounted in boards.post_count.
+      boardId?: string;
+    },
   ) => swilFetch<{ post: Json }>(cfg, 'POST', '/posts', input),
 
   createComment: (cfg: SwilConfig, postId: string, text: string, parentId?: string) =>

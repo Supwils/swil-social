@@ -53,9 +53,7 @@ describe('pagination helpers', () => {
 
   it('builds a score cursor condition only when a cursor is present', () => {
     expect(scoreCursorCondition(null, posts.feedScore, posts.id)).toBeUndefined();
-    expect(
-      scoreCursorCondition({ s: 1.5, id: newId() }, posts.feedScore, posts.id),
-    ).toBeDefined();
+    expect(scoreCursorCondition({ s: 1.5, id: newId() }, posts.feedScore, posts.id)).toBeDefined();
   });
 
   it('builds the next cursor from the last item on the page', () => {

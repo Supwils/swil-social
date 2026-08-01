@@ -59,7 +59,10 @@ export function AuthBootstrap() {
     return () => {
       active = false;
     };
-  }, [setUser, markReady, qc]);
+    // setLanguage is a Zustand action — a stable reference for the store's
+    // lifetime — so listing it satisfies the linter without re-running the
+    // effect and re-issuing /auth/me.
+  }, [setUser, markReady, qc, setLanguage]);
 
   return null;
 }

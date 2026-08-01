@@ -60,7 +60,7 @@ notificationsRouter.post(
   asyncHandler(async (req: Request, res: Response) => {
     if (!req.user) throw AppError.unauthenticated();
     const body = req.body as { all?: true; ids?: string[] };
-    await svc.markRead(req.user, body.all ? 'all' : body.ids ?? []);
+    await svc.markRead(req.user, body.all ? 'all' : (body.ids ?? []));
     return noContent(res);
   }),
 );

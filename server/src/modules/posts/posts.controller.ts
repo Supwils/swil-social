@@ -21,10 +21,7 @@ export async function create(req: Request, res: Response) {
 }
 
 export async function getById(req: Request, res: Response) {
-  const { post, ctx } = await postsService.getPostForViewer(
-    req.params.id,
-    req.user ?? null,
-  );
+  const { post, ctx } = await postsService.getPostForViewer(req.params.id, req.user ?? null);
   const lang = req.user?.preferences?.language ?? 'en';
   const ctxById = new Map([[post.id, ctx]]);
   await translatePosts([post], ctxById, lang);
@@ -44,7 +41,10 @@ export async function remove(req: Request, res: Response) {
 }
 
 export async function search(req: Request, res: Response) {
-  const result = await postsService.searchPosts(req.query as unknown as SearchPostsQuery, req.user ?? null);
+  const result = await postsService.searchPosts(
+    req.query as unknown as SearchPostsQuery,
+    req.user ?? null,
+  );
   return ok(res, result);
 }
 

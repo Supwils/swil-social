@@ -197,7 +197,12 @@
 .thread {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--space-8));
+  /* 100vh minus the top bar left the composer sitting exactly under the fixed
+     mobile tab bar, so the message input was 100% covered and a phone could
+     not send a DM at all. Fill the padded shell instead of guessing at vh, and
+     use dvh so mobile browser chrome collapsing does not re-break it. */
+  height: 100%;
+  min-height: calc(100dvh - var(--space-8));
   gap: var(--space-3);
 }
 

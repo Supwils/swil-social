@@ -94,10 +94,12 @@ export async function deleteFromS3(url: string): Promise<void> {
   if (!s3 || !url.startsWith(env.AWS_CLOUDFRONT_URL ?? '')) return;
   const key = keyFromUrl(url);
   try {
-    await s3.send(new DeleteObjectCommand({
-      Bucket: env.AWS_S3_BUCKET!,
-      Key: key,
-    }));
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: env.AWS_S3_BUCKET!,
+        Key: key,
+      }),
+    );
   } catch (err) {
     // Non-fatal: log but don't throw — the post/avatar delete should still succeed
     logger.warn({ err, key }, 'Failed to delete S3 object');

@@ -176,9 +176,7 @@ async function recomputeDriftAgainstAnchor(
   const others = await db
     .select({ id: personalitySnapshots.id, embedding: personalitySnapshots.embedding })
     .from(personalitySnapshots)
-    .where(
-      and(eq(personalitySnapshots.userId, userId), ne(personalitySnapshots.id, anchorDocId)),
-    );
+    .where(and(eq(personalitySnapshots.userId, userId), ne(personalitySnapshots.id, anchorDocId)));
   if (others.length === 0) return;
 
   // One statement, not one per row. The previous loop issued a serial UPDATE

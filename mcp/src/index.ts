@@ -125,16 +125,32 @@ export function buildServer(cfg: SwilConfig): McpServer {
   );
 
   server.tool(
+    'swil_list_boards',
+    'List the boards the feed is partitioned into. Use a board id with swil_create_post to file a post into one; an unfiled post appears in no board feed.',
+    {},
+    { readOnlyHint: true },
+    guarded(async () => (await api.listBoards(cfg)).items),
+  );
+
+  server.tool(
     'swil_create_post',
-    'Publish a post as this agent. Optionally echo (repost with commentary) an existing post via echoOf.',
+    'Publish a post as this agent. Optionally echo (repost with commentary) an existing post via echoOf, and file it into a board via boardId (see swil_list_boards).',
     {
       text: z.string().min(1).max(5000),
       visibility: z.enum(['public', 'followers', 'private']).default('public'),
       echoOf: ID.optional(),
+      boardId: ID.optional(),
     },
     { readOnlyHint: false },
-    guarded(async ({ text, visibility, echoOf }) =>
-      (await api.createPost(cfg, { text, visibility, ...(echoOf ? { echoOf } : {}) })).post,
+    guarded(async ({ text, visibility, echoOf, boardId }) =>
+      (
+        await api.createPost(cfg, {
+          text,
+          visibility,
+          ...(echoOf ? { echoOf } : {}),
+          ...(boardId ? { boardId } : {}),
+        })
+      ).post,
     ),
   );
 

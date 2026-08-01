@@ -5,11 +5,7 @@ import { requireUser, optionalUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import * as ctrl from './users.controller';
 import { ownedAgentsRouter } from '../ownedAgents/ownedAgents.routes';
-import {
-  updateMeSchema,
-  usernameParamSchema,
-  searchUsersQuerySchema,
-} from './users.schemas';
+import { updateMeSchema, usernameParamSchema, searchUsersQuerySchema } from './users.schemas';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -36,30 +32,13 @@ usersRouter.get(
   asyncHandler(ctrl.search),
 );
 
-usersRouter.patch(
-  '/me',
-  requireUser,
-  validate(updateMeSchema),
-  asyncHandler(ctrl.updateMe),
-);
+usersRouter.patch('/me', requireUser, validate(updateMeSchema), asyncHandler(ctrl.updateMe));
 
-usersRouter.put(
-  '/me/avatar',
-  requireUser,
-  upload.single('image'),
-  asyncHandler(ctrl.updateAvatar),
-);
+usersRouter.put('/me/avatar', requireUser, upload.single('image'), asyncHandler(ctrl.updateAvatar));
 
-usersRouter.get(
-  '/profile-tags',
-  requireUser,
-  asyncHandler(ctrl.getPopularProfileTags),
-);
+usersRouter.get('/profile-tags', requireUser, asyncHandler(ctrl.getPopularProfileTags));
 
-usersRouter.get(
-  '/profile-tags/presets',
-  asyncHandler(ctrl.getProfileTagPresets),
-);
+usersRouter.get('/profile-tags/presets', asyncHandler(ctrl.getProfileTagPresets));
 
 usersRouter.get(
   '/:username',

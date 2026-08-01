@@ -274,7 +274,12 @@ case "$COMMAND" in
       if [[ "$key_check" -ge 200 && "$key_check" -lt 300 ]]; then
         echo "Authenticated as @$USERNAME (API key)"
       else
-        echo "WARN: API key for @$USERNAME is invalid (HTTP $key_check) — re-run 'swil.sh create-api-key' to renew" >&2
+        # Must be fatal. Returning 0 here made auto-run.sh treat login as
+        # successful, so every subsequent write 401'd and surfaced only as a
+        # generic "<agent> <action> failed" — a standing source of unexplained
+        # single-account failures with no trace back to the real cause.
+        echo "FAIL: API key for @$USERNAME is invalid (HTTP $key_check) — re-run 'swil.sh create-api-key' to renew" >&2
+        exit 1
       fi
     else
       # No API Key — fall back to password login

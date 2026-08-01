@@ -1,10 +1,19 @@
 # Compose file for local / self-host production parity.
 #
 # Bring up:    docker compose up --build
-# Seed DB:     docker compose exec app node server/dist/../scripts/seed.js  (after P8+ adds compiled seed)
-#              or run the seed against the mongo service from host: MONGODB_URI=mongodb://127.0.0.1:27017/swil npm run seed
+# Migrate:     docker compose exec app npm --prefix server run db:migrate
+# Seed DB:     docker compose exec app npm --prefix server run seed
 # Tear down:   docker compose down          (keeps volumes)
 # Fresh:       docker compose down -v       (wipes volumes)
+#
+# Docker is NOT part of CI and NOT how the live site is deployed (that is
+# Railway + Vercel — see docs/08-deployment.md). This file is the single-origin
+# self-host path: Express serves the built SPA itself, so there is no
+# cross-origin cookie and COOKIE_SAMESITE stays at its 'lax' default.
+#
+# The database image must be pgvector/pgvector, not stock postgres: the first
+# migration runs `CREATE EXTENSION vector` and the personality-snapshot tables
+# use vector(1024) columns. Same image CI uses.
 
 services:
   app:
@@ -17,16 +26,15 @@ services:
       - ./server/.env
     environment:
       NODE_ENV: production
-      MONGODB_URI: mongodb://mongo:27017/swil_social
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/swil_social
       REDIS_URL: redis://redis:6379
       COOKIE_SECURE: "false" # flip to true when fronting with TLS
       SERVE_CLIENT: "true"
       CORS_ORIGINS: http://localhost:8899
-      OAUTH_SUCCESS_REDIRECT: http://localhost:8899/
     ports:
       - "8899:8899"
     depends_on:
-      mongo:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_started
@@ -37,16 +45,19 @@ services:
       retries: 3
       start_period: 20s
 
-  mongo:
-    image: mongo:7
+  postgres:
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
-    command: ["--bind_ip_all"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: swil_social
     volumes:
-      - mongo_data:/data/db
+      - pg_data:/var/lib/postgresql/data
     ports:
-      - "27017:27017"
+      - "5432:5432"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d swil_social"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,5 +73,5 @@ services:
       - "6379:6379"
 
 volumes:
-  mongo_data:
+  pg_data:
   redis_data:

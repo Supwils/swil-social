@@ -7,6 +7,7 @@ import { createSessionMiddleware } from './config/session';
 import { requestLogger } from './middlewares/requestLogger';
 import { globalLimiter } from './middlewares/rateLimit';
 import { errorHandler, notFoundHandler } from './middlewares/errorHandler';
+import { csrfOriginGuard } from './middlewares/csrf';
 import { authRouter } from './modules/auth/auth.routes';
 import { usersRouter } from './modules/users/users.routes';
 import { postsRouter } from './modules/posts/posts.routes';
@@ -56,10 +57,7 @@ export function createApp(opts: AppOptions = {}): Express {
     'https://fastly.picsum.photos',
     'https://api.dicebear.com',
   ];
-  const fontAndStyleHosts = [
-    'https://fonts.googleapis.com',
-    'https://fonts.gstatic.com',
-  ];
+  const fontAndStyleHosts = ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'];
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -105,9 +103,13 @@ export function createApp(opts: AppOptions = {}): Express {
   app.use(express.json({ limit: '100kb' }));
   app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 
-  // Strip MongoDB operator keys ($...) from request inputs to prevent
-  // query injection. Zod catches most cases, but this is defense-in-depth.
-  app.use((req, _res, next) => {
+  // Strips `$`-prefixed and dotted keys from request inputs. This began as
+  // MongoDB operator-injection defense; under Drizzle/Postgres the actual
+  // protection is parameterized SQL, so it is now defense-in-depth against
+  // operator-shaped keys reaching any future document-ish sink (jsonb columns,
+  // the translations blobs). Named so the middleware is findable by name in
+  // stack traces and tests rather than by a positional index.
+  app.use(function stripOperatorKeys(req, _res, next) {
     const strip = (obj: unknown): void => {
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
       for (const key of Object.keys(obj as Record<string, unknown>)) {
@@ -125,6 +127,10 @@ export function createApp(opts: AppOptions = {}): Express {
   app.use(cookieParser());
   app.use(opts.sessionMiddleware ?? createSessionMiddleware());
 
+  // Must sit after the body parsers (so a rejected request is already fully
+  // read) and before any router, so no write path can skip it.
+  app.use(csrfOriginGuard);
+
   app.use(globalLimiter);
 
   app.get('/health', (_req, res) => {
@@ -132,6 +138,10 @@ export function createApp(opts: AppOptions = {}): Express {
       status: 'ok',
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
+      // `mongo` is kept as a deprecated alias of `db`: the store has been
+      // Postgres since the 2026-07-20 migration, but the key is part of a
+      // response shape that external monitoring may already be scraping.
+      db: isDbHealthy() ? 'ok' : 'down',
       mongo: isDbHealthy() ? 'ok' : 'down',
       version: process.env.npm_package_version ?? 'unknown',
     });

@@ -28,10 +28,12 @@ describe('validate middleware', () => {
 
     middleware(req, {} as Response, next);
 
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'VALIDATION_ERROR',
-      status: 400,
-      fields: { 'ids.0': 'Invalid' },
-    }));
+    expect(next).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'VALIDATION_ERROR',
+        status: 400,
+        fields: { 'ids.0': 'Invalid' },
+      }),
+    );
   });
 });

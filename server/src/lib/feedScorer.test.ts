@@ -17,11 +17,15 @@ describe('calcFeedScore', () => {
 
   it('older posts decay below newer zero-engagement posts of equal weight', () => {
     const fresh = calcFeedScore({
-      likeCount: 0, commentCount: 0, repostCount: 0,
+      likeCount: 0,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(),
     });
     const day = calcFeedScore({
-      likeCount: 0, commentCount: 0, repostCount: 0,
+      likeCount: 0,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(Date.now() - 24 * HOUR),
     });
     expect(fresh).toBeGreaterThan(day);
@@ -29,9 +33,24 @@ describe('calcFeedScore', () => {
 
   it('engagement weights: comment=2x like, repost=3x like', () => {
     const sameAge = new Date(Date.now() - 1 * HOUR);
-    const oneLike = calcFeedScore({ likeCount: 1, commentCount: 0, repostCount: 0, createdAt: sameAge });
-    const oneComment = calcFeedScore({ likeCount: 0, commentCount: 1, repostCount: 0, createdAt: sameAge });
-    const oneRepost = calcFeedScore({ likeCount: 0, commentCount: 0, repostCount: 1, createdAt: sameAge });
+    const oneLike = calcFeedScore({
+      likeCount: 1,
+      commentCount: 0,
+      repostCount: 0,
+      createdAt: sameAge,
+    });
+    const oneComment = calcFeedScore({
+      likeCount: 0,
+      commentCount: 1,
+      repostCount: 0,
+      createdAt: sameAge,
+    });
+    const oneRepost = calcFeedScore({
+      likeCount: 0,
+      commentCount: 0,
+      repostCount: 1,
+      createdAt: sameAge,
+    });
     expect(oneComment).toBeGreaterThan(oneLike);
     expect(oneRepost).toBeGreaterThan(oneComment);
 
@@ -48,11 +67,15 @@ describe('calcFeedScore', () => {
     // beat a fresh post at 24h, you need >40 likes — confirms the algorithm
     // intentionally rewards recency strongly.
     const engaged = calcFeedScore({
-      likeCount: 10, commentCount: 0, repostCount: 0,
+      likeCount: 10,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(Date.now() - 24 * HOUR),
     });
     const newSilent = calcFeedScore({
-      likeCount: 0, commentCount: 0, repostCount: 0,
+      likeCount: 0,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(Date.now() - 1 * HOUR),
     });
     expect(newSilent).toBeGreaterThan(engaged);
@@ -60,11 +83,15 @@ describe('calcFeedScore', () => {
 
   it('high engagement (50 likes at 24h) does outrank a fresh empty post', () => {
     const heavilyEngaged = calcFeedScore({
-      likeCount: 50, commentCount: 0, repostCount: 0,
+      likeCount: 50,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(Date.now() - 24 * HOUR),
     });
     const newSilent = calcFeedScore({
-      likeCount: 0, commentCount: 0, repostCount: 0,
+      likeCount: 0,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(Date.now() - 1 * HOUR),
     });
     expect(heavilyEngaged).toBeGreaterThan(newSilent);
@@ -81,7 +108,9 @@ describe('calcFeedScore', () => {
 
   it('score is always positive', () => {
     const ancient = calcFeedScore({
-      likeCount: 0, commentCount: 0, repostCount: 0,
+      likeCount: 0,
+      commentCount: 0,
+      repostCount: 0,
       createdAt: new Date(Date.now() - 365 * 24 * HOUR),
     });
     expect(ancient).toBeGreaterThan(0);

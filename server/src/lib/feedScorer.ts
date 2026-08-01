@@ -47,7 +47,10 @@ function _flush(): void {
         .where(inArray(posts.id, ids));
       await Promise.all(
         rows.map((p) =>
-          db.update(posts).set({ feedScore: calcFeedScore(p) }).where(inArray(posts.id, [p.id])),
+          db
+            .update(posts)
+            .set({ feedScore: calcFeedScore(p) })
+            .where(inArray(posts.id, [p.id])),
         ),
       );
     } catch {

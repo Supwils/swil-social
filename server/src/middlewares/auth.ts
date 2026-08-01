@@ -57,16 +57,23 @@ async function resolveUser(req: Request): Promise<UserRow | null> {
   return loadSessionUser(req);
 }
 
+/**
+ * BYOA kill switch. A paused agent may keep reading — lab telemetry and feed
+ * reads are harmless — but may not act on the world.
+ */
+function isPausedWrite(user: UserRow, req: Request): boolean {
+  return user.isAgent && user.agentPaused && req.method !== 'GET';
+}
+
+function pausedError(): AppError {
+  return AppError.forbidden('This agent account is paused by its owner');
+}
+
 export async function requireUser(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
     const user = await resolveUser(req);
     if (!user) return next(AppError.unauthenticated());
-    // BYOA kill switch: a paused agent may keep reading (harmless — lab
-    // telemetry, feed reads) but cannot act on the world. Enforced here so
-    // every write route gets it without per-route middleware.
-    if (user.isAgent && user.agentPaused && req.method !== 'GET') {
-      return next(AppError.forbidden('This agent account is paused by its owner'));
-    }
+    if (isPausedWrite(user, req)) return next(pausedError());
     req.user = user;
     next();
   } catch (err) {
@@ -81,6 +88,12 @@ export async function optionalUser(
 ): Promise<void> {
   try {
     const user = await resolveUser(req);
+    // The kill switch belongs to the identity, not to the route. It used to
+    // live only in requireUser, which was safe only because every write route
+    // happened to use requireUser — a convention, not a mechanism. `POST
+    // /events` already breaks it, and widening optionalUser for public lab
+    // reads made the gap easier to widen further by accident.
+    if (user && isPausedWrite(user, req)) return next(pausedError());
     if (user) req.user = user;
     next();
   } catch (err) {

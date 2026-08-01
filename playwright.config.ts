@@ -15,7 +15,9 @@ const SERVER_PORT = 8901;
 
 export const BASE_URL = `http://localhost:${CLIENT_PORT}`;
 export const E2E_DATABASE_URL =
-  process.env.E2E_DATABASE_URL ?? 'postgresql://supwils@127.0.0.1:5432/swil_e2e_pg';
+  // See server/src/test/setup.ts — same reasoning, no hardcoded role.
+  process.env.E2E_DATABASE_URL ??
+  `postgresql://${process.env.USER ?? 'postgres'}@127.0.0.1:5432/swil_e2e_pg`;
 
 export default defineConfig({
   testDir: './e2e',

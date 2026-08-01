@@ -122,6 +122,8 @@ describe('createApp', () => {
     expect(res.statusCode).toBe(200);
     expect(res.payload).toMatchObject({
       status: 'ok',
+      db: 'ok',
+      // deprecated alias, kept so existing monitoring does not break
       mongo: 'ok',
       version: expect.any(String),
     });
@@ -167,11 +169,15 @@ describe('createApp', () => {
     const app = createApp();
     const stack = (
       app as unknown as {
-        _router: { stack: Array<{ handle: (req: any, res: any, next: () => void) => void }> };
+        _router: {
+          stack: Array<{ handle: { name?: string } & ((req: any, res: any, next: () => void) => void) }>;
+        };
       }
     )._router.stack;
-    const healthIndex = stack.findIndex((layer: any) => layer.route?.path === '/health');
-    const stripLayer = stack[healthIndex - 4];
+    // Located by name, not by an offset from /health: a positional lookup
+    // silently pointed at a different middleware the moment one was inserted
+    // ahead of it, and the test then asserted nothing about the sanitizer.
+    const stripLayer = stack.find((layer) => layer.handle?.name === 'stripOperatorKeys');
 
     expect(stripLayer).toBeTruthy();
 

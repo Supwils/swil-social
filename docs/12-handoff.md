@@ -2,12 +2,81 @@
 title: Handoff — post-v1 improvements active
 status: stable
 last-updated: 2026-08-01
-owner: round-23
+owner: round-24
 ---
 
 # Handoff
 
-## ▶ NEXT SESSION STARTS HERE — 2026-08-01, Round 23 landed
+## ▶ NEXT SESSION STARTS HERE — 2026-08-01, Round 24: backlog clearance
+
+Round 24 was a debt-clearing round: audit every doc for pending/unfinished
+work, verify each claim against code, then fix what was real. Five parallel
+audits produced ~200 findings; the pattern was consistent — **the code was
+ahead of the docs almost everywhere, and the docs claimed things the code
+never had.**
+
+### Code fixed
+
+| Area | What was wrong |
+|---|---|
+| **Public read mode** (ADR 006) | The lab, global feed, posts and profiles all required an account, so the project's own result could not be linked. Lab GETs are now `optionalUser`; every ingest POST carries `requireUser` explicitly, asserted structurally in `agents.routes.test.ts`. |
+| **CSRF** | Production runs `SameSite=None` (split origin) with **no CSRF defense** — CORS does not stop a cross-site form POST. Added `middlewares/csrf.ts`: reject a *present-and-unlisted* Origin, allow a *missing* one (non-browser clients cannot be CSRF-ed). 12 tests. |
+| **`SESSION_SECRET`** | The guard was length-only, and the shipped placeholder is 37 chars — a fresh clone booted with a publicly known signing key. Now refuses `change-me`-style values. |
+| **Model tier never recorded** | `auto-run.sh` read `ai_model` and then dropped it, sending bare `claude`. The drift experiment's **independent variable was never persisted**. Now `claude:sonnet` form. |
+| **`dream.sh` LLM calls unbounded** | A codex hang (12+ min, vex) stalls every account behind it, since a round is serial. Added a portable `_run_with_timeout` (macOS has no `timeout`), `DREAM_LLM_TIMEOUT=420`. |
+| **`swil.sh` silent auth failure** | An invalid API key logged a WARN and returned **0**, so `auto-run.sh` believed login succeeded and every later write 401'd as a generic "action failed". Now fatal. |
+| **`/lab` chart contradicted its own gate** | Reference lines drew 0.88/0.80/0.70 — the thresholds the 2026-07-03 calibration *refuted*. Live gate is 0.63/0.72/0.71, so accepted dreams rendered below a "reject" line. |
+| **Fresh-clone breakage** | `install:all` skipped root + mcp (so `ci:check` died at 7/10); `DATABASE_URL` fallbacks hardcoded one maintainer's username in 3 files (test setup, drizzle config, playwright config); `server/.env.example` was missing every `AWS_*` var and `COOKIE_SAMESITE`; no `client/.env.example` existed at all. |
+| **Dockerfile / compose** | `CMD` pointed at `server/dist/server.js`; the real entrypoint is `dist/src/server.js`, so the image's default command failed. Compose still provisioned `mongo:7` for a Postgres app — replaced with `pgvector/pgvector:pg16`. |
+| **MCP was board-blind** | Posts made through MCP landed `board_id NULL` — in no board feed and uncounted. Added `boardId` to `swil_create_post` plus a `swil_list_boards` tool (12 tools now). |
+| **Housekeeping** | knip config missed `server/scripts` and the whole `mcp` workspace (6 false "unused files", `mongodb` falsely flagged); removed the unused `@tanstack/react-query-devtools` **and** its dangling `manualChunks` reference — the exact trap CLAUDE.md warns about; `mongodb` moved to devDependencies; `lint` now runs `--max-warnings=0` and both packages are warning-free. |
+
+### Docs rewritten
+
+`04-data-model.md` was fiction — written for MongoDB, never revised after the
+migration. Rewritten from the schema: 19 tables, 54 indexes, every column
+verified greppable. `07-setup.md` likewise: a reader following it installed
+MongoDB and could never boot the server. Also corrected: `03-api-reference.md`
+(Bearer API-key auth was entirely undocumented, though the whole `agent/` and
+`mcp/` runtimes depend on it; 2 phantom endpoints deleted), `06-security.md`
+(claimed Dependabot, Google OAuth, and a 5 MB upload cap — none true),
+`05-auth-flow.md`, `08-deployment.md`, `09-contributing.md`, `00-vision.md`
+(never mentioned the agent lab at all), `10-roadmap.md` (11 rounds behind, and
+listed two shipped features as the biggest remaining gaps),
+`13-feature-spec.md`, `docs/README.md`.
+
+**New ADRs.** 005 records the Postgres migration and supersedes 003 (which was
+still "Accepted" for MongoDB); 006 records public read mode.
+
+### Two things deliberately NOT done
+
+1. **`ECHO_DETECT` stays 0.** Measured variance is 0.001–0.011 against an
+   uncalibrated 0.04 threshold, so enabling it flags every account on every
+   dream and confounds the topic aspect. Calibrate first.
+2. **The launchd heartbeat was NOT loaded.** `launchctl list | grep swil` is
+   empty and `agent/logs/heartbeat.log` stops at **2026-07-02** — CLAUDE.md
+   claimed it was running; that claim is now corrected. Loading it starts
+   posting to production on a schedule, which is the operator's call.
+
+### Still open, in priority order
+
+- **`quant`'s anchor is stale** — no account has a `personality.anchor.md`, and
+  quant has not had a dream accepted since 2026-07-03. It keeps injecting a
+  fixed false positive into the aspect baseline. Fix before the measurement
+  protocol starts.
+- **The drift experiment still has not collected valid data.** It is now
+  unblocked (tier is recorded, locks no longer leak, no echo nudge pending),
+  which makes it the obvious next piece of work — and it is a measurement
+  round, not a feature.
+- Codex accounts are post-only by prompt convention, not by a code gate, and
+  their comment/like failures are still not root-caused.
+- `population-metric.sh` and `rule-check.sh` are wired to nothing, so two `/lab`
+  panels quietly stop updating.
+- Client coverage is 6.77% against a stated 30% goal.
+
+---
+
+## Round 23 — 2026-08-01
 
 Round 23 ran a full 22-account cycle, then root-caused and fixed two
 correctness defects, then **committed, pushed and deployed everything** —

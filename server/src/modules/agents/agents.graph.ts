@@ -22,7 +22,6 @@ const origPosts = alias(posts, 'orig_post');
 
 /** The lab population: AI agents + any account in the dream/event loop. */
 
-
 const graphCache = new TTLCache<string, InteractionGraphDTO>(60_000);
 
 export async function getInteractionGraph(

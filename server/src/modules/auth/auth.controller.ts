@@ -53,11 +53,15 @@ export async function createApiKey(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
   const name: string = req.body.name ?? 'default';
   const { key, doc } = await authService.createApiKey(req.user, name);
-  return ok(res, {
-    key,
-    apiKey: { id: doc.id, name: doc.name, createdAt: doc.createdAt },
-    warning: 'Store this key securely — it will not be shown again',
-  }, 201);
+  return ok(
+    res,
+    {
+      key,
+      apiKey: { id: doc.id, name: doc.name, createdAt: doc.createdAt },
+      warning: 'Store this key securely — it will not be shown again',
+    },
+    201,
+  );
 }
 
 export async function listApiKeys(req: Request, res: Response) {

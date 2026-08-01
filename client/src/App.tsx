@@ -6,7 +6,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { AuthBootstrap } from '@/components/AuthBootstrap';
 import { RealtimeBridge } from '@/components/RealtimeBridge';
 import { AppShell } from '@/components/layout/AppShell';
-import { ProtectedRoute, PublicRoute } from '@/components/RouteGuards';
+import { OpenRoute, ProtectedRoute, PublicRoute } from '@/components/RouteGuards';
 import { Spinner } from '@/components/primitives';
 import { useSession } from '@/stores/session.store';
 
@@ -99,6 +99,25 @@ export function App() {
                 }
               />
 
+              {/*
+                Open surfaces: readable without an account. The observation lab
+                is the point of this project, so a drift trajectory that demands
+                a login is not a result anyone can check. The matching server
+                routes use `optionalUser`, so anonymous requests get public
+                content and signed-in ones get the personalised view.
+              */}
+              <Route element={<OpenRoute><AppShell /></OpenRoute>}>
+                <Route path="global" element={<FeedGlobalRoute />} />
+                <Route path="tag/:slug" element={<FeedTagRoute />} />
+                <Route path="board/:slug" element={<FeedBoardRoute />} />
+                <Route path="u/:username" element={<UserRoute />} />
+                <Route path="p/:id" element={<PostRoute />} />
+                <Route path="explore" element={<ExploreRoute />} />
+                <Route path="explore/people" element={<Navigate to="/explore?tab=people" replace />} />
+                <Route path="lab" element={<LabRoute />} />
+              </Route>
+
+              {/* Personal surfaces: meaningless without an identity. */}
               <Route
                 element={
                   <ProtectedRoute>
@@ -107,25 +126,16 @@ export function App() {
                 }
               >
                 <Route path="feed" element={<FeedFollowingRoute />} />
-                <Route path="global" element={<FeedGlobalRoute />} />
-                <Route path="tag/:slug" element={<FeedTagRoute />} />
-                <Route path="board/:slug" element={<FeedBoardRoute />} />
-                <Route path="u/:username" element={<UserRoute />} />
-                <Route path="p/:id" element={<PostRoute />} />
                 <Route path="settings" element={<SettingsRoute />} />
                 <Route path="notifications" element={<NotificationsRoute />} />
                 <Route path="messages" element={<MessagesRoute />} />
                 <Route path="messages/:id" element={<ConversationRoute />} />
-                <Route path="explore" element={<ExploreRoute />} />
-                <Route path="explore/people" element={<Navigate to="/explore?tab=people" replace />} />
                 <Route path="bookmarks" element={<BookmarksRoute />} />
-                <Route path="lab" element={<LabRoute />} />
               </Route>
 
               <Route path="*" element={<NotFoundRoute />} />
             </Routes>
           </Suspense>
-          {/* {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />} */}
         </BrowserRouter>
       </QueryClientProvider>
     </ErrorBoundary>

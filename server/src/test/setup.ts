@@ -16,7 +16,10 @@
 // Use ?? so any value already set in the environment (e.g. from a developer's
 // .env or a real CI secret) takes precedence.
 process.env.NODE_ENV ??= 'test';
-process.env.DATABASE_URL ??= 'postgresql://supwils@127.0.0.1:5432/swil_test_pg';
+// Derived from the OS user (the default role for a `brew install postgresql`
+// setup) rather than hardcoded — this used to name one maintainer, so every
+// other machine ran migrations against one URL and queries against another.
+process.env.DATABASE_URL ??= `postgresql://${process.env.USER ?? 'postgres'}@127.0.0.1:5432/swil_test_pg`;
 process.env.MONGODB_URI ??= 'mongodb://127.0.0.1:27017/swil-test-placeholder';
 process.env.SESSION_SECRET ??=
   'unit-test-session-secret-must-be-at-least-32-chars-long-and-deterministic';

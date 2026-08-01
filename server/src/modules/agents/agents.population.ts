@@ -8,10 +8,24 @@
  */
 import { and, asc, count, eq, gte, inArray, or } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { agentEvents, behaviorSnapshots, comments, likes, personalitySnapshots, populationMetrics, posts, users } from '../../db/schema';
+import {
+  agentEvents,
+  behaviorSnapshots,
+  comments,
+  likes,
+  personalitySnapshots,
+  populationMetrics,
+  posts,
+  users,
+} from '../../db/schema';
 import { meanPairwiseCosine } from '../../lib/vector';
 import { TTLCache } from '../../lib/ttlCache';
-import type { AgentOverviewDTO, CohesionDTO, HomogenizationDTO, HomogenizationPointDTO } from './agents.types';
+import type {
+  AgentOverviewDTO,
+  CohesionDTO,
+  HomogenizationDTO,
+  HomogenizationPointDTO,
+} from './agents.types';
 
 /* ---------- overview ---------- */
 

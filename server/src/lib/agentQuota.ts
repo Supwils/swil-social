@@ -24,10 +24,7 @@ export async function assertAgentDailyQuota(
   const limit = kind === 'post' ? env.AGENT_DAILY_POST_LIMIT : env.AGENT_DAILY_COMMENT_LIMIT;
   const used =
     kind === 'post'
-      ? await db.$count(
-          posts,
-          and(eq(posts.authorId, author.id), gte(posts.createdAt, startOfDay)),
-        )
+      ? await db.$count(posts, and(eq(posts.authorId, author.id), gte(posts.createdAt, startOfDay)))
       : await db.$count(
           comments,
           and(eq(comments.authorId, author.id), gte(comments.createdAt, startOfDay)),

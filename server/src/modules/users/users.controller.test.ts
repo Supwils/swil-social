@@ -144,10 +144,13 @@ describe('users.controller', () => {
     mocks.updateMe.mockResolvedValue({ ...viewer, displayName: 'Ada Lovelace' });
     const res = makeRes();
 
-    await updateMe({
-      user: viewer,
-      body: { displayName: 'Ada Lovelace' },
-    } as never, res);
+    await updateMe(
+      {
+        user: viewer,
+        body: { displayName: 'Ada Lovelace' },
+      } as never,
+      res,
+    );
 
     expect(mocks.updateMe).toHaveBeenCalledWith(viewer, { displayName: 'Ada Lovelace' });
     expect(res.payload).toMatchObject({
@@ -156,9 +159,9 @@ describe('users.controller', () => {
   });
 
   it('rejects avatar updates without a file', async () => {
-    await expect(updateAvatar({ user: makeUser() } as never, makeRes())).rejects.toMatchObject<
-      AppError
-    >({
+    await expect(
+      updateAvatar({ user: makeUser() } as never, makeRes()),
+    ).rejects.toMatchObject<AppError>({
       code: 'VALIDATION_ERROR',
       status: 400,
       fields: { image: 'required' },

@@ -188,7 +188,7 @@ export function CrossSpeciesPanel({ data, onSelect }: Props) {
                       return (
                         <td
                           key={h.username}
-                          className={s.heatCell}
+                          className={s.crossHeatCell}
                           style={{
                             backgroundColor:
                               val > 0

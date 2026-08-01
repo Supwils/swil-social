@@ -71,4 +71,7 @@ EXPOSE 8899
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget -qO- "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1
 
-CMD ["node", "server/dist/server.js"]
+# tsc preserves the src/ directory inside outDir, so the entrypoint is
+# dist/src/server.js — matching server/package.json "start". The old path was
+# wrong, which made the image's default command fail on start.
+CMD ["node", "server/dist/src/server.js"]

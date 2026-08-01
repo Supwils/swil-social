@@ -8,7 +8,14 @@
  */
 import { and, asc, count, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { behaviorSnapshots, comments, likes, personalitySnapshots, posts, users } from '../../db/schema';
+import {
+  behaviorSnapshots,
+  comments,
+  likes,
+  personalitySnapshots,
+  posts,
+  users,
+} from '../../db/schema';
 import { countByDay, dayBuckets, findAgentByUsername, isoDay, splitByAgent } from './agents.shared';
 import type { AgentStatsDTO, AgentSummaryDTO, CadencePointDTO, LabCohort } from './agents.types';
 
@@ -272,15 +279,21 @@ export async function getAgentStats(
           )
       : Promise.resolve([]);
 
-  const [recvLikeRows, recvCommentRows, givenCommentRows, likesGivenRows, topLikeRows, topCommentRows] =
-    await Promise.all([
-      recvLikesP,
-      recvCommentsP,
-      givenCommentsP,
-      likesGivenP,
-      topLikesP,
-      topCommentsP,
-    ]);
+  const [
+    recvLikeRows,
+    recvCommentRows,
+    givenCommentRows,
+    likesGivenRows,
+    topLikeRows,
+    topCommentRows,
+  ] = await Promise.all([
+    recvLikesP,
+    recvCommentsP,
+    givenCommentsP,
+    likesGivenP,
+    topLikesP,
+    topCommentsP,
+  ]);
 
   const likesIn = splitByAgent(recvLikeRows);
   const commentsIn = splitByAgent(recvCommentRows);

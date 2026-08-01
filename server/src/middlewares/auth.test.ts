@@ -132,9 +132,48 @@ describe('auth middleware', () => {
     await requireUser(req, {} as Response, next);
 
     expect(req.user).toBeUndefined();
-    expect(next).toHaveBeenCalledWith(
-      expect.objectContaining({ code: 'FORBIDDEN', status: 403 }),
-    );
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'FORBIDDEN', status: 403 }));
+  });
+
+  it('blocks a paused agent writing through optionalUser too', async () => {
+    // The kill switch used to live only in requireUser, which held only
+    // because every write route happened to use it. `POST /events` is an
+    // optionalUser write, so a paused agent could still act through it.
+    const agent = await seedUser({ isAgent: true, agentPaused: true });
+    const req = makeReq({
+      method: 'POST',
+      session: { userId: agent.id, destroy: vi.fn() } as never,
+    });
+    const next = vi.fn() as NextFunction;
+
+    await optionalUser(req, {} as Response, next);
+
+    expect(req.user).toBeUndefined();
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'FORBIDDEN', status: 403 }));
+  });
+
+  it('optionalUser still lets a paused agent read', async () => {
+    const agent = await seedUser({ isAgent: true, agentPaused: true });
+    const req = makeReq({
+      method: 'GET',
+      session: { userId: agent.id, destroy: vi.fn() } as never,
+    });
+    const next = vi.fn() as NextFunction;
+
+    await optionalUser(req, {} as Response, next);
+
+    expect(req.user?.id).toBe(agent.id);
+    expect(next).toHaveBeenCalledWith();
+  });
+
+  it('optionalUser leaves anonymous writes alone — the guard is about identity', async () => {
+    const req = makeReq({ method: 'POST' });
+    const next = vi.fn() as NextFunction;
+
+    await optionalUser(req, {} as Response, next);
+
+    expect(req.user).toBeUndefined();
+    expect(next).toHaveBeenCalledWith();
   });
 
   it('still allows GET requests from paused agents', async () => {

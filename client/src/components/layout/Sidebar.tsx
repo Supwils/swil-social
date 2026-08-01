@@ -41,7 +41,7 @@ export function Sidebar() {
   const handleBrandClick = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     void qc.invalidateQueries();
-    nav('/feed');
+    nav(user ? '/feed' : '/global');
   };
 
   const handleLogout = async () => {
@@ -65,34 +65,44 @@ export function Sidebar() {
       </button>
 
       <nav className={s.nav}>
-        <NavLink to="/feed" className={linkClass} end>
-          <HouseSimple weight="regular" className={s.icon} aria-hidden />
-          <span>{t('nav.following')}</span>
-        </NavLink>
+        {/* Personal destinations — hidden when signed out, since the routes
+            themselves bounce anonymous visitors to /login. */}
+        {user && (
+          <NavLink to="/feed" className={linkClass} end>
+            <HouseSimple weight="regular" className={s.icon} aria-hidden />
+            <span>{t('nav.following')}</span>
+          </NavLink>
+        )}
         <NavLink to="/global" className={linkClass}>
           <Globe weight="regular" className={s.icon} aria-hidden />
           <span>{t('nav.global')}</span>
         </NavLink>
-        <NavLink to="/notifications" className={linkClass}>
-          <Bell weight="regular" className={s.icon} aria-hidden />
-          <span>{t('nav.notifications')}</span>
-          {unreadN > 0 && <span className={s.dot} aria-label={`${unreadN} unread`} />}
-        </NavLink>
-        <NavLink to="/messages" className={linkClass}>
-          <ChatsCircle weight="regular" className={s.icon} aria-hidden />
-          <span>{t('nav.messages')}</span>
-          {unreadC > 0 && <span className={s.dot} aria-label={`${unreadC} unread`} />}
-        </NavLink>
+        {user && (
+          <NavLink to="/notifications" className={linkClass}>
+            <Bell weight="regular" className={s.icon} aria-hidden />
+            <span>{t('nav.notifications')}</span>
+            {unreadN > 0 && <span className={s.dot} aria-label={`${unreadN} unread`} />}
+          </NavLink>
+        )}
+        {user && (
+          <NavLink to="/messages" className={linkClass}>
+            <ChatsCircle weight="regular" className={s.icon} aria-hidden />
+            <span>{t('nav.messages')}</span>
+            {unreadC > 0 && <span className={s.dot} aria-label={`${unreadC} unread`} />}
+          </NavLink>
+        )}
         {user && (
           <NavLink to={`/u/${user.username}`} className={linkClass}>
             <UserIcon weight="regular" className={s.icon} aria-hidden />
             <span>{t('nav.profile')}</span>
           </NavLink>
         )}
-        <NavLink to="/bookmarks" className={linkClass}>
-          <BookmarkSimple weight="regular" className={s.icon} aria-hidden />
-          <span>{t('nav.bookmarks')}</span>
-        </NavLink>
+        {user && (
+          <NavLink to="/bookmarks" className={linkClass}>
+            <BookmarkSimple weight="regular" className={s.icon} aria-hidden />
+            <span>{t('nav.bookmarks')}</span>
+          </NavLink>
+        )}
         <NavLink to="/explore" className={linkClass}>
           <UsersThree weight="regular" className={s.icon} aria-hidden />
           <span>{t('nav.people')}</span>
@@ -101,10 +111,12 @@ export function Sidebar() {
           <Atom weight="regular" className={s.icon} aria-hidden />
           <span>Lab</span>
         </NavLink>
-        <NavLink to="/settings" className={linkClass}>
-          <Gear weight="regular" className={s.icon} aria-hidden />
-          <span>{t('nav.settings')}</span>
-        </NavLink>
+        {user && (
+          <NavLink to="/settings" className={linkClass}>
+            <Gear weight="regular" className={s.icon} aria-hidden />
+            <span>{t('nav.settings')}</span>
+          </NavLink>
+        )}
 
         <div className={s.navDivider} />
 
@@ -143,15 +155,24 @@ export function Sidebar() {
           </NavLink>
         )}
 
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleLogout}
-          leadingIcon={<SignOut size={16} aria-hidden />}
-          fullWidth
-        >
-          {t('nav.signOut')}
-        </Button>
+        {user ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleLogout}
+            leadingIcon={<SignOut size={16} aria-hidden />}
+            fullWidth
+          >
+            {t('nav.signOut')}
+          </Button>
+        ) : (
+          // Anonymous visitors reach the shell now that the global feed, posts,
+          // profiles and the lab are readable without an account — so the
+          // footer has to offer a way in, not a way out.
+          <Button variant="primary" size="sm" fullWidth onClick={() => nav('/login')}>
+            {t('auth.signIn')}
+          </Button>
+        )}
       </div>
     </aside>
   );

@@ -132,7 +132,13 @@ export async function unlike(
 ): Promise<{ likeCount: number; liked: false }> {
   const deleted = await db
     .delete(likes)
-    .where(and(eq(likes.userId, user.id), eq(likes.targetType, targetType), eq(likes.targetId, targetId)))
+    .where(
+      and(
+        eq(likes.userId, user.id),
+        eq(likes.targetType, targetType),
+        eq(likes.targetId, targetId),
+      ),
+    )
     .returning();
 
   if (deleted.length === 0) {

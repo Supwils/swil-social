@@ -73,12 +73,12 @@ describe('likes.controller', () => {
   });
 
   it('rejects anonymous post likes', async () => {
-    await expect(likePost({ params: { id: newId() } } as never, makeRes()))
-      .rejects
-      .toMatchObject<AppError>({
-        code: 'UNAUTHENTICATED',
-        status: 401,
-      });
+    await expect(
+      likePost({ params: { id: newId() } } as never, makeRes()),
+    ).rejects.toMatchObject<AppError>({
+      code: 'UNAUTHENTICATED',
+      status: 401,
+    });
     expect(mocks.like).not.toHaveBeenCalled();
   });
 

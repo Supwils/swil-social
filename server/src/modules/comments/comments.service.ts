@@ -35,7 +35,13 @@ export async function listForPost(
   const rows = await db
     .select()
     .from(comments)
-    .where(and(eq(comments.postId, post.id), inArray(comments.status, ['active', 'deleted']), cursorCond))
+    .where(
+      and(
+        eq(comments.postId, post.id),
+        inArray(comments.status, ['active', 'deleted']),
+        cursorCond,
+      ),
+    )
     .orderBy(asc(comments.createdAt), asc(comments.id))
     .limit(limit + 1);
 

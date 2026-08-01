@@ -28,7 +28,9 @@ async function runRoute(
   method: 'get' | 'post',
   reqOverrides: Record<string, unknown> = {},
 ) {
-  const layer = router.stack.find((entry) => entry.route?.path === path && entry.route.methods[method]);
+  const layer = router.stack.find(
+    (entry) => entry.route?.path === path && entry.route.methods[method],
+  );
   if (!layer?.route) throw new Error(`Route ${method.toUpperCase()} ${path} not found`);
 
   const req = {
@@ -131,12 +133,7 @@ describe('notifications routes', () => {
 
     expect(error).toBeUndefined();
     expect(res.statusCode).toBe(200);
-    expect(mocks.list).toHaveBeenCalledWith(
-      { id: 'viewer-id' },
-      null,
-      15,
-      true,
-    );
+    expect(mocks.list).toHaveBeenCalledWith({ id: 'viewer-id' }, null, 15, true);
   });
 
   it('returns unread count', async () => {
@@ -161,10 +158,7 @@ describe('notifications routes', () => {
     expect(error).toBeUndefined();
     expect(res.statusCode).toBe(204);
     expect(res.ended).toBe(true);
-    expect(mocks.markRead).toHaveBeenCalledWith(
-      { id: 'viewer-id' },
-      'all',
-    );
+    expect(mocks.markRead).toHaveBeenCalledWith({ id: 'viewer-id' }, 'all');
   });
 
   it('rejects malformed read payloads', async () => {

@@ -68,7 +68,9 @@ async function runRoute(
   method: 'get' | 'post',
   reqOverrides: Record<string, unknown> = {},
 ) {
-  const layer = router.stack.find((entry) => entry.route?.path === path && entry.route.methods[method]);
+  const layer = router.stack.find(
+    (entry) => entry.route?.path === path && entry.route.methods[method],
+  );
   if (!layer?.route) throw new Error(`Route ${method.toUpperCase()} ${path} not found`);
 
   const req = {

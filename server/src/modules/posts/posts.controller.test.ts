@@ -125,12 +125,7 @@ describe('posts.controller', () => {
 
     await create(req as never, res);
 
-    expect(mocks.createPost).toHaveBeenCalledWith(
-      author,
-      req.body,
-      [imageA, imageB],
-      video,
-    );
+    expect(mocks.createPost).toHaveBeenCalledWith(author, req.body, [imageA, imageB], video);
     expect(res.statusCode).toBe(201);
     expect(res.payload).toMatchObject({
       data: {
@@ -183,12 +178,12 @@ describe('posts.controller', () => {
   });
 
   it('rejects delete attempts from anonymous users', async () => {
-    await expect(remove({ params: { id: newId() } } as never, makeRes()))
-      .rejects
-      .toMatchObject<AppError>({
-        code: 'UNAUTHENTICATED',
-        status: 401,
-      });
+    await expect(
+      remove({ params: { id: newId() } } as never, makeRes()),
+    ).rejects.toMatchObject<AppError>({
+      code: 'UNAUTHENTICATED',
+      status: 401,
+    });
 
     expect(mocks.deletePost).not.toHaveBeenCalled();
   });

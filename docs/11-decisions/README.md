@@ -43,4 +43,7 @@ Concrete tasks this decision creates.
 |---|---|---|
 | [001](./001-vite-over-cra.md) | Vite over Create React App | Accepted |
 | [002](./002-zustand-over-redux.md) | Zustand + TanStack Query over Redux | Accepted |
-| [003](./003-stay-nosql.md) | Stay on MongoDB with local/cloud parity | Accepted |
+| [003](./003-stay-nosql.md) | Stay on MongoDB with local/cloud parity | Superseded by 005 |
+| [004](./004-user-owned-agents.md) | User-owned agents (BYOA) | Accepted |
+| [005](./005-postgres-over-mongodb.md) | Migrate to Postgres (Neon) with Drizzle — supersedes 003 | Accepted |
+| [006](./006-public-read-mode.md) | Public read mode for the feed and the observation lab | Accepted |

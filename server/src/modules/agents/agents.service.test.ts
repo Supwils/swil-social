@@ -130,10 +130,7 @@ async function seedComment(
 }
 
 async function seedLike(userId: string, targetId: string) {
-  const [l] = await db
-    .insert(likes)
-    .values({ userId, targetType: 'post', targetId })
-    .returning();
+  const [l] = await db.insert(likes).values({ userId, targetType: 'post', targetId }).returning();
   return l;
 }
 
@@ -272,7 +269,10 @@ describe('agents.service.ingestSnapshot', () => {
       });
     }
     const before = await db
-      .select({ contentHash: personalitySnapshots.contentHash, d: personalitySnapshots.driftFromAnchor })
+      .select({
+        contentHash: personalitySnapshots.contentHash,
+        d: personalitySnapshots.driftFromAnchor,
+      })
       .from(personalitySnapshots)
       .where(eq(personalitySnapshots.userId, agent.id));
     expect(before.every((r) => r.d === 0)).toBe(true);
@@ -288,7 +288,10 @@ describe('agents.service.ingestSnapshot', () => {
     });
 
     const after = await db
-      .select({ contentHash: personalitySnapshots.contentHash, d: personalitySnapshots.driftFromAnchor })
+      .select({
+        contentHash: personalitySnapshots.contentHash,
+        d: personalitySnapshots.driftFromAnchor,
+      })
       .from(personalitySnapshots)
       .where(eq(personalitySnapshots.userId, agent.id));
     const byHash = new Map(after.map((r) => [r.contentHash, r.d]));
@@ -506,10 +509,46 @@ describe('agents.service.getBenchmarkLeaderboard', () => {
 
   it('aggregates the latest batch per model and ranks by fidelity', async () => {
     const rows = [
-      { model: 'opus', taskId: 't1', runIndex: 0, output: 'a', vectorFidelity: 0.9, judgeScore: 90, ruleScore: 1, latencyMs: 100 },
-      { model: 'opus', taskId: 't1', runIndex: 1, output: 'b', vectorFidelity: 0.88, judgeScore: 88, ruleScore: 1, latencyMs: 110 },
-      { model: 'haiku', taskId: 't1', runIndex: 0, output: 'c', vectorFidelity: 0.7, judgeScore: 70, ruleScore: 0.5, latencyMs: 40 },
-      { model: 'haiku', taskId: 't1', runIndex: 1, output: 'd', vectorFidelity: 0.6, judgeScore: 60, ruleScore: 0.5, latencyMs: 42 },
+      {
+        model: 'opus',
+        taskId: 't1',
+        runIndex: 0,
+        output: 'a',
+        vectorFidelity: 0.9,
+        judgeScore: 90,
+        ruleScore: 1,
+        latencyMs: 100,
+      },
+      {
+        model: 'opus',
+        taskId: 't1',
+        runIndex: 1,
+        output: 'b',
+        vectorFidelity: 0.88,
+        judgeScore: 88,
+        ruleScore: 1,
+        latencyMs: 110,
+      },
+      {
+        model: 'haiku',
+        taskId: 't1',
+        runIndex: 0,
+        output: 'c',
+        vectorFidelity: 0.7,
+        judgeScore: 70,
+        ruleScore: 0.5,
+        latencyMs: 40,
+      },
+      {
+        model: 'haiku',
+        taskId: 't1',
+        runIndex: 1,
+        output: 'd',
+        vectorFidelity: 0.6,
+        judgeScore: 60,
+        ruleScore: 0.5,
+        latencyMs: 42,
+      },
     ];
     await db.insert(benchmarkRuns).values(
       rows.map((r) => ({
@@ -917,7 +956,9 @@ describe('agents.service alerts', () => {
     expect(out.alerts).toHaveLength(2);
     expect(out.alerts[0].severity).toBe('danger');
     expect(out.alerts[0].kind).toBe('drift_spike');
-    expect(out.alerts.some((x) => x.kind === 'low_fidelity' && x.severity === 'warning')).toBe(true);
+    expect(out.alerts.some((x) => x.kind === 'low_fidelity' && x.severity === 'warning')).toBe(
+      true,
+    );
   });
 });
 

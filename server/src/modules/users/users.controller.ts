@@ -13,7 +13,11 @@ export async function getByUsername(req: Request, res: Response) {
 }
 
 export async function search(req: Request, res: Response) {
-  const { search: query, tag, limit } = req.query as unknown as {
+  const {
+    search: query,
+    tag,
+    limit,
+  } = req.query as unknown as {
     search?: string;
     tag?: string;
     limit?: number;

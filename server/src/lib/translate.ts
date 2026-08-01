@@ -2,13 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
 import { posts, comments, tags } from '../db/schema';
 import { env } from '../config/env';
-import type {
-  PostRow,
-  CommentRow,
-  TagRow,
-  PostDTOContext,
-  CommentDTOContext,
-} from './dto';
+import type { PostRow, CommentRow, TagRow, PostDTOContext, CommentDTOContext } from './dto';
 
 const TRANSLATE_URL = 'https://translation.googleapis.com/language/translate/v2';
 
@@ -86,9 +80,7 @@ export async function translatePosts(
             ctx.originalLang = hasChinese(post.text) ? 'zh' : 'en';
           }
           const merged = { ...(post.translations ?? {}), [targetLang]: translatedText };
-          updates.push(
-            db.update(posts).set({ translations: merged }).where(eq(posts.id, post.id)),
-          );
+          updates.push(db.update(posts).set({ translations: merged }).where(eq(posts.id, post.id)));
         }
       }
 
@@ -207,9 +199,7 @@ export async function translateTags(tagList: TagRow[], targetLang: string): Prom
         const merged = { ...(tag.translations ?? {}), [targetLang]: translatedDisplay };
         // Mutate in memory so toTagDTO in the same request sees the translation.
         tag.translations = merged;
-        updates.push(
-          db.update(tags).set({ translations: merged }).where(eq(tags.id, tag.id)),
-        );
+        updates.push(db.update(tags).set({ translations: merged }).where(eq(tags.id, tag.id)));
       }
     }
 

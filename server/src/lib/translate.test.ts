@@ -161,7 +161,7 @@ describe('translatePosts', () => {
 
   it('translates a post, mutates the ctx, and persists translations[lang]', async () => {
     env.GOOGLE_TRANSLATE_API_KEY = 'test-key';
-    const fetchMock = stubTranslate({ '你好世界': 'Hello world' });
+    const fetchMock = stubTranslate({ 你好世界: 'Hello world' });
     const author = await seedUser();
     const post = await seedPost(author.id, { text: '你好世界' });
     const ctx = makePostCtx(author);
@@ -215,7 +215,7 @@ describe('translatePosts', () => {
 
   it('translates tags embedded in the post contexts', async () => {
     env.GOOGLE_TRANSLATE_API_KEY = 'test-key';
-    const fetchMock = stubTranslate({ '技术': 'Technology' });
+    const fetchMock = stubTranslate({ 技术: 'Technology' });
     const author = await seedUser();
     // empty-text post is skipped, isolating the tag path
     const post = await seedPost(author.id, { text: '' });
@@ -281,7 +281,7 @@ describe('translateComments', () => {
 
   it('translates a comment, mutates the ctx, and persists translations[lang]', async () => {
     env.GOOGLE_TRANSLATE_API_KEY = 'test-key';
-    const fetchMock = stubTranslate({ '你好世界': 'Hello world' });
+    const fetchMock = stubTranslate({ 你好世界: 'Hello world' });
     const author = await seedUser();
     const post = await seedPost(author.id);
     const comment = await seedComment(post.id, author.id, { text: '你好世界' });
@@ -326,7 +326,7 @@ describe('translateTags', () => {
 
   it('translates a tag, mutates it in memory, and persists translations[lang]', async () => {
     env.GOOGLE_TRANSLATE_API_KEY = 'test-key';
-    const fetchMock = stubTranslate({ '技术': 'Technology' });
+    const fetchMock = stubTranslate({ 技术: 'Technology' });
     const tag = await seedTag({ display: '技术' });
 
     await translateTags([tag], 'en');

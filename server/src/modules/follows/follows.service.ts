@@ -90,9 +90,7 @@ async function listEdges(
 
   // Following → this user is the follower; followers → this user is the followed.
   const baseEdgeCond =
-    direction === 'following'
-      ? eq(follows.followerId, user.id)
-      : eq(follows.followingId, user.id);
+    direction === 'following' ? eq(follows.followerId, user.id) : eq(follows.followingId, user.id);
   const peerCol = direction === 'following' ? follows.followingId : follows.followerId;
 
   const term = search?.trim();

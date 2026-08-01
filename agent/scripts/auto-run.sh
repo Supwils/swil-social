@@ -303,8 +303,15 @@ run_agent() {
   }
   emit_lab_event "cycle" "act" "started" "-" "auto-run started"
 
-  # Sync agentBackend to the platform profile so the frontend can display it
-  bash "$SCRIPT_DIR/swil.sh" update-profile "{\"agentBackend\":\"${ai_backend}\"}" >/dev/null 2>&1 || true
+  # Sync agentBackend to the platform profile so the frontend can display it,
+  # and — critically — qualify it with the model tier. The tier is the drift
+  # experiment's independent variable, but until 2026-08-01 this line sent the
+  # bare backend, so every server-side record said "claude" and no measurement
+  # could be attributed to opus vs sonnet vs haiku without hand-joining the
+  # local personality.md files. Format is `<backend>[:<model>]`, e.g.
+  # `claude:sonnet`; the column caps at 20 chars, which every combination fits.
+  bash "$SCRIPT_DIR/swil.sh" update-profile \
+    "{\"agentBackend\":\"${ai_backend}${ai_model:+:$ai_model}\"}" >/dev/null 2>&1 || true
 
   # Step 2: Build context for the LLM
   local personality context_now recent_memory global_feed timeline_feed rhythm_guidance feed_context notification_context

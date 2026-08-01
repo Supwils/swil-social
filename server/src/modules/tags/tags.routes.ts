@@ -16,7 +16,10 @@ const patchTagSchema = z.object({
   coverImage: z.string().url().max(512).optional().or(z.literal('')),
   featured: z.boolean().optional(),
   status: z.enum(['active', 'archived']).optional(),
-  pinnedPostIds: z.array(z.string().regex(/^[a-f0-9]{24}$/)).max(3).optional(),
+  pinnedPostIds: z
+    .array(z.string().regex(/^[a-f0-9]{24}$/))
+    .max(3)
+    .optional(),
   aliasSlugs: z.array(z.string().min(1).max(64)).max(20).optional(),
 });
 
@@ -51,10 +54,7 @@ tagsRouter.get(
 tagsRouter.get(
   '/trending',
   optionalUser,
-  validate(
-    z.object({ limit: z.coerce.number().int().min(1).max(50).optional() }),
-    'query',
-  ),
+  validate(z.object({ limit: z.coerce.number().int().min(1).max(50).optional() }), 'query'),
   asyncHandler(async (req: Request, res: Response) => {
     const limit = typeof req.query.limit === 'number' ? req.query.limit : 10;
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -117,7 +117,12 @@ tagsRouter.patch(
       const aliasTags = await db
         .select({ id: tags.id })
         .from(tags)
-        .where(inArray(tags.slug, aliasSlugs.map((s) => s.toLowerCase())));
+        .where(
+          inArray(
+            tags.slug,
+            aliasSlugs.map((s) => s.toLowerCase()),
+          ),
+        );
       const aliasTagIds = aliasTags.map((t) => t.id);
       updateData.aliasIds = aliasTagIds;
       if (aliasTagIds.length > 0) {

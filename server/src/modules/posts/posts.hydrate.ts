@@ -32,13 +32,22 @@ export async function hydratePosts(
 
   const [authors, tagRows, mentions, likeRows, bookmarkRows] = await Promise.all([
     authorIds.size
-      ? db.select().from(users).where(inArray(users.id, Array.from(authorIds)))
+      ? db
+          .select()
+          .from(users)
+          .where(inArray(users.id, Array.from(authorIds)))
       : Promise.resolve([] as UserRow[]),
     tagIds.size
-      ? db.select().from(tags).where(inArray(tags.id, Array.from(tagIds)))
+      ? db
+          .select()
+          .from(tags)
+          .where(inArray(tags.id, Array.from(tagIds)))
       : Promise.resolve([] as TagRow[]),
     mentionIds.size
-      ? db.select().from(users).where(inArray(users.id, Array.from(mentionIds)))
+      ? db
+          .select()
+          .from(users)
+          .where(inArray(users.id, Array.from(mentionIds)))
       : Promise.resolve([] as UserRow[]),
     viewer && postList.length
       ? db
@@ -79,7 +88,10 @@ export async function hydratePosts(
 
     const origAuthorIdSet = new Set(origPosts.map((p) => p.authorId));
     const origAuthors = origAuthorIdSet.size
-      ? await db.select().from(users).where(inArray(users.id, Array.from(origAuthorIdSet)))
+      ? await db
+          .select()
+          .from(users)
+          .where(inArray(users.id, Array.from(origAuthorIdSet)))
       : [];
     const origAuthorById = new Map(origAuthors.map((u) => [u.id, u]));
 

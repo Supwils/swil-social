@@ -61,6 +61,9 @@ ASPECT_DISTILL_MODEL="${ASPECT_DISTILL_MODEL:-haiku}"
 # Echo chamber：最近 N 条本人帖子之间的 cosine variance 若低于此值，下一轮 dream 触发"换入口"提示
 # 默认关闭 —— 0.04 这个阈值从未对真实 embedding 校准过（实测全员 0.001–0.011，会全员触发）。
 # 见 dream_one 里 echo-chamber 段落的注释。校准好之后设 ECHO_DETECT=1 打开。
+# Hard ceiling on a single dream's LLM call. A round walks accounts serially,
+# so an unbounded call stalls every account behind it (codex has hung 12+ min).
+DREAM_LLM_TIMEOUT="${DREAM_LLM_TIMEOUT:-420}"
 ECHO_DETECT="${ECHO_DETECT:-0}"
 ECHO_VARIANCE_THRESHOLD="${ECHO_VARIANCE_THRESHOLD:-0.04}"
 # 本地 embedder daemon
@@ -151,6 +154,33 @@ PY
 #      buffer and survived, which is why the orphaned locks always looked like
 #      they tracked account age.
 # Same argv convention as _anchor_text_for above; keep it that way.
+# Run a command with a hard wall-clock ceiling, writing stdout to $2.
+#
+# macOS ships no `timeout`/`gtimeout`, so this is hand-rolled: background the
+# command, race it against a sleeping watchdog, and on expiry TERM it, give it
+# 5s to flush, then reap its children and KILL. Returns the command's own exit
+# status, or 143/137 when the watchdog won — callers treat either as "no
+# response", which is already the fail-safe path (original personality kept).
+_run_with_timeout() {
+  local secs="$1" outfile="$2"
+  shift 2
+  "$@" >"$outfile" 2>/dev/null &
+  local pid=$!
+  (
+    sleep "$secs"
+    kill -TERM "$pid" 2>/dev/null
+    sleep 5
+    pkill -P "$pid" 2>/dev/null
+    kill -KILL "$pid" 2>/dev/null
+  ) &
+  local watcher=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null || true
+  return "$rc"
+}
+
 _pairwise_variance() {
   local vec_file="$1"
   python3 - "$vec_file" <<'PY' 2>/dev/null || echo "1.0"
@@ -577,8 +607,16 @@ PROMPT
   local new_personality tmp_out
   tmp_out="$(mktemp)"
   if [[ "$ai_backend" == "codex" ]]; then
-    codex exec --ephemeral --skip-git-repo-check --full-auto --color never -o "$tmp_out" \
-      "$(printf 'System:\n%s\n\n---\n\n%s' "$system_prompt" "$user_prompt")" 2>/dev/null || true
+    # Time-boxed: a `codex exec` here has hung for 12+ minutes (vex, 2026-07),
+    # and because a round walks accounts serially one hang stalls every account
+    # behind it. Timing out is safe — an empty result is already handled below
+    # as "no response", which keeps the original personality.
+    _run_with_timeout "$DREAM_LLM_TIMEOUT" "$tmp_out" \
+      codex exec --ephemeral --skip-git-repo-check --full-auto --color never \
+      "$(printf 'System:\n%s\n\n---\n\n%s' "$system_prompt" "$user_prompt")" || {
+      local rc=$?
+      (( rc == 143 || rc == 137 )) && _log "WARN $name — codex dream timed out after ${DREAM_LLM_TIMEOUT}s"
+    }
     new_personality="$(cat "$tmp_out" 2>/dev/null || echo '')"
   else
     # Pin the tier that rewrites the personality — this is the variable under
@@ -588,9 +626,18 @@ PROMPT
     # with a different instrument.
     local dream_model_args=()
     [[ -n "$ai_model" ]] && dream_model_args=(--model "$ai_model")
-    new_personality="$(printf '%s' "$user_prompt" | claude -p \
+    local prompt_file
+    prompt_file="$(mktemp)"
+    printf '%s' "$user_prompt" > "$prompt_file"
+    _run_with_timeout "$DREAM_LLM_TIMEOUT" "$tmp_out" \
+      bash -c 'claude -p "$@" < "$0"' "$prompt_file" \
       "${dream_model_args[@]+"${dream_model_args[@]}"}" \
-      --system-prompt "$system_prompt" --output-format text 2>/dev/null || true)"
+      --system-prompt "$system_prompt" --output-format text || {
+      local rc=$?
+      (( rc == 143 || rc == 137 )) && _log "WARN $name — claude dream timed out after ${DREAM_LLM_TIMEOUT}s"
+    }
+    new_personality="$(cat "$tmp_out" 2>/dev/null || echo '')"
+    rm -f "$prompt_file"
   fi
   rm -f "$tmp_out"
 

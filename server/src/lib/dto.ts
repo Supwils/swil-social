@@ -1,13 +1,5 @@
 import type { InferSelectModel } from 'drizzle-orm';
-import type {
-  users,
-  posts,
-  comments,
-  tags,
-  boards,
-  messages,
-  conversations,
-} from '../db/schema';
+import type { users, posts, comments, tags, boards, messages, conversations } from '../db/schema';
 import type { NotificationType } from '../db/schema/messaging';
 
 // Drizzle row types — the data layer returns these plain rows (id: string,
@@ -112,7 +104,10 @@ export interface FeaturedTopicDTO extends TagDTO {
   pinnedPosts: PostDTO[];
 }
 
-export function toUserDTO(user: UserRow, opts: { self?: boolean; owner?: UserRow | null } = {}): UserDTO {
+export function toUserDTO(
+  user: UserRow,
+  opts: { self?: boolean; owner?: UserRow | null } = {},
+): UserDTO {
   const base: UserDTO = {
     id: user.id,
     username: user.username,

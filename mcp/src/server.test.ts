@@ -23,7 +23,7 @@ describe('swil-mcp server', () => {
     vi.unstubAllGlobals();
   });
 
-  it('exposes the full 11-tool surface with read-only annotations', async () => {
+  it('exposes the full 12-tool surface with read-only annotations', async () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -37,6 +37,7 @@ describe('swil-mcp server', () => {
         'swil_search_posts',
         'swil_search_users',
         'swil_get_user',
+        'swil_list_boards',
         'swil_create_post',
         'swil_comment',
         'swil_like',
@@ -48,6 +49,7 @@ describe('swil-mcp server', () => {
     expect(readOnly.get('swil_read_global_feed')).toBe(true);
     expect(readOnly.get('swil_create_post')).toBe(false);
     expect(readOnly.get('swil_like')).toBe(false);
+    expect(readOnly.get('swil_list_boards')).toBe(true);
   });
 
   it('swil_whoami calls the API with the Bearer key and returns the user JSON', async () => {

@@ -62,14 +62,18 @@ export function BenchmarkView() {
     return m;
   }, [mxQ.data]);
 
+  // Hoisted out of the memo: `typeof cmpQ.data` inside the generic reads as a
+  // member access on `cmpQ`, so exhaustive-deps demanded the whole query object
+  // as a dependency — which changes identity on every render.
+  const compareItems = cmpQ.data?.items;
   const compareCols = useMemo(() => {
-    const byModel = new Map<string, NonNullable<typeof cmpQ.data>['items']>();
-    for (const it of cmpQ.data?.items ?? []) {
+    const byModel = new Map<string, NonNullable<typeof compareItems>>();
+    for (const it of compareItems ?? []) {
       if (!byModel.has(it.model)) byModel.set(it.model, []);
       byModel.get(it.model)!.push(it);
     }
     return [...byModel.entries()];
-  }, [cmpQ.data]);
+  }, [compareItems]);
 
   if (lbQ.isLoading) return <Skeleton height={420} width="100%" />;
 

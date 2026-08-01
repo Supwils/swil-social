@@ -10,11 +10,21 @@
   display: flex;
   justify-content: center;
   padding: var(--space-5) var(--space-4) var(--space-8);
+  /* Grid items get an automatic minimum size too, so `.main` inherited the
+     min-content width of whatever it held and grew past the viewport before
+     `.column` ever got a say — measured 530px inside a 375px screen on /lab.
+     The chain has to be unblocked at every level, not just the innermost. */
+  min-width: 0;
 }
 
 .column {
   width: 100%;
   max-width: var(--layout-feed-max);
+  /* Without this, a flex item's automatic minimum size is its min-content
+     width, so a wide `<pre>` inside a post pushes the column past the viewport
+     and the whole PAGE scrolls sideways — the `overflow-x: auto` on the code
+     block never gets a chance to act. */
+  min-width: 0;
 }
 
 .columnWide {

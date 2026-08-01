@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireUser } from '../../middlewares/auth';
+import { optionalUser, requireUser } from '../../middlewares/auth';
 import { asyncHandler } from '../../middlewares/asyncHandler';
 import { validate } from '../../middlewares/validate';
 import { labReadLimiter, snapshotIngestLimiter } from '../../middlewares/rateLimit';
@@ -18,7 +18,16 @@ import {
 
 export const agentsRouter = Router();
 
-agentsRouter.use(requireUser);
+// The observation lab is the point of this project, so its READS are public —
+// a drift trajectory nobody can open without an account is not a result, it is
+// a private log. Every GET below is aggregate, already-published data.
+//
+// INGEST stays authenticated: each POST carries `requireUser` explicitly rather
+// than relying on a blanket router guard, so adding a new write route cannot
+// silently inherit public access. The ingest controllers additionally re-check
+// `req.user` themselves — belt and braces, since this is the boundary where a
+// mistake would let anyone forge personality snapshots.
+agentsRouter.use(optionalUser);
 
 agentsRouter.get('/', labReadLimiter, validate(listQuery, 'query'), asyncHandler(ctrl.list));
 agentsRouter.get('/overview', labReadLimiter, asyncHandler(ctrl.overview));
@@ -29,7 +38,12 @@ agentsRouter.get(
   validate(rangeQuery, 'query'),
   asyncHandler(ctrl.homogenization),
 );
-agentsRouter.post('/population-metric', snapshotIngestLimiter, asyncHandler(ctrl.recordPopulation));
+agentsRouter.post(
+  '/population-metric',
+  requireUser,
+  snapshotIngestLimiter,
+  asyncHandler(ctrl.recordPopulation),
+);
 agentsRouter.get('/pulse', labReadLimiter, validate(rangeQuery, 'query'), asyncHandler(ctrl.pulse));
 agentsRouter.get(
   '/alerts',
@@ -42,6 +56,7 @@ agentsRouter.get(
 // `/:username/*` routes so these literal paths are matched first.
 agentsRouter.post(
   '/benchmark/runs',
+  requireUser,
   snapshotIngestLimiter,
   validate(benchmarkRunIngest, 'body'),
   asyncHandler(ctrl.benchmarkIngest),
@@ -77,6 +92,7 @@ agentsRouter.get(
 );
 agentsRouter.post(
   '/:username/events',
+  requireUser,
   snapshotIngestLimiter,
   validate(usernameParam, 'params'),
   validate(agentEventIngest, 'body'),
@@ -84,6 +100,7 @@ agentsRouter.post(
 );
 agentsRouter.post(
   '/:username/snapshots',
+  requireUser,
   snapshotIngestLimiter,
   validate(usernameParam, 'params'),
   validate(snapshotIngest, 'body'),
@@ -105,6 +122,7 @@ agentsRouter.get(
 );
 agentsRouter.post(
   '/:username/behavior-snapshots',
+  requireUser,
   snapshotIngestLimiter,
   validate(usernameParam, 'params'),
   validate(behaviorSnapshotIngest, 'body'),

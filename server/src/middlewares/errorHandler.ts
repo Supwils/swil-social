@@ -5,9 +5,7 @@ import { captureException } from '../lib/monitoring';
 import { isProd } from '../config/env';
 
 export const notFoundHandler: RequestHandler = (req, _res, next) => {
-  next(
-    new AppError('NOT_FOUND', 404, `Cannot ${req.method} ${req.originalUrl}`),
-  );
+  next(new AppError('NOT_FOUND', 404, `Cannot ${req.method} ${req.originalUrl}`));
 };
 
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
@@ -36,7 +34,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   res.status(500).json({
     error: {
       code: 'INTERNAL',
-      message: isProd ? 'Internal server error' : (err as Error)?.message ?? 'Unknown error',
+      message: isProd ? 'Internal server error' : ((err as Error)?.message ?? 'Unknown error'),
       requestId,
     },
   });

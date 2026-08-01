@@ -10,8 +10,13 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
  */
 export default async function setup(): Promise<void> {
   process.env.NODE_ENV ??= 'test';
+  // Fall back to a local superuser role named after the current OS user — the
+  // default for a `brew install postgresql` setup. Previously this was
+  // hardcoded to one maintainer's username, so `ci:check` failed at step 5/10
+  // on every other machine. CI and Docker set DATABASE_URL explicitly.
   const url =
-    process.env.DATABASE_URL ?? 'postgresql://supwils@127.0.0.1:5432/swil_test_pg';
+    process.env.DATABASE_URL ??
+    `postgresql://${process.env.USER ?? 'postgres'}@127.0.0.1:5432/swil_test_pg`;
   const pool = new Pool({ connectionString: url });
   const db = drizzle(pool);
   await migrate(db, { migrationsFolder: `${__dirname}/../db/migrations` });

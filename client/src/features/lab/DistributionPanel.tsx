@@ -72,7 +72,7 @@ export function DistributionPanel({
       />
 
       <div className={s.cohortTable}>
-        <div className={`${s.cohortRow} ${s.cohortHead}`}>
+        <div className={`${s.distRow} ${s.cohortHead}`}>
           <span>{t('lab.dist.cohort')}</span>
           <span>{t('lab.dist.colN')}</span>
           <span>{t('lab.dist.colFid')}</span>
@@ -160,7 +160,7 @@ function CohortRow({
   c: { n: number; medFid: number | null; medDrift: number | null; avgPosts: number };
 }) {
   return (
-    <div className={s.cohortRow}>
+    <div className={s.distRow}>
       <span className={s.cohortName}>
         <span className={`${s.cohortDot} ${tone === 'ai' ? s.stripDotAi : s.stripDotHuman}`} />
         {name}

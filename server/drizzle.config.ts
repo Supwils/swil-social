@@ -6,6 +6,10 @@ export default defineConfig({
   out: './src/db/migrations',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgresql://supwils@127.0.0.1:5432/swil_social_pg',
+    // See server/src/test/global-setup.ts — same reasoning: derive the local
+    // role from the environment instead of hardcoding a maintainer's username.
+    url:
+      process.env.DATABASE_URL ??
+      `postgresql://${process.env.USER ?? 'postgres'}@127.0.0.1:5432/swil_social_pg`,
   },
 });

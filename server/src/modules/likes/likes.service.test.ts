@@ -23,7 +23,10 @@ async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<
   return u;
 }
 
-async function seedPost(authorId: string, over: Partial<typeof posts.$inferInsert> = {}): Promise<PostRow> {
+async function seedPost(
+  authorId: string,
+  over: Partial<typeof posts.$inferInsert> = {},
+): Promise<PostRow> {
   const [p] = await db
     .insert(posts)
     .values({ authorId, text: 'body', visibility: 'public', ...over })
@@ -72,7 +75,9 @@ describe('likes.service', () => {
     const likeRows = await db
       .select()
       .from(likes)
-      .where(and(eq(likes.userId, actor.id), eq(likes.targetType, 'post'), eq(likes.targetId, post.id)));
+      .where(
+        and(eq(likes.userId, actor.id), eq(likes.targetType, 'post'), eq(likes.targetId, post.id)),
+      );
     expect(likeRows).toHaveLength(1);
   });
 

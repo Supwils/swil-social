@@ -206,7 +206,12 @@ describe('createNotification', () => {
       .from(notificationsTable)
       .where(eq(notificationsTable.recipientId, recipient.id));
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ actorId: actor.id, type: 'like', postId: post.id, read: false });
+    expect(rows[0]).toMatchObject({
+      actorId: actor.id,
+      type: 'like',
+      postId: post.id,
+      read: false,
+    });
     expect(rows[0].commentId).toBeNull();
     expect(emit).toHaveBeenCalledWith(
       recipient.id,
@@ -273,10 +278,25 @@ describe('createNotification', () => {
     vi.spyOn(realtime, 'emitToUser').mockImplementation(() => undefined);
 
     // non-null postId (eq), null comment/message/conversation (isNull)
-    await createNotification({ recipientId: recipient.id, actorId: actor.id, type: 'like', postId: p1.id });
-    await createNotification({ recipientId: recipient.id, actorId: actor.id, type: 'like', postId: p1.id }); // dedup
+    await createNotification({
+      recipientId: recipient.id,
+      actorId: actor.id,
+      type: 'like',
+      postId: p1.id,
+    });
+    await createNotification({
+      recipientId: recipient.id,
+      actorId: actor.id,
+      type: 'like',
+      postId: p1.id,
+    }); // dedup
     // different post target → separate row (matchNullable eq distinguishes)
-    await createNotification({ recipientId: recipient.id, actorId: actor.id, type: 'like', postId: p2.id });
+    await createNotification({
+      recipientId: recipient.id,
+      actorId: actor.id,
+      type: 'like',
+      postId: p2.id,
+    });
     // non-null commentId, null post/message/conversation
     await createNotification({
       recipientId: recipient.id,

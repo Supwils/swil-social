@@ -8,8 +8,19 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  /* The h1 plus the sort tabs do not fit 375px in English (the default
+     locale), and neither child could shrink — so the header pushed
+     document.scrollWidth past the viewport. */
+  flex-wrap: wrap;
+  gap: var(--space-2);
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-border);
+}
+
+@media (max-width: 720px) {
+  .pageHeader .title {
+    font-size: var(--text-h2);
+  }
 }
 
 .title {

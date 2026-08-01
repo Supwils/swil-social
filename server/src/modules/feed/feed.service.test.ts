@@ -4,14 +4,7 @@ import { boards, follows, posts, tags, users } from '../../db/schema';
 import type { PostRow, UserRow } from '../../lib/dto';
 import { decodeCursor, decodeScoreCursor } from '../../lib/pagination';
 import { resetDb } from '../../test/db-reset';
-import {
-  byAuthor,
-  byBoard,
-  byTag,
-  following,
-  getExploreSummary,
-  global,
-} from './feed.service';
+import { byAuthor, byBoard, byTag, following, getExploreSummary, global } from './feed.service';
 
 // ── seed helpers ─────────────────────────────────────────────────────────────
 
@@ -187,10 +180,7 @@ describe('feed.service', () => {
 
   describe('byBoard', () => {
     async function seedBoard(slug: string, sortOrder = 0) {
-      const [b] = await db
-        .insert(boards)
-        .values({ slug, name: slug, sortOrder })
-        .returning();
+      const [b] = await db.insert(boards).values({ slug, name: slug, sortOrder }).returning();
       return b;
     }
 

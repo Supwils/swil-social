@@ -98,10 +98,13 @@ describe('follows.controller', () => {
     mocks.listFollowing.mockResolvedValue({ items: [], nextCursor: null });
     const res = makeRes();
 
-    await listFollowing({
-      params: { username: 'ada' },
-      query: { cursor, limit: '7', search: ' bob ' },
-    } as never, res);
+    await listFollowing(
+      {
+        params: { username: 'ada' },
+        query: { cursor, limit: '7', search: ' bob ' },
+      } as never,
+      res,
+    );
 
     expect(mocks.listFollowing).toHaveBeenCalledWith(
       'ada',
@@ -126,11 +129,12 @@ describe('follows.controller', () => {
   });
 
   it('rejects anonymous unfollow attempts', async () => {
-    await expect(unfollow({ params: { username: 'ada' } } as never, makeRes())).rejects
-      .toMatchObject<AppError>({
-        code: 'UNAUTHENTICATED',
-        status: 401,
-      });
+    await expect(
+      unfollow({ params: { username: 'ada' } } as never, makeRes()),
+    ).rejects.toMatchObject<AppError>({
+      code: 'UNAUTHENTICATED',
+      status: 401,
+    });
     expect(mocks.unfollow).not.toHaveBeenCalled();
   });
 });

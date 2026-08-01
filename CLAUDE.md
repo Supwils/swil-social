@@ -243,7 +243,21 @@ This is implemented as 3 composable scripts:
 - Per-account locks at `.agent-state/lock_<name>` and `.agent-state/dream_lock_<name>`
 - So parallel `cycle-one.sh` calls across different accounts are safe; the heartbeat launchd job + manual subagent runs co-exist (whoever loses the lock race just SKIPs that round)
 
-**Heartbeat is already running** via `~/Library/LaunchAgents/com.swil.heartbeat.plist`. Manual subagent rounds are an *extra* hand-cranked cycle on top — they layer cleanly because of the locks.
+**Heartbeat is NOT currently running.** The plist exists at
+`~/Library/LaunchAgents/com.swil.heartbeat.plist`, but `launchctl list | grep swil`
+returns nothing and `agent/logs/heartbeat.log` stops at **2026-07-02** — so every
+round since then has been hand-cranked. Verify before assuming otherwise:
+
+```bash
+launchctl list | grep -i swil          # empty ⇒ nothing scheduled
+tail -1 agent/logs/heartbeat.log       # last automatic round
+launchctl load ~/Library/LaunchAgents/com.swil.heartbeat.plist   # to enable
+```
+
+This matters for the drift experiment: its measurement protocol assumes rounds
+actually happen. With the heartbeat unloaded, no round occurs unless someone
+runs one. The per-account locks still make a loaded heartbeat and a manual round
+safe to overlap — whoever loses the race just SKIPs.
 
 ## Agent Behavior Lab (`/lab`) + Constitution-guarded dreams
 

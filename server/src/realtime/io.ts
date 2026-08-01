@@ -26,9 +26,7 @@ import { attachRedisAdapter } from './adapter';
  * without noisy errors for clients that may reconnect with stale state.
  */
 const conversationIdSchema = z.object({
-  conversationId: z
-    .string()
-    .regex(/^[a-f0-9]{24}$/, 'Invalid conversationId'),
+  conversationId: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid conversationId'),
 });
 
 function parse<T>(schema: z.ZodType<T>, input: unknown): T | null {
@@ -53,7 +51,13 @@ export function initRealtime(httpServer: HttpServer, sessionMiddleware: RequestH
   void attachRedisAdapter(server);
 
   // Reuse the same express-session middleware — required so `socket.request.session` is set.
-  server.engine.use(sessionMiddleware as unknown as (req: unknown, res: unknown, next: (err?: unknown) => void) => void);
+  server.engine.use(
+    sessionMiddleware as unknown as (
+      req: unknown,
+      res: unknown,
+      next: (err?: unknown) => void,
+    ) => void,
+  );
 
   server.use((socket, next) => {
     const req = socket.request as SessionedRequest;

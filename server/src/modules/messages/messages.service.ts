@@ -104,10 +104,16 @@ export async function listForViewer(
 
   const [userRows, messageRows] = await Promise.all([
     participantIds.size
-      ? db.select().from(users).where(inArray(users.id, Array.from(participantIds)))
+      ? db
+          .select()
+          .from(users)
+          .where(inArray(users.id, Array.from(participantIds)))
       : Promise.resolve([] as UserRow[]),
     lastMessageIds.size
-      ? db.select().from(messages).where(inArray(messages.id, Array.from(lastMessageIds)))
+      ? db
+          .select()
+          .from(messages)
+          .where(inArray(messages.id, Array.from(lastMessageIds)))
       : Promise.resolve([] as MessageRow[]),
   ]);
 
@@ -188,10 +194,7 @@ export async function listMessages(
   if (cursor) {
     const t = new Date(cursor.t);
     conds.push(
-      or(
-        lt(messages.createdAt, t),
-        and(eq(messages.createdAt, t), lt(messages.id, cursor.id)),
-      )!,
+      or(lt(messages.createdAt, t), and(eq(messages.createdAt, t), lt(messages.id, cursor.id)))!,
     );
   }
 

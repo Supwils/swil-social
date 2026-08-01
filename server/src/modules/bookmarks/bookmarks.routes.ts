@@ -11,5 +11,15 @@ export const bookmarksRouter = Router();
 bookmarksRouter.get('/', requireUser, asyncHandler(ctrl.list));
 
 export const postsBookmarkRouter = Router({ mergeParams: true });
-postsBookmarkRouter.post('/', requireUser, validate(idParam, 'params'), asyncHandler(ctrl.bookmarkPost));
-postsBookmarkRouter.delete('/', requireUser, validate(idParam, 'params'), asyncHandler(ctrl.unbookmarkPost));
+postsBookmarkRouter.post(
+  '/',
+  requireUser,
+  validate(idParam, 'params'),
+  asyncHandler(ctrl.bookmarkPost),
+);
+postsBookmarkRouter.delete(
+  '/',
+  requireUser,
+  validate(idParam, 'params'),
+  asyncHandler(ctrl.unbookmarkPost),
+);

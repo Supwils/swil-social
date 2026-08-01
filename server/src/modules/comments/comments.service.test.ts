@@ -23,7 +23,10 @@ async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<
   return u;
 }
 
-async function seedPost(authorId: string, over: Partial<typeof posts.$inferInsert> = {}): Promise<PostRow> {
+async function seedPost(
+  authorId: string,
+  over: Partial<typeof posts.$inferInsert> = {},
+): Promise<PostRow> {
   const [p] = await db
     .insert(posts)
     .values({ authorId, text: 'body', visibility: 'public', ...over })
@@ -43,9 +46,9 @@ describe('comments.service', () => {
       .values({ postId: otherPost.id, authorId: actor.id, text: 'root' })
       .returning();
 
-    await expect(
-      createComment(actor, targetPost.id, 'reply', parent.id),
-    ).rejects.toMatchObject<Partial<AppError>>({ code: 'NOT_FOUND', status: 404 });
+    await expect(createComment(actor, targetPost.id, 'reply', parent.id)).rejects.toMatchObject<
+      Partial<AppError>
+    >({ code: 'NOT_FOUND', status: 404 });
   });
 
   it('soft deletes comments and decrements the parent post count', async () => {

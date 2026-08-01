@@ -14,12 +14,11 @@ async function main(): Promise<void> {
   const db = drizzle(pool);
   await migrate(db, { migrationsFolder: `${__dirname}/migrations` });
   await pool.end();
-   
+
   console.log('migrations applied');
 }
 
 main().catch((err) => {
-   
   console.error(err);
   process.exit(1);
 });

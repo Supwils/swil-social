@@ -144,12 +144,7 @@ describe('comments.controller', () => {
 
     await create(req as never, res);
 
-    expect(mocks.createComment).toHaveBeenCalledWith(
-      author,
-      comment.postId,
-      'hello',
-      null,
-    );
+    expect(mocks.createComment).toHaveBeenCalledWith(author, comment.postId, 'hello', null);
     expect(res.statusCode).toBe(201);
     expect(res.payload).toMatchObject({
       data: { comment: { id: comment.id } },
@@ -157,12 +152,12 @@ describe('comments.controller', () => {
   });
 
   it('rejects delete attempts from anonymous users', async () => {
-    await expect(remove({ params: { id: newId() } } as never, makeRes()))
-      .rejects
-      .toMatchObject<AppError>({
-        code: 'UNAUTHENTICATED',
-        status: 401,
-      });
+    await expect(
+      remove({ params: { id: newId() } } as never, makeRes()),
+    ).rejects.toMatchObject<AppError>({
+      code: 'UNAUTHENTICATED',
+      status: 401,
+    });
 
     expect(mocks.deleteComment).not.toHaveBeenCalled();
   });

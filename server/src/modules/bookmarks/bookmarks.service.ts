@@ -21,7 +21,9 @@ export async function bookmark(user: UserRow, postId: string): Promise<{ bookmar
 }
 
 export async function unbookmark(user: UserRow, postId: string): Promise<{ bookmarked: false }> {
-  await db.delete(bookmarks).where(and(eq(bookmarks.userId, user.id), eq(bookmarks.postId, postId)));
+  await db
+    .delete(bookmarks)
+    .where(and(eq(bookmarks.userId, user.id), eq(bookmarks.postId, postId)));
   return { bookmarked: false };
 }
 
@@ -63,9 +65,7 @@ export async function listBookmarks(
     : [];
 
   const postById = new Map(rawPosts.map((p) => [p.id, p]));
-  const orderedPosts = pageDocs
-    .map((b) => postById.get(b.postId))
-    .filter((p): p is PostRow => !!p);
+  const orderedPosts = pageDocs.map((b) => postById.get(b.postId)).filter((p): p is PostRow => !!p);
 
   const ctxMap = await hydratePosts(orderedPosts, user);
 

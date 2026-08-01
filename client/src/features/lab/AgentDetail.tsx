@@ -13,6 +13,14 @@ import { getAgentDrift, getAgentEvents, getAgentFidelity, getAgentStats, getInfl
 import type { AgentEventDTO } from '@/api/types';
 import s from '@/routes/lab.module.css';
 
+/**
+ * Per-aspect reject thresholds the dream gate actually enforces.
+ * Mirrors DRIFT_THRESHOLD_{VALUES,STYLE,TOPIC} in agent/scripts/dream.sh
+ * (symmetric, calibrated 2026-07-03). Drawn as reference lines so a reader can
+ * see which aspect a rejection breached.
+ */
+const ASPECT_THRESHOLDS = { values: 0.63, style: 0.72, topic: 0.71 } as const;
+
 export function AgentDetail({ username, onClose }: { username: string; onClose: () => void }) {
   const { t } = useTranslation();
   const statsQ = useQuery({
@@ -264,10 +272,17 @@ export function AgentDetail({ username, onClose }: { username: string; onClose: 
                     }}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  {/* Default reject thresholds (mirror dream.sh defaults 0.88/0.80/0.70). */}
-                  <ReferenceLine y={0.88} stroke="var(--color-accent)" strokeDasharray="4 4" strokeOpacity={0.5} />
-                  <ReferenceLine y={0.8} stroke="#e0a458" strokeDasharray="4 4" strokeOpacity={0.5} />
-                  <ReferenceLine y={0.7} stroke="var(--color-text-muted)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  {/*
+                    Reject thresholds, mirroring dream.sh. These were 0.88/0.80/0.70
+                    — the values from the ORIGINAL "guard values strictest" design,
+                    which the 2026-07-03 shadow round refuted. The live gate is
+                    symmetric (values 0.63 / style 0.72 / topic 0.71), so the old
+                    lines drew accepted dreams below a "reject" marker.
+                    Keep in sync with DRIFT_THRESHOLD_* in agent/scripts/dream.sh.
+                  */}
+                  <ReferenceLine y={ASPECT_THRESHOLDS.values} stroke="var(--color-accent)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  <ReferenceLine y={ASPECT_THRESHOLDS.style} stroke="#e0a458" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  <ReferenceLine y={ASPECT_THRESHOLDS.topic} stroke="var(--color-text-muted)" strokeDasharray="4 4" strokeOpacity={0.5} />
                   <Line
                     type="monotone"
                     dataKey="values"

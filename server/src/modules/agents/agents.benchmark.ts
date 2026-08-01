@@ -11,7 +11,14 @@ import { db } from '../../db/client';
 import { benchmarkRuns } from '../../db/schema';
 import { TTLCache } from '../../lib/ttlCache';
 import type { BenchmarkRunIngestInput } from './agents.schemas';
-import type { BenchmarkCompareDTO, BenchmarkCompareItemDTO, BenchmarkLeaderboardDTO, BenchmarkLeaderboardRowDTO, BenchmarkMatrixCellDTO, BenchmarkMatrixDTO } from './agents.types';
+import type {
+  BenchmarkCompareDTO,
+  BenchmarkCompareItemDTO,
+  BenchmarkLeaderboardDTO,
+  BenchmarkLeaderboardRowDTO,
+  BenchmarkMatrixCellDTO,
+  BenchmarkMatrixDTO,
+} from './agents.types';
 
 /* ---------- Persona Bench: ingest + reads ---------- */
 

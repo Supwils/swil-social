@@ -7,8 +7,15 @@ owner: round-1
 
 # ADR 003 — Stay on MongoDB with local/cloud parity
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 005](./005-postgres-over-mongodb.md) (2026-07-20)
 **Date:** 2026-04-21
+
+> This decision was reversed. The reasoning below was sound for the product as
+> it stood, but the workload became vector similarity over personality
+> snapshots plus graph aggregation — shapes that pointed at Postgres. See
+> ADR 005 for what changed and why. The "local/cloud parity via one env var"
+> contract described here no longer holds: the variable is `DATABASE_URL` and
+> the cloud is Neon Postgres.
 
 ## Context
 

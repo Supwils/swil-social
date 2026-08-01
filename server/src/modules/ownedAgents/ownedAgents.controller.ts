@@ -29,10 +29,6 @@ export async function update(req: Request, res: Response) {
 export async function rotateKey(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
   const name = (req.body as { name?: string }).name ?? 'rotated';
-  const { key } = await ownedAgentsService.rotateOwnedAgentKey(
-    req.user,
-    req.params.agentId,
-    name,
-  );
+  const { key } = await ownedAgentsService.rotateOwnedAgentKey(req.user, req.params.agentId, name);
   return ok(res, { key, warning: KEY_WARNING }, 201);
 }

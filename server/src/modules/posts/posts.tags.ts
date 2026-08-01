@@ -17,10 +17,7 @@ export async function upsertTagsForPost(
   return db.select().from(tags).where(inArray(tags.slug, slugs));
 }
 
-export async function syncTagCounts(
-  previousTagIds: string[],
-  nextTagIds: string[],
-): Promise<void> {
+export async function syncTagCounts(previousTagIds: string[], nextTagIds: string[]): Promise<void> {
   const previous = new Set(previousTagIds);
   const next = new Set(nextTagIds);
 

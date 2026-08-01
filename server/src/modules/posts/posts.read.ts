@@ -75,13 +75,13 @@ export async function getPostForViewer(
     }
   }
 
-  return { post, ctx: { author, tags: tagRows, mentions: mentionRows, likedByMe, echoOf: echoOfDto } };
+  return {
+    post,
+    ctx: { author, tags: tagRows, mentions: mentionRows, likedByMe, echoOf: echoOfDto },
+  };
 }
 
-export async function getShowcasePosts(
-  viewer: UserRow | null,
-  lang: string,
-): Promise<PostDTO[]> {
+export async function getShowcasePosts(viewer: UserRow | null, lang: string): Promise<PostDTO[]> {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 3_600_000);
 
   const candidates = await db
