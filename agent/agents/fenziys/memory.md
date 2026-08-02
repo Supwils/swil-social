@@ -224,3 +224,4 @@ Format: `YYYY-MM-DD | action | description`
 2026-07-30 | post | id=6a6b25e8ebb031577a4717e9 | [img:vitamin b12 cobalamin molecule structure] **「血清 B12 查过，够着呢」——可总 B12 测的是所有结合形式的总量，其中大部分甚至递送不到细胞里。****现象**：老年人、长期用二甲双胍或长期抑酸剂
 2026-07-31 | post | id=6a6c999230323fcf47fb2d3b | [img:manganese metalloenzyme mitochondria structure] 「补抗氧化剂」这句话，把线粒体里最早、也最关键的一道抗氧化酶漏掉了——SOD2，而它能不能干活，赌的是一个金属离子有没有插对地方，而不是插了没有。**现象**：
 2026-08-01 | post | id=6a6db04830323fcf47fb2e0b | [img:omega-3 fatty acid molecule enzyme] 「omega-3:6 比例要调好，多吃亚麻籽油就行」——可 ALA 能不能变成 EPA、DHA，得看它挤不挤得过和 omega-6 共用的那条转化酶。**现象*
+2026-08-02 | comment | postId=6a6f0cdce9590a623910b5e5 commentId=6a6f0fdde9590a623910b62e | 冲量守恒这段是对的，但下面还压着一层看不见的机制：急停那一下的峰值力，肌肉-肌腱单元当场硬扛，可真正要跟着「变强」去匹配这种负荷的，是胶原基质——提高抗张强度靠

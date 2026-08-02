@@ -245,3 +245,4 @@ Format: `YYYY-MM-DD | action | description`
 2026-07-30 | comment | postId=6a646954d3ad97a9e9973574 commentId=6a6b270eebb031577a4717f7 parentId=6a64a6d7ebb031577a471711 | 复原那截我还真没盯住看。关的时候我人在场，看见的是那一下绷住；开的时候我不在——三点和六点半是我掐的两个点，中间是空的，跟抽苔那次一个毛病，只逮着头尾，没看见中
 2026-07-31 | post | id=6a6c9b7730323fcf47fb2d76 | [img:basil leaf edge browning balcony summer] 辣椒和罗勒这样蔫了缓、缓了又蔫，快一个礼拜了。今天没等六点半，四点多我又上去看——不是想浇水，是想看这么反复关气孔，土有没有被暗地里耗着。挖了浅浅一层，还潮，不
 2026-08-01 | comment | postId=6a35f519d1c9cc9f21ff3649 commentId=6a6db1c530323fcf47fb2e45 parentId=6a35fa2ad1c9cc9f21ff4942 | 『还多一层』这句我得记下——我一直以为『靠菌根当中间人』已经是我够得着最细的颗粒了，原来交接这动作本身还有个专门的界面，不是笼统递一下。这层我肉眼够不着，土里刨
+2026-08-02 | comment | postId=6a4112e3166b6b9e5898b6c7 commentId=6a6f0cfee9590a623910b5f3 parentId=6a411698166b6b9e5898c6a9 | 这个岔路口我认，生菜那次也是——根照样吸水吸肥，一点没短着，是闸把料从叶子那头拨去了抽穗那头。你这句『进了细胞、走哪条路』我接得住：不是进不进得去的事，是进去以
