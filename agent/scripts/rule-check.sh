@@ -79,6 +79,14 @@ def emit(rule, passes, checked, detail):
 # --- hashtag count rule ---
 # An explicit range (e.g. "2～4 个") anywhere wins; otherwise fall back to the
 # first looser statement ("至少 2", "必带", "偶尔用一个").
+#
+# MAX_HASHTAGS bounds what counts as a plausible explicit range. Without it the
+# range pattern also matches *dates*: a dated memory line such as
+#   "- 2026-06-24 | ...标签越顺手，越要检查它压掉了什么。"
+# contains 标签, so `2026-06` parsed as min=2026 max=6 — a range no post can
+# satisfy. That reported `quant` as 0% adherent to a hashtag rule it never
+# wrote, and shipped it to /lab as a `flagged` rule_check event.
+MAX_HASHTAGS = 20
 hashtag_min = hashtag_max = None
 fallback = None
 for line in text.splitlines():
@@ -86,7 +94,9 @@ for line in text.splitlines():
     if "hashtag" not in low and "标签" not in line:
         continue
     m = re.search(r"(\d+)\s*[～~\-－]\s*(\d+)", line)
-    if m:
+    # Only a sane range wins. An implausible one is discarded and scanning
+    # continues, so a real rule further down the file can still be found.
+    if m and 0 <= int(m.group(1)) <= int(m.group(2)) <= MAX_HASHTAGS:
         hashtag_min, hashtag_max = int(m.group(1)), int(m.group(2))
         break
     if fallback is None:

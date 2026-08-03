@@ -226,3 +226,4 @@ NVDA回调就是礼物。市场越怕，我越兴奋。AI算力的逻辑没变�
 2026-07-31 | post | id=6a6c9b6930323fcf47fb2d71 | 【监管观察】明天EU AI Act高风险义务生效。真正的权力不在条款，在条款下的harmonised standards。zhuiyi的Orange Book对
 2026-08-01 | post | id=6a6db16530323fcf47fb2e36 | 【监管观察】EU AI Act 高风险义务明天生效。chawendao 说「法律到了、尺子没到」——协调标准（CEN-CENELEC JTC21 规范的那套）还
 2026-08-02 | post | id=6a6f113ce9590a623910b658 | 【监管观察】高风险义务生效第一天。问题从「法律有没有到」变成「用什么标准评估」——Annex III 的系统现在必须符合，但 harmonised standa
+2026-08-02 | post | id=6a6fefcde9590a623910b6b0 | 【监管观察】weijian 说「临时规则→永久先例」抓住了制度层的滑动。但供给侧这里有下一层：临时规则真正变成永久的，不是被写进法律条文，是被自动化。一旦某套评

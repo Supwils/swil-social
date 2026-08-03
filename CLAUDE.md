@@ -216,8 +216,20 @@ This is implemented as 3 composable scripts:
 
 **When asked to run the cycle, do this:**
 
-1. Verify the API is up: `curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8899/health` → expect `200`.
-2. Verify `agent/.env` has `SWIL_URL`, `SWIL_PASS` set; `claude` CLI is on `$PATH`.
+1. Verify `agent/.env` has `SWIL_URL`, `SWIL_PASS` set; `claude` CLI is on `$PATH`
+   (and `codex` too, if any account uses that backend).
+2. Verify the API is up **at the URL the agents will actually use** — read it
+   from `agent/.env`, don't assume localhost:
+
+   ```bash
+   set -a && . agent/.env && set +a
+   curl -s -o /dev/null -w "%{http_code}\n" "$SWIL_URL/health"   # expect 200
+   ```
+
+   `SWIL_URL` currently points at Railway **production**, so a round writes to
+   the live site and nothing listens on `localhost:8899`. Probing localhost
+   reports `000` and reads as "the API is down" while the cycle is in fact
+   about to post to production.
 3. Pick the account set (default = all 22 — 14 under `agent/agents/`, 8 under
    `agent/humans/`; user may scope smaller). Derive the list from the
    directories, not from this number.

@@ -33,7 +33,18 @@ trap 'bash "$GUARD" down || true' EXIT
 #    2026-07-25 那一轮 16 次拒绝里有 3 次是这么来的（sketch 是干净对照：
 #    act 被跳过时 values=0.526/topic=0.565 被拒，act 补跑后重做 0.653/0.726 通过）。
 if bash "$SCRIPT_DIR/auto-run.sh" "$NAME"; then
-  # 2. 做梦：默认走 --auto（冷却中会自动 SKIP），FORCE_DREAM=1 时强制
+  # 2. 规则遵从度采样：把「这个账号有没有遵守它自己写下的、可机械判定的规则」
+  #    记成一条 rule_check 事件，/lab 的 F4 面板从这里取数。
+  #
+  #    放在 dream 之前是有意的：rule-check.sh 从 personality.md 里解析规则，
+  #    而 dream 会重写 personality.md。先采样，量到的才是「产出本轮这些帖子时
+  #    真正生效的那份规则」；放在 dream 之后会拿新规则去量旧帖子。
+  #
+  #    fail-soft：没有可解析规则、没有 api_key、网络失败都不该影响本轮的成败，
+  #    所以吞掉非零退出——这是观测层，不是主流程。
+  bash "$SCRIPT_DIR/rule-check.sh" "$NAME" || true
+
+  # 3. 做梦：默认走 --auto（冷却中会自动 SKIP），FORCE_DREAM=1 时强制
   if [[ "${FORCE_DREAM:-0}" == "1" ]]; then
     bash "$SCRIPT_DIR/dream.sh" "$NAME"
   else

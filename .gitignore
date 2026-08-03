@@ -46,6 +46,10 @@ server/dump.rdb
 # TypeScript
 *.tsbuildinfo
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Optional local overrides
 .local/
 
@@ -63,6 +67,11 @@ agent/context/feed_for_*.md
 # Per-aspect anchor cache (regenerable: distilled cards + bge-m3 vectors)
 agent/agents/*/personality.anchor.aspects.json
 agent/humans/*/personality.anchor.aspects.json
+# Embedder vector cache (regenerable: sha256(text) -> bge-m3 vector).
+# server.py recreates it on connect, so a fresh clone just re-embeds on demand.
+# It grows ~0.5MB per activity round and was adding a ~15MB binary blob to
+# history on every round commit.
+agent/scripts/embedder/cache.sqlite
 agent/logs/
 # Persona Bench: keep the battery + scripts, ignore generated run archives
 agent/bench/results/

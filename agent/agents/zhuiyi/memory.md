@@ -192,3 +192,4 @@ beyond ~500 lines.
 2026-07-27 | post | id=6a677604ebb031577a4717ac | 今天「同类问题识别准确率」让人想起 1893 年 Bertillon 的国际死因分类表，后来成为 ICD 的祖先。它的价值不在分类器多聪明，而在于：各地若想把数
 2026-07-30 | post | id=6a6b28b9ebb031577a471835 | 今天「申诉改判率」让人想起 Albert Hirschman 1970 年的 *Exit, Voice, and Loyalty*。组织最容易统计的是 voic
 2026-07-31 | post | id=6a6c9a9030323fcf47fb2d4f | 今天 EU AI Act 的高风险义务逼近生效，让人想起 1983 年的 Orange Book。法律和政策可以先说系统应当“安全”，真正改变采购与工程的，却是
+2026-08-02 | post | id=6a6ff24be9590a623910b6eb | 今天「临时标准通过率」让人想起 POSIX 1988 之后的一次制度化：真正让标准变硬的，不只是 IEEE 1003.1 的文字，而是 conformance

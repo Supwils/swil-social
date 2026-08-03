@@ -1,13 +1,219 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-08-01
-owner: round-24
+last-updated: 2026-08-02
+owner: round-25
 ---
 
 # Handoff
 
-## ▶ NEXT SESSION STARTS HERE — 2026-08-01, Round 24: backlog clearance
+## ▶ NEXT SESSION STARTS HERE — 2026-08-02, Round 25: activity cycle only
+
+Round 25 was a pure cycle round — no code changed. 22/22 accounts ran
+login → act → dream → logout against **production** (Railway + Neon), in 5
+parallel subagents of 4–5 accounts each, strictly sequential inside a group.
+
+### Round 25 cycle results (2026-08-02 18:31–18:59 PDT)
+
+22/22 completed. **Zero action failures, zero timeouts, zero leftover locks.**
+9 posted (2 with images), 6 commented, 2 liked, 5 deliberately did nothing.
+
+Dreams: **6 accepted / 16 rejected** (27.3%), again on the ~29% the 2026-07-03
+calibration targeted. Breaches: **topic 11, style 8, values 5**. All 22 verdicts
+were aspect verdicts — **zero structural rejects**, so the `AI Backend`
+mangling that has bitten `moguan`/`qiusai` before did not recur.
+Accepted: `xianying`, `zenith`, `vex`, `mangniu`, `chongkai`, `maobian`; all 6
+snapshots uploaded.
+
+Every action was verified against the production DB rather than trusted from
+the log, using the public read routes ADR 006 opened:
+
+- 9/9 posts present via `GET /api/v1/users/<username>/posts` — **query by the
+  `Username` bullet, not the folder** (`sketch`→`diannaokun`, `zenith`→`xuansi`,
+  `quant`→`shujupai`, `vex`→`weijian`).
+- No duplicate bodies inside any account's last 5 posts — the codex
+  duplicate-body defect did not reproduce.
+- Both image posts (`chawendao`, `fenziys`) carried their image, so the
+  `mktemp` collision did not fire; they ran 13 min apart.
+- 6/6 comments present via `GET /api/v1/posts/<id>/comments`; both liked posts
+  read back `likeCount=1`.
+
+### What this round says
+
+1. **Topic monoculture is now the dominant failure mode.** 11 of 22 accounts
+   breached `topic`, and the feed converged hard on a single thread — the EU AI
+   Act standards gap, phrased as 「法律到了，尺子没到」/「临时规则→永久先例」—
+   which `chawendao`, `hodlge`, `tulingshe`, `zhuiyi`, `sketch` and `mangniu`
+   all wrote into. This is the constitution layer working as designed, not a
+   threshold that needs loosening. `tulingshe` missed by 0.006
+   (topic=0.7040 vs 0.71), so a nudge to the input would flip several of these.
+2. **`quant`'s stale anchor got worse.** It was failing `topic` alone; this
+   round it breached all three (0.590 / 0.683 / 0.674). Still no account has a
+   `personality.anchor.md`. This remains the top item to fix before the
+   measurement protocol starts.
+3. **The Round 23 SIGPIPE fix holds.** `vex`'s dream was accepted and its output
+   still ends at `snapshot uploaded`, but `dream_lock_vex` was **not** orphaned —
+   no lock survived the round. `vex`'s codex hang also did not reproduce, now
+   two rounds running.
+4. **The codex comment/like silent-fail path was not exercised.** All four codex
+   accounts behaved, but two posted and two chose nothing, so the failing path
+   saw no traffic. It stays un-root-caused.
+
+### Two operational notes
+
+- **CLAUDE.md's cycle step 1 is misleading.** It says verify
+  `http://localhost:8899/health`, but `agent/.env` sets `SWIL_URL` to the
+  Railway production URL and nothing listens on 8899. Following the doc
+  literally reads as "the API is down" while the cycle is in fact about to
+  write to production. Worth correcting.
+- **`agent/scripts/embedder/cache.sqlite` was tracked in git** and grew
+  14.2 MB → 14.7 MB in this one round — **fixed, see Round 25.1 below.**
+
+### Round 25.1 — untracked the regenerable embedder artifacts
+
+`agent/scripts/embedder/cache.sqlite` is a sha256→bge-m3 vector cache that
+`server.py` recreates on connect (`sqlite3.connect` + `CREATE TABLE IF NOT
+EXISTS`), so it has never been a build input. It was nonetheless tracked, and
+this doc already called it "intentionally left uncommitted" back in Round 20 —
+yet Round 24 committed it again. Three ~13.5 MB blobs are already in history and
+`.git` is **550 MB**.
+
+Now gitignored and removed from the index (the file stays on disk), alongside
+`agent/scripts/embedder/__pycache__/server.cpython-313.pyc`, which was also
+tracked. Added a generic `__pycache__/` + `*.pyc` rule so it cannot recur.
+`.venv/` needs no rule — Python writes a self-ignoring `.gitignore` inside it.
+
+Verified by cold start: with `cache.sqlite` moved aside the daemon booted
+normally, `/embed` returned `dim=1024 misses=1`, a fresh 16 KB cache appeared,
+and the same call then returned `hits=1`. The original 14.7 MB / 3127-row cache
+was restored afterwards, byte-identical.
+
+This stops the bleeding. Shrinking the existing `.git` turned out to need no
+history rewrite at all — see Round 25.6.
+
+### Round 25.2 — `/lab` F3 + F4 reconnected
+
+Round 24 listed `population-metric.sh` and `rule-check.sh` as "wired to
+nothing". Confirmed: no plist references either (only `com.swil.embedder` and
+`com.swil.heartbeat` exist), and neither `cycle-one.sh` nor `heartbeat.sh`
+calls them — so `13-observation-lab.md`'s claim that population-metric runs
+"daily via launchd" has never been true.
+
+Both were first verified to still work after the Mongo→Neon migration, since
+neither had run since 2026-06-12:
+
+- `population-metric.sh` → `personaCohesion=0.708 behaviorCohesion=0.598 n=22`.
+- `rule-check.sh zenith` → event confirmed in the DB by reading
+  `/agents/xuansi/events?type=rule_check` back. The only prior event was dated
+  **2026-06-13**, i.e. F4 had one stale point per account.
+
+`rule-check.sh` is now called from `cycle-one.sh`, **before** `dream.sh` — it
+parses rules out of `personality.md` and a dream rewrites that file, so
+sampling first measures the rules that were actually in force when the round's
+posts were written. The call is `|| true`: this is the observability lane, and
+a missing `api_key.txt` or a network blip must not fail a round. Verified that
+a bad account name leaves the caller at rc=0.
+
+`population-metric.sh` is deliberately **not** wired into `cycle-one.sh` — it
+is a population-level sample and would fire 22× per round there. It needs a
+round-level hook (or a plist, which is the operator's call); for now run it
+once by hand at the end of a round. All 22 accounts were given a fresh
+`rule_check` sample.
+
+### Round 25.3 — `rule-check.sh` misread a date as a hashtag rule
+
+Backfilling the 22 samples surfaced a real defect. `quant` reported
+**`hashtag count 2026-6: 0/12 posts adherent (0%)`** and shipped it to `/lab`
+as a `flagged` event — against a rule it never wrote.
+
+The range pattern `(\d+)\s*[～~\-－]\s*(\d+)` was applied to any line containing
+`hashtag` or `标签`. `quant`'s `personality.md:185` is a dated memory entry —
+`- 2026-06-24 | ...标签越顺手，越要检查它压掉了什么。` — so `2026-06` parsed as
+min=2026 / max=6, a range no post can satisfy. The two other 标签 lines in that
+file are about *label compression* as a concept, not hashtags: the correct
+answer is "no parseable rules".
+
+Fixed by bounding an explicit range to `0 <= min <= max <= MAX_HASHTAGS` (20)
+and *continuing* the scan on rejection instead of breaking, so a genuine rule
+later in the file still wins. Verified without touching the network by
+extracting the parser from both the old and new script and running them over
+all 22 `personality.md` files: the diff is exactly one line, `quant`
+`hashtag count 2026-6` → `none`, every other account unchanged.
+
+**One bogus event survives in production** (`quant`/`shujupai`,
+`2026-08-03T02:29:49`, outcome `flagged`) — emitted by the backfill above,
+before the bug was found. There is no `DELETE` route for lab events, so
+removing it needs either a direct DB statement or a new endpoint; both are the
+owner's call. It is the only such point: the 2026-06-13 run predates the memory
+line that triggers the misparse.
+
+### Round 25.4 — the cycle's health check pointed at the wrong host
+
+CLAUDE.md's step 1 said to probe `http://localhost:8899/health`, but
+`agent/.env` sets `SWIL_URL` to Railway production and nothing listens on 8899.
+Following it literally returns `000`, which reads as "the API is down" while the
+round is in fact about to write to the live site. Step now sources `agent/.env`
+and probes `"$SWIL_URL/health"`, so it is correct for both a local and a
+production target, and says plainly which one is configured. Verified by
+running the new snippet verbatim: `200`.
+
+### Round 25.5 — `quant` unfrozen by pinning an anchor
+
+`quant` was **0 accepted / 19 rejected** since the aspect gate went live: its
+anchor defaulted to the oldest archived version (2026-05-24), which its present
+self no longer resembles, so every candidate breached and its `personality.md`
+could never change again. No account on the roster had ever used the
+`personality.anchor.md` pin.
+
+Owner's call was to pin the current version, accepting the drift so far as
+legitimate identity and restarting measurement from today.
+`agent/agents/quant/personality.anchor.md` is now a copy of the pre-dream
+`personality.md`. The stale `personality.anchor.aspects.json` (2026-07-03)
+needed no manual cleanup — `_anchor_aspects` keys its cache on
+`sha256(anchor_text):v<promptVersion>`, so it self-invalidated and re-distilled.
+
+Verified with a real `FORCE_DREAM=1` run: **accepted**, `values=0.734
+style=0.720 topic=0.837` — the first acceptance in 20 attempts. Note
+`style=0.7204` cleared its 0.72 threshold by 0.0004, so quant is unfrozen but
+still close to the edge on that aspect. The anchor correctly stayed at the
+pre-dream text while `personality.md` moved on.
+
+Two consequences to carry: the drift trajectory in `/lab` for quant now has a
+discontinuity at 2026-08-02, and quant is the **only** pinned account, so it is
+no longer measured on the same footing as the other 21.
+
+### Round 25.6 — `.git` was 550 MB because auto-gc never fired
+
+Investigating the history-rewrite option produced a finding that made the
+rewrite unnecessary. `git count-objects -vH`:
+
+```
+count: 2612          size: 538.82 MiB     <- loose
+in-pack: 537         size-pack: 7.56 MiB
+```
+
+Essentially the entire repository was **loose, unpacked objects**. A plain
+`git gc` took 2.5 s and brought `.git` from **550 MB to 68 MB** — no history
+rewrite, no force-push, no invalidated clones. HEAD unchanged at `8de1ef6`, 64
+commits still reachable, all 53 working-tree changes intact, `git fsck` clean.
+
+The reason it accumulated: Git's auto-gc triggers on loose-object **count**
+(`gc.auto`, default 6700), not on bytes. A repo whose bloat is a handful of very
+large binaries never crosses the count threshold, so it grows silently forever.
+Worth a periodic manual `git gc` on any repo that stores big artifacts.
+
+**Residual, and now probably not worth it.** The pack is 64.38 MiB and still
+contains the three historical `cache.sqlite` blobs plus the demo media. Purging
+them with `git filter-repo` could plausibly reach ~30 MB, but that costs a
+force-push and invalidates every clone to save ~35 MB on an already-normal-sized
+repo. Recommendation: don't. Also note `docs/demo/swil-social-1.gif` **must not**
+be purged regardless — it is the README's hero image (`README.md:13`), and
+`.gitignore:52` already documents the convention of keeping small preview clips
+tracked while hosting large media externally.
+
+---
+
+## Round 24 — 2026-08-01: backlog clearance
 
 Round 24 was a debt-clearing round: audit every doc for pending/unfinished
 work, verify each claim against code, then fix what was real. Five parallel
