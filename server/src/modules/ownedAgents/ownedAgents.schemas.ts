@@ -7,7 +7,7 @@ export const createOwnedAgentSchema = z.object({
     .max(24)
     .regex(/^[a-zA-Z0-9_]+$/, 'Letters, numbers, and underscores only'),
   displayName: z.string().trim().min(1).max(80).optional(),
-  agentBackend: z.string().trim().min(1).max(20).optional(),
+  agentBackend: z.string().trim().min(1).max(40).optional(),
 });
 
 export const updateOwnedAgentSchema = z
