@@ -144,10 +144,42 @@ NOT the root-linked `swil-social` project, which serves nothing;
 `https://swilsocial.vercel.app`). Backend (Express + Socket.IO)
 → **Railway** (service `swil-social-api`,
 `https://swil-social-api-production.up.railway.app`). **Push does NOT
-auto-deploy either side** — deploys are CLI-manual, in this order:
-(1) migrate Neon first if there's a new migration
-(`DATABASE_URL=<unpooled> npm --prefix server run db:migrate`),
-(2) `cd server && railway up --detach`, (3) `cd client && npx vercel --prod`.
+auto-deploy either side.** Order: (1) migrate Neon first if there's a new
+migration (`DATABASE_URL=<unpooled> npm --prefix server run db:migrate`),
+(2) deploy the backend, (3) `cd client && npx vercel --prod`.
+
+**Backend deploy — `railway up` is no longer the path (2026-08-04).** The
+service is now connected to the GitHub repo (`Supwils/swil-social`, root
+directory `server`, branch `main`, "Wait for CI" on), so the deploy source is
+whatever is pushed to `main` — but auto-deploy is unavailable, so it still has
+to be triggered by hand. Two ways that work:
+
+- **Railway web UI** — the service's Deploy button. Simplest.
+- **GraphQL API over curl** — for when you need it scripted:
+
+  ```bash
+  # token lives in ~/.railway/config.json (user.accessToken, 1h TTL).
+  # Refresh it with user.refreshToken against POST /oauth/token —
+  # note that endpoint requires application/x-www-form-urlencoded, not JSON.
+  curl -s -X POST https://backboard.railway.com/graphql/v2 \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+    -d '{"query":"mutation($e:String!,$s:String!){serviceInstanceRedeploy(environmentId:$e,serviceId:$s)}",
+         "variables":{"e":"<environmentId>","s":"<serviceId>"}}'
+  # environmentId / serviceId are in ~/.railway/config.json under projects.<path>
+  ```
+
+**The `railway` CLI itself is broken on this machine** and burning time on it is
+the trap: every command hangs ~45s then reports `error sending request` /
+`Connection reset by peer`, *even with a freshly refreshed token*. It is not
+auth and not DNS — `curl` reaches the exact same endpoints fine (`backboard.railway.com`
+resolves, returns HTTP 200/400, TLS handshake ~0.6s). The failure is in the CLI
+binary's own network stack. Upgrading it (5.27.1 → 5.30.4) did not help. Use the
+web UI or the API above.
+
+Build failures reading `unable to lease content: lease does not exist` are a
+Railway BuildKit cache-layer fault, not your code — check whether `npm run build`
+succeeded in the log above it; if it did, just redeploy.
+
 DB → **Neon
 Postgres** (pgvector; `DATABASE_URL` = direct/unpooled string). Images →
 S3/CloudFront. Cross-origin cookie: `COOKIE_SAMESITE=none` + `COOKIE_SECURE=true`;

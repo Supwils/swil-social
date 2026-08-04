@@ -35,16 +35,52 @@ The app is deployed **split frontend/backend**, with Postgres on Neon:
   data seeded via the one-off `scripts/migrate-mongo-to-pg.ts`.
 - CI (`.github/workflows/ci.yml`) runs the server tests against a `pgvector/pgvector:pg16` service.
 
-**Redeploy — CLI-manual, verified 2026-07-22: pushing to `main` triggers GitHub CI only;
+**Redeploy — manual, verified 2026-08-04: pushing to `main` triggers GitHub CI only;
 NEITHER side auto-deploys.** The runbook, in order:
 
 1. If there is a new migration, apply it to Neon **first** (additive columns are safe for
    the running old code, but new code against an old schema breaks — Drizzle selects
    every column explicitly): `DATABASE_URL=<DATABASE_URL_UNPOOLED> npm --prefix server run db:migrate`.
-2. Backend: `cd server && railway up --detach` (needs `railway link` to `swil-social-api` once).
+2. Backend: trigger a deploy — see "Backend deploy" below. The source is GitHub `main`,
+   so push first.
 3. Frontend: `cd client && npx vercel --prod` (aliases to swilsocial.vercel.app).
-4. Verify: backend `/health` uptime resets; `railway deployment list --json` shows SUCCESS;
-   frontend bundle contains a string from the new build.
+4. Verify: backend `/health` returns 200; the deployment shows SUCCESS; frontend bundle
+   contains a string from the new build.
+
+### Backend deploy (updated 2026-08-04)
+
+The service is connected to the GitHub repo — **Source Repo** `Supwils/swil-social`,
+**Root Directory** `server`, **Branch** `main`, **Wait for CI** on. Auto-deploy is
+unavailable, so a push alone changes nothing; the deploy must be triggered.
+
+- **Web UI** — the service's Deploy button. It builds whatever is on `main`.
+- **API** — scriptable, and the only path that works when the CLI is broken:
+
+  ```bash
+  # ~/.railway/config.json holds user.accessToken (1h TTL) + user.refreshToken,
+  # and projects.<repo-path>.{project,environment,service} — all UUIDs.
+  # Refresh:  POST https://backboard.railway.com/oauth/token
+  #           Content-Type: application/x-www-form-urlencoded   <- NOT json, it 400s
+  #           grant_type=refresh_token&refresh_token=…&client_id=rlwy_oaci_onEklvmksh1hRUiCo7E2zX12
+  curl -s -X POST https://backboard.railway.com/graphql/v2 \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+    -d '{"query":"mutation($e:String!,$s:String!){serviceInstanceRedeploy(environmentId:$e,serviceId:$s)}",
+         "variables":{"e":"<environmentId>","s":"<serviceId>"}}'
+  ```
+
+  Poll `service(id).deployments(first:1)` for `status` until it leaves `BUILDING`/`DEPLOYING`.
+
+**Do not sink time into the `railway` CLI.** As of 2026-08-04 on this machine every
+command hangs ~45s then fails with `error sending request` / `Connection reset by peer`,
+**including with a freshly refreshed token**. Ruled out: auth (curl authenticates fine with
+the same token), DNS (`backboard.railway.com` resolves; no AAAA records), TLS (curl's
+handshake completes in ~0.6s and the endpoint answers 200/400), and CLI version (upgraded
+5.27.1 → 5.30.4, no change). The fault is inside the CLI binary's network stack.
+
+**Build failure `unable to lease content: lease does not exist: not found`** is a Railway
+BuildKit cache-layer fault, not a code problem. Read the log above it — if `npm install`
+and `npm run build` both succeeded, the image build died on a stale cache lease. Redeploy;
+it cleared on the first retry on 2026-08-04.
 
 ## ⚠️ Any prod-touching script must be run through `railway run`
 
@@ -54,15 +90,30 @@ in `server/scripts/` — backfills, count repairs, migrations, ad-hoc queries �
 change nothing in production. There is no error, no warning, no diff: the damage is a *silent
 no-op on prod plus an unintended write to dev*.
 
-So: **never run a prod-intended script bare.** Use one of these two forms, always:
+So: **never run a prod-intended script bare.** Use one of these forms, always:
 
 ```bash
-# Preferred — Railway injects the service's real env (Neon DATABASE_URL and all)
+# Was preferred — Railway injects the service's real env. BROKEN since 2026-08-04
+# on this machine (the CLI cannot reach the API at all; see "Backend deploy" above).
 cd server && railway run --service swil-social-api -- npx tsx scripts/<script>.ts
 
-# Or pin the URL explicitly (use the Neon direct/unpooled string)
+# Pin the URL explicitly (Neon direct/unpooled string)
 DATABASE_URL='<neon-unpooled-url>' npx tsx server/scripts/<script>.ts
 ```
+
+**Getting the prod `DATABASE_URL` while the CLI is down.** Read it from Railway's API
+instead — the variables query returns the service's real environment:
+
+```bash
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"query($p:String!,$e:String!,$s:String!){variables(projectId:$p,environmentId:$e,serviceId:$s)}",
+       "variables":{"p":"<projectId>","e":"<environmentId>","s":"<serviceId>"}}'
+```
+
+Treat what comes back as a live credential: keep it out of the repo, out of shell history,
+and delete any scratch copy when done. The three UUIDs are in `~/.railway/config.json`
+under `projects.<repo-path>`; token handling is described in "Backend deploy" above.
 
 **Confirm the target first.** Before the write, run a read-only probe through the *same* invocation
 you are about to use for the write, and check the number it prints matches production, not dev:
