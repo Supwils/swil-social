@@ -9,7 +9,7 @@
 #
 # Env:
 #   PERSONAS  default "liushang shengyin chawendao mangniu zhuiyi"
-#   MODELS    default "opus sonnet haiku codex"
+#   MODELS    default "opus sonnet haiku codex ds-flash"
 #   K         claude repeats per task (default 3)
 #   CODEX_K   codex repeats per task (default 1 — codex is ~3× slower)
 #   JUDGE     pass through to enable the LLM-judge (slow)
@@ -18,7 +18,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 PERSONAS="${PERSONAS:-liushang shengyin chawendao mangniu zhuiyi}"
-MODELS="${MODELS:-opus sonnet haiku codex}"
+MODELS="${MODELS:-opus sonnet haiku codex ds-flash}"
 K="${K:-3}"
 CODEX_K="${CODEX_K:-1}"
 BATCH_ID="$(date -u '+%Y%m%dT%H%M%S')-sweep"

@@ -14,6 +14,7 @@
 #   JUDGE=1 bash scripts/benchmark-run.sh liushang opus 3
 #
 # <model>: opus | sonnet | haiku  (claude CLI alias)  |  codex (codex CLI default)
+#          | ds-flash  (DeepSeek V4 Flash via the Anthropic-compatible endpoint)
 # Env: SWIL_URL, EMBEDDER_URL, JUDGE (0/1), JUDGE_MODEL (default opus)
 
 set -uo pipefail
@@ -22,6 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 BENCH_DIR="$ROOT_DIR/bench"
 BATTERY="$BENCH_DIR/battery/tasks.json"
+
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/llm.sh"
 
 if [[ -f "$ROOT_DIR/.env" ]]; then set -a; source "$ROOT_DIR/.env"; set +a; fi
 
@@ -73,15 +77,11 @@ fi
 
 call_model() { # $1=user prompt -> stdout text
   local user="$1"
-  if [[ "$MODEL" == "codex" ]]; then
-    local tmp; tmp="$(mktemp)"
-    codex exec --ephemeral --skip-git-repo-check --full-auto --color never -o "$tmp" \
-      "$(printf 'System:\n%s\n\n---\n\n%s' "$SYS" "$user")" >/dev/null 2>&1 || true
-    cat "$tmp" 2>/dev/null; rm -f "$tmp"
-  else
-    printf '%s' "$user" | claude --model "$MODEL" -p --system-prompt "$SYS" \
-      --output-format text 2>/dev/null || true
-  fi
+  case "$MODEL" in
+    codex)    llm_text codex    ""                 "$SYS" "$user" || true ;;
+    ds-flash) llm_text deepseek deepseek-v4-flash  "$SYS" "$user" || true ;;
+    *)        llm_text claude   "$MODEL"           "$SYS" "$user" || true ;;
+  esac
 }
 
 # Deterministic rule adherence from the persona's parseable rules.
@@ -104,6 +104,9 @@ judge_score() { # $1=output -> integer 0-100 or empty
   [[ "$JUDGE" == "1" ]] || { echo ""; return; }
   local out="$1" prompt
   prompt="$(printf '下面是一个 AI 人格的设定，以及它产出的一段内容。请只输出一个 0 到 100 的整数，表示这段内容有多符合这个人格的语气、风格与价值观（100=完全像，0=完全不像）。不要输出任何其他文字。\n\n===人格设定===\n%s\n\n===产出内容===\n%s' "$REF_TEXT" "$out")"
+  # ⚠ INVARIANT — do NOT route this through llm.sh.
+  # The judge scores how well a model impersonates a persona. Routing it through
+  # the backend under test would have DeepSeek grading DeepSeek's own output.
   printf '%s' "$prompt" | claude --model "$JUDGE_MODEL" -p --output-format text 2>/dev/null \
     | grep -oE '[0-9]+' | head -1
 }

@@ -23,8 +23,16 @@
 #   - 允许把"## 自传成长"段落不断追加，记录这次梦里想到的事
 
 set -euo pipefail
+# Job control: gives each backgrounded job (see _run_with_timeout below) its
+# own process group, so the watchdog can signal the *group* — not just the
+# top pid — and reach CLI processes nested a few `$( )` levels down (e.g.
+# `llm_text` backgrounded as a shell function). Confirmed quiet (no job-control
+# chatter) in this non-interactive script.
+set -m
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/llm.sh"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$ROOT_DIR/.agent-state"
 LOG_DIR="$ROOT_DIR/logs"
@@ -96,18 +104,10 @@ _embed_text() {
 # of what this dream changed. Best-effort: prints "" on any failure (Feature 5).
 _diff_narrative() {
   local old_file="$1" new_file="$2" backend="$3"
-  local sys usr out tmp_out
+  local sys usr out
   sys="你在对比同一个虚拟人格的两个版本（做梦前 / 做梦后）。用中文，2~3 句话，说清楚这次梦把人格往哪个方向塑造了：哪些特质被强化、哪些淡出、有没有新主题冒出来。只输出这段叙述本身，不要标题、不要任何前后缀。"
   usr="$(printf '【旧版 personality】\n%s\n\n【新版 personality】\n%s' "$(cat "$old_file")" "$(cat "$new_file")")"
-  if [[ "$backend" == "codex" ]]; then
-    tmp_out="$(mktemp)"
-    codex exec --ephemeral --skip-git-repo-check --full-auto --color never -o "$tmp_out" \
-      "$(printf 'System:\n%s\n\n---\n\n%s' "$sys" "$usr")" 2>/dev/null || true
-    out="$(cat "$tmp_out" 2>/dev/null || echo '')"
-    rm -f "$tmp_out"
-  else
-    out="$(printf '%s' "$usr" | claude -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
-  fi
+  out="$(llm_text "$backend" "" "$sys" "$usr" || echo '')"
   # Collapse whitespace + cap at 1500 *characters* via Python — `cut -c`/BSD `tr`
   # are byte-wise under launchd's C locale and would split a multibyte CJK char,
   # corrupting the downstream jq --arg (same fix snapshot.sh uses for excerpts).
@@ -161,6 +161,14 @@ PY
 # 5s to flush, then reap its children and KILL. Returns the command's own exit
 # status, or 143/137 when the watchdog won — callers treat either as "no
 # response", which is already the fail-safe path (original personality kept).
+#
+# Signals target the process GROUP (`-"$pid"`), not just the top pid. With
+# `set -m` (see top of file), backgrounding "$@" makes it a job-control job
+# and its pid also becomes its process group id — so when "$@" is the shell
+# function `llm_text`, every process it spawns underneath (including CLI
+# binaries nested a few `$( )` levels down) shares that pgid and dies with
+# one signal. Plain `kill -TERM "$pid"` only ever reached the outer subshell;
+# the real backend process (e.g. a hung `codex exec`) was left orphaned.
 _run_with_timeout() {
   local secs="$1" outfile="$2"
   shift 2
@@ -168,10 +176,10 @@ _run_with_timeout() {
   local pid=$!
   (
     sleep "$secs"
-    kill -TERM "$pid" 2>/dev/null
+    kill -TERM -"$pid" 2>/dev/null
     sleep 5
     pkill -P "$pid" 2>/dev/null
-    kill -KILL "$pid" 2>/dev/null
+    kill -KILL -"$pid" 2>/dev/null
   ) &
   local watcher=$!
   local rc=0
@@ -259,6 +267,11 @@ TOPICS = 它谈论的主题领域。
 用最能代表该人设的稳定词汇，避免临场发挥的修辞。只输出一个 JSON 对象：{"values":"词1，词2，…","style":"…","topic":"…"}，不要解释、代码块或前后缀。'
   usr="$(printf '【人物设定】\n%s' "$text")"
   for attempt in 1 2 3; do
+    # ⚠ INVARIANT — do NOT route this through llm.sh.
+    # This is the ruler that measures drift for every account. It must be the
+    # same model regardless of the agent's own backend, or per-aspect drift
+    # numbers stop being comparable across the roster. A deepseek account must
+    # not be measured by deepseek.
     out="$(printf '%s' "$usr" | claude --model "$ASPECT_DISTILL_MODEL" -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
     # Parse via argv (NOT a pipe — `data | python3 - <<HEREDOC` collides the piped
     # data with the heredoc program). The parser always exits 0 and prints "" on
@@ -606,39 +619,25 @@ PROMPT
   # 调 LLM
   local new_personality tmp_out
   tmp_out="$(mktemp)"
-  if [[ "$ai_backend" == "codex" ]]; then
-    # Time-boxed: a `codex exec` here has hung for 12+ minutes (vex, 2026-07),
-    # and because a round walks accounts serially one hang stalls every account
-    # behind it. Timing out is safe — an empty result is already handled below
-    # as "no response", which keeps the original personality.
-    _run_with_timeout "$DREAM_LLM_TIMEOUT" "$tmp_out" \
-      codex exec --ephemeral --skip-git-repo-check --full-auto --color never \
-      "$(printf 'System:\n%s\n\n---\n\n%s' "$system_prompt" "$user_prompt")" || {
-      local rc=$?
-      (( rc == 143 || rc == 137 )) && _log "WARN $name — codex dream timed out after ${DREAM_LLM_TIMEOUT}s"
-    }
-    new_personality="$(cat "$tmp_out" 2>/dev/null || echo '')"
-  else
-    # Pin the tier that rewrites the personality — this is the variable under
-    # test. NOTE: the aspect distiller further up (ASPECT_DISTILL_MODEL, ~line
-    # 212) stays pinned to haiku on purpose. It is the model-neutral ruler; if
-    # it varied with the agent's own tier, every drift number would be measured
-    # with a different instrument.
-    local dream_model_args=()
-    [[ -n "$ai_model" ]] && dream_model_args=(--model "$ai_model")
-    local prompt_file
-    prompt_file="$(mktemp)"
-    printf '%s' "$user_prompt" > "$prompt_file"
-    _run_with_timeout "$DREAM_LLM_TIMEOUT" "$tmp_out" \
-      bash -c 'claude -p "$@" < "$0"' "$prompt_file" \
-      "${dream_model_args[@]+"${dream_model_args[@]}"}" \
-      --system-prompt "$system_prompt" --output-format text || {
-      local rc=$?
-      (( rc == 143 || rc == 137 )) && _log "WARN $name — claude dream timed out after ${DREAM_LLM_TIMEOUT}s"
-    }
-    new_personality="$(cat "$tmp_out" 2>/dev/null || echo '')"
-    rm -f "$prompt_file"
-  fi
+  # Pin the tier that rewrites the personality — this is the variable under
+  # test. NOTE: the aspect distiller further up (ASPECT_DISTILL_MODEL) stays
+  # pinned to its own neutral model on purpose. It is the model-neutral ruler;
+  # if it varied with the agent's own tier, every drift number would be
+  # measured with a different instrument.
+  #
+  # Time-boxed: a backend call here has hung for 12+ minutes (vex/codex,
+  # 2026-07), and because a round walks accounts serially one hang stalls every
+  # account behind it. Timing out is safe — an empty result is already handled
+  # below as "no response", which keeps the original personality.
+  #
+  # llm_text is a shell function; _run_with_timeout backgrounds it with `&`,
+  # and bash functions are visible in that subshell, so no `export -f` needed.
+  _run_with_timeout "$DREAM_LLM_TIMEOUT" "$tmp_out" \
+    llm_text "$ai_backend" "$ai_model" "$system_prompt" "$user_prompt" || {
+    local rc=$?
+    (( rc == 143 || rc == 137 )) && _log "WARN $name — $ai_backend dream timed out after ${DREAM_LLM_TIMEOUT}s"
+  }
+  new_personality="$(cat "$tmp_out" 2>/dev/null || echo '')"
   rm -f "$tmp_out"
 
   # 去掉常见的 markdown 围栏

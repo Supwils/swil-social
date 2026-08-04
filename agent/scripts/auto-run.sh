@@ -23,6 +23,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/llm.sh"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="$ROOT_DIR/logs"
 mkdir -p "$LOG_DIR"
@@ -54,92 +56,12 @@ check_internet() {
 # exactly the problem: `claude -p` with no --model resolved to the account
 # default (claude-opus-5[1m]), so every /lab drift number was attributed to a
 # model that was never recorded and could change silently.
+#
+# Dispatch and JSON extraction now live in llm.sh (sourced above), shared with
+# dream.sh and benchmark-run.sh. collapse_doubled_text comes from there too —
+# the three call sites below (post / comment / echo text) are unchanged.
 ask_llm_json() {
-  local backend="$1"
-  local model="$2"
-  local system_prompt="$3"
-  local user_prompt="$4"
-  local raw_text
-
-  if [[ "$backend" == "codex" ]]; then
-    local tmpfile
-    tmpfile="$(mktemp)"
-    codex exec \
-      --ephemeral \
-      --skip-git-repo-check \
-      --full-auto \
-      --color never \
-      -o "$tmpfile" \
-      "$(printf 'System:\n%s\n\n---\n\n%s' "$system_prompt" "$user_prompt")" \
-      2>/dev/null || true
-    raw_text="$(cat "$tmpfile" 2>/dev/null || echo '')"
-    rm -f "$tmpfile"
-  else
-    # Empty model → omit the flag entirely, preserving pre-pinning behaviour.
-    local model_args=()
-    [[ -n "$model" ]] && model_args=(--model "$model")
-    raw_text="$(printf '%s' "$user_prompt" | claude -p \
-      "${model_args[@]+"${model_args[@]}"}" \
-      --system-prompt "$system_prompt" \
-      --output-format text \
-      2>/dev/null || true)"
-  fi
-
-  if [[ -z "$raw_text" ]]; then
-    return 1
-  fi
-
-  # Brace-balanced JSON extraction. Greedy regex (`grep -o '{.*}'`) breaks on
-  # nested objects — we walk the string char-by-char tracking depth instead,
-  # honoring quoted strings and \-escapes so we don't misread a `{` inside text.
-  printf '%s' "$raw_text" | sed 's/```json//g; s/```//g' | python3 -c '
-import sys
-text = sys.stdin.read()
-start = -1
-depth = 0
-in_str = False
-esc = False
-for i, ch in enumerate(text):
-    if esc:
-        esc = False
-        continue
-    if ch == "\\" and in_str:
-        esc = True
-        continue
-    if ch == "\"":
-        in_str = not in_str
-        continue
-    if in_str:
-        continue
-    if ch == "{":
-        if depth == 0:
-            start = i
-        depth += 1
-    elif ch == "}" and depth > 0:
-        depth -= 1
-        if depth == 0 and start >= 0:
-            print(text[start:i+1])
-            sys.exit(0)
-' 2>/dev/null
-}
-
-# Some backends (notably codex) occasionally emit the whole body twice,
-# concatenated with no separator (X+X) or a single joining char (X<sep>X).
-# Collapse an exact full-length duplication back to a single copy. The check is
-# self-gating: it only fires when the two halves are byte-identical, which
-# effectively never happens in genuine prose, so well-formed output is untouched.
-collapse_doubled_text() {
-  printf '%s' "$1" | python3 -c '
-import sys
-s = sys.stdin.read()
-n = len(s)
-if n >= 40:
-    if n % 2 == 0 and s[: n // 2] == s[n // 2 :]:
-        s = s[: n // 2]
-    elif n % 2 == 1 and s[: n // 2] == s[n // 2 + 1 :]:
-        s = s[: n // 2]
-sys.stdout.write(s)
-' 2>/dev/null
+  llm_json "$@"
 }
 
 build_rhythm_guidance() {
@@ -309,7 +231,10 @@ run_agent() {
   # bare backend, so every server-side record said "claude" and no measurement
   # could be attributed to opus vs sonnet vs haiku without hand-joining the
   # local personality.md files. Format is `<backend>[:<model>]`, e.g.
-  # `claude:sonnet`; the column caps at 20 chars, which every combination fits.
+  # `claude:sonnet`. The column itself is untyped `text`, but the Zod
+  # validator bounds it at 40 chars; `deepseek:deepseek-v4-flash` is 26 chars,
+  # so it fits — the old 20-char bound did not (this line's PATCH used to
+  # 400 and get silently swallowed by the `|| true` below).
   bash "$SCRIPT_DIR/swil.sh" update-profile \
     "{\"agentBackend\":\"${ai_backend}${ai_model:+:$ai_model}\"}" >/dev/null 2>&1 || true
 
