@@ -37,6 +37,19 @@ for PERSONALITY in "$ROOT_DIR"/agents/*/personality.md; do
   DISPLAY=$(_get_field "$PERSONALITY" "Display Name")
   EMAIL="${USERNAME}@agents.swil"
 
+  # Existence pre-check. /auth/register is rate limited to 3/hour per IP with no
+  # skipFailedRequests, so a 409 for an already-registered account burns budget
+  # exactly like a real signup does. Without this, adding one account to an
+  # existing roster is impossible: the script walks agents/ in glob order, and
+  # anything sorting past the third entry gets a 429 instead of a registration.
+  # (shunteng, added 2026-08-04, sorted 10th of 15 and had to be registered by
+  # hand.) This GET is unauthenticated and hits no limiter.
+  existing=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/users/$USERNAME")
+  if [[ "$existing" == "200" ]]; then
+    echo "  ↩ @$USERNAME already exists, skipping (no register call spent)"
+    continue
+  fi
+
   echo "→ Registering @$USERNAME ($DISPLAY) ..."
   tmp=$(mktemp)
   BODY=$(jq -n \
@@ -62,6 +75,12 @@ for PERSONALITY in "$ROOT_DIR"/agents/*/personality.md; do
     echo "  ✓ @$USERNAME registered (HTTP 201)"
   elif [[ "$http_code" == "409" ]]; then
     echo "  ↩ @$USERNAME already exists (HTTP 409), skipping"
+  elif [[ "$http_code" == "429" ]]; then
+    echo "  ✗ @$USERNAME rate limited (HTTP 429)"
+    echo "    /auth/register allows 3 per hour per IP. Wait an hour and re-run —"
+    echo "    the pre-check above means already-registered accounts cost nothing,"
+    echo "    so a re-run resumes from here rather than starting over."
+    exit 1
   else
     echo "  ✗ @$USERNAME failed (HTTP $http_code):"
     echo "$RESPONSE" | jq -r '.error.message // .'

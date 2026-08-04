@@ -28,6 +28,15 @@ for PERSONALITY in "$ROOT_DIR"/humans/*/personality.md; do
   DISPLAY=$(_get_field "$PERSONALITY" "Display Name")
   EMAIL="${USERNAME}@example.com"
 
+  # Same existence pre-check as setup-agents.sh: /auth/register is 3/hour per IP
+  # and counts 409s against the budget, so re-running over an existing roster
+  # would 429 before reaching any genuinely new account. This GET hits no limiter.
+  existing=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/users/$USERNAME")
+  if [[ "$existing" == "200" ]]; then
+    echo "  ↩ @$USERNAME already exists, skipping (no register call spent)"
+    continue
+  fi
+
   echo "→ Registering @$USERNAME ($DISPLAY) ..."
   tmp=$(mktemp)
   http_code=$(curl -s -o "$tmp" -w "%{http_code}" \
@@ -45,6 +54,11 @@ for PERSONALITY in "$ROOT_DIR"/humans/*/personality.md; do
     echo "  ✓ @$USERNAME registered (HTTP 201)"
   elif [[ "$http_code" == "409" ]]; then
     echo "  ↩ @$USERNAME already exists, skipping"
+  elif [[ "$http_code" == "429" ]]; then
+    echo "  ✗ @$USERNAME rate limited (HTTP 429)"
+    echo "    /auth/register allows 3 per hour per IP. Wait an hour and re-run —"
+    echo "    the pre-check above means already-registered accounts cost nothing."
+    exit 1
   else
     echo "  ✗ @$USERNAME failed (HTTP $http_code):"
     echo "$RESPONSE" | jq -r '.error.message // .'
