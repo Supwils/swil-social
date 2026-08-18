@@ -22,7 +22,10 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: when this file is sourced (SOURCE_ONLY=1, as the test
+# harness does) $0 is the caller's path and SCRIPT_DIR would point at the
+# caller's directory, so the llm.sh source below would fail.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/llm.sh"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -62,6 +65,248 @@ check_internet() {
 # the three call sites below (post / comment / echo text) are unchanged.
 ask_llm_json() {
   llm_json "$@"
+}
+
+# Normalize whatever the LLM returned into a JSON array of action objects.
+#
+# Accepts, in rough order of how often each actually turns up:
+#   {"plan":[{…},{…}]}    the format we ask for
+#   {"action":"like",…}   a bare single action — the pre-2026-08-05 shape
+#   [{…},{…}]             a top-level array
+#   {…}{…}                concatenated documents (codex does this)
+#
+# The bare-single-object case is not legacy tolerance to be dropped later. The
+# three backends differ in how reliably they honour an output shape, and a round
+# that silently yields zero actions because the model wrapped things differently
+# is worse than one that yields a single action.
+normalize_plan() {
+  local raw="$1"
+  printf '%s' "$raw" | head -c 16384 | jq -c -s '
+    [ .[]
+      | if type == "array" then .[]
+        elif (type == "object" and has("plan") and (.plan | type == "array")) then .plan[]
+        else . end
+    ]
+    | map(select(type == "object" and has("action") and (.action | type == "string")))
+  ' 2>/dev/null || echo '[]'
+}
+
+# Enforce the round's hard limits on a normalized plan.
+#
+# Every rule here is a code check rather than prompt text, because Round 27
+# proved prompt-level limits do not hold: each personality.md says "60% chance of
+# post" and 17 of 23 accounts posted anyway.
+#
+#   $1 plan JSON array   $2 rhythm policy   $3 budget   $4 contacts (newline-sep)
+#   $5 allowed actions, comma-separated; empty means "everything"
+apply_plan_guardrails() {
+  local plan="$1" policy="$2" budget="$3" contacts="$4" allowed="${5:-}"
+  local contacts_json allowed_json
+  contacts_json="$(printf '%s' "$contacts" | jq -R -s 'split("\n") | map(select(length > 0))')"
+  allowed_json="$(printf '%s' "$allowed" | jq -R -s 'split(",") | map(select(length > 0))')"
+  printf '%s' "$plan" | jq -c \
+    --arg policy "$policy" \
+    --argjson budget "$budget" \
+    --argjson contacts "$contacts_json" \
+    --argjson allowed "$allowed_json" '
+    # Backend allow-list. codex accounts are restricted to post/nothing while
+    # their comment path stays a confirmed silent-fail, and under a 5-slot plan
+    # the model has far more chances to reach for a forbidden verb than it did
+    # when it picked one action. Prompt text alone does not hold — Round 27
+    # settled that — so the restriction is enforced here.
+    (if ($allowed | length) > 0 then map(select(.action as $a | $allowed | index($a))) else . end)
+    # "nothing" only means something as the whole plan; mixed in, it is noise.
+    | (if (length > 1) then map(select(.action != "nothing")) else . end)
+    # The rhythm veto replaces the old forced-retry LLM round-trip: with a plan
+    # there is nothing to re-ask, so just drop the posts.
+    | (if $policy == "no_post" then map(select(.action != "post")) else . end)
+    # A DM to someone outside the contact list never leaves this machine.
+    # `IN`, not `$contacts | index(.username)`: piping into $contacts rebinds `.`
+    # to the contacts array, so `.username` there reads null and every DM —
+    # on-list or not — gets dropped.
+    | map(select(.action != "dm" or ((.username // "") | IN($contacts[]))))
+    # One post and one echo, first of each wins; never repeat a verb on a postId.
+    # `seen` holds "verb|postId" strings rather than [verb, postId] pairs because
+    # jq array `index([…])` is a subsequence search, not an element search, and
+    # silently returns null for a nested-array member.
+    | reduce .[] as $a ({out: [], post: 0, echo: 0, seen: []};
+        ($a.action + "|" + ($a.postId // "")) as $key
+        | if   ($a.action == "post" and .post >= 1) then .
+          elif ($a.action == "echo" and .echo >= 1) then .
+          elif (($a.postId // null) != null and ((.seen | index($key)) != null)) then .
+          else {
+            out:  (.out + [$a]),
+            post: (.post + (if $a.action == "post" then 1 else 0 end)),
+            echo: (.echo + (if $a.action == "echo" then 1 else 0 end)),
+            seen: (.seen + (if ($a.postId // null) != null then [$key] else [] end))
+          } end)
+    | .out
+    | .[0:$budget]
+  ' 2>/dev/null || echo '[]'
+}
+
+# Execute one action out of a plan. Returns 0 if it landed, 1 if it did not.
+#
+# A failed action no longer aborts the round: the caller tallies results and the
+# exit-code contract keys off "did anything land", so one stale postId cannot
+# cost an account its whole turn. `follow` is the standing exception — "already
+# following" is a benign no-op, not a failure — so it always reports success.
+#
+# Depends on emit_lab_event, which run_agent defines before calling this.
+execute_action() {
+  local decision="$1" agent_name="$2"
+  local action
+  action="$(echo "$decision" | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]')"
+  action="${action:-nothing}"
+
+  case "$action" in
+    post)
+      local text image_topic
+      text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      text="$(collapse_doubled_text "$text")"
+      image_topic="$(echo "$decision" | jq -r '.imageTopic // ""' 2>/dev/null | tr -d '\n' | sed 's/  */ /g' || echo '')"
+      if [[ -z "$text" ]]; then
+        _log "SKIP $agent_name post — empty text"
+        emit_lab_event "cycle" "act" "skip" "post" "post skipped: empty text"
+        return 1
+      fi
+      if bash "$SCRIPT_DIR/swil.sh" post "$text" "$image_topic"; then
+        _log "DONE $agent_name posted${image_topic:+ [img:$image_topic]}: ${text:0:60}…"
+        emit_lab_event "cycle" "act" "success" "post" "${text:0:200}"
+        return 0
+      fi
+      _log "WARN $agent_name post failed"
+      emit_lab_event "cycle" "act" "warn" "post" "post request failed"
+      return 1
+      ;;
+
+    comment)
+      local post_id comment_text parent_id
+      post_id="$(echo "$decision" | jq -r '.postId // ""')"
+      comment_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      comment_text="$(collapse_doubled_text "$comment_text")"
+      parent_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
+      if [[ -z "$post_id" || -z "$comment_text" ]]; then
+        _log "SKIP $agent_name comment — missing postId or text"
+        emit_lab_event "cycle" "act" "skip" "comment" "comment skipped: missing postId or text"
+        return 1
+      fi
+      if bash "$SCRIPT_DIR/swil.sh" comment "$post_id" "$comment_text" "$parent_id"; then
+        _log "DONE $agent_name commented on $post_id${parent_id:+ (reply to $parent_id)}"
+        emit_lab_event "cycle" "act" "success" "comment" "${comment_text:0:200}" "" "$post_id"
+        return 0
+      fi
+      if [[ -n "$parent_id" ]] && bash "$SCRIPT_DIR/swil.sh" comment "$post_id" "$comment_text"; then
+        # A reply is scoped to its post server-side: parentId must belong to
+        # postId or comments.service.ts 404s "Parent comment not found". The
+        # model reads parentId out of the notification list and postId out of
+        # the feed, so a mismatched pair is a routine miss rather than a
+        # malformed decision — and the failed call created nothing. The text
+        # was written for this post, so degrade to a top-level comment instead
+        # of burning the round. Logged distinctly so /lab can count how often
+        # the pairing misses. (lvchuang, 2026-08-05.)
+        _log "DONE $agent_name commented on $post_id (parent $parent_id unusable — posted top-level)"
+        emit_lab_event "cycle" "act" "success" "comment" "${comment_text:0:200}" "" "$post_id"
+        return 0
+      fi
+      _log "WARN $agent_name comment failed"
+      emit_lab_event "cycle" "act" "warn" "comment" "comment request failed" "" "$post_id"
+      return 1
+      ;;
+
+    like)
+      local like_post_id
+      like_post_id="$(echo "$decision" | jq -r '.postId // ""')"
+      if [[ -z "$like_post_id" ]]; then
+        _log "SKIP $agent_name like — missing postId"
+        emit_lab_event "cycle" "act" "skip" "like" "like skipped: missing postId"
+        return 1
+      fi
+      if bash "$SCRIPT_DIR/swil.sh" like "$like_post_id"; then
+        _log "DONE $agent_name liked $like_post_id"
+        emit_lab_event "cycle" "act" "success" "like" "liked post" "" "$like_post_id"
+        return 0
+      fi
+      _log "WARN $agent_name like failed"
+      emit_lab_event "cycle" "act" "warn" "like" "like request failed" "" "$like_post_id"
+      return 1
+      ;;
+
+    follow)
+      local follow_target
+      follow_target="$(echo "$decision" | jq -r '.username // ""' | tr -d '@[:space:]')"
+      if [[ -z "$follow_target" ]]; then
+        _log "SKIP $agent_name follow — missing username"
+        emit_lab_event "cycle" "act" "skip" "follow" "follow skipped: missing username"
+        return 1
+      fi
+      if bash "$SCRIPT_DIR/swil.sh" follow "$follow_target" >/dev/null 2>&1; then
+        _log "DONE $agent_name followed @$follow_target"
+        emit_lab_event "cycle" "act" "success" "follow" "followed @$follow_target"
+      else
+        _log "WARN $agent_name follow @$follow_target failed (likely already following)"
+        emit_lab_event "cycle" "act" "warn" "follow" "follow request failed" "$follow_target"
+      fi
+      # Deliberately 0 either way: "already following" is the common outcome and
+      # is not a failed round.
+      return 0
+      ;;
+
+    echo)
+      local echo_post_id echo_text
+      echo_post_id="$(echo "$decision" | jq -r '.postId // ""')"
+      echo_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      echo_text="$(collapse_doubled_text "$echo_text")"
+      if [[ -z "$echo_post_id" ]]; then
+        _log "SKIP $agent_name echo — missing postId"
+        emit_lab_event "cycle" "act" "skip" "echo" "echo skipped: missing postId"
+        return 1
+      fi
+      if bash "$SCRIPT_DIR/swil.sh" echo "$echo_post_id" "$echo_text"; then
+        _log "DONE $agent_name echoed $echo_post_id${echo_text:+ (quote: ${echo_text:0:40})}"
+        emit_lab_event "cycle" "act" "success" "echo" "${echo_text:0:200}" "" "$echo_post_id"
+        return 0
+      fi
+      _log "WARN $agent_name echo failed"
+      emit_lab_event "cycle" "act" "warn" "echo" "echo request failed" "" "$echo_post_id"
+      return 1
+      ;;
+
+    dm)
+      local dm_user dm_text
+      dm_user="$(echo "$decision" | jq -r '.username // ""' | tr -d '@[:space:]')"
+      dm_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
+      dm_text="$(collapse_doubled_text "$dm_text")"
+      if [[ -z "$dm_user" || -z "$dm_text" ]]; then
+        _log "SKIP $agent_name dm — missing username or text"
+        emit_lab_event "cycle" "act" "skip" "dm" "dm skipped: missing username or text"
+        return 1
+      fi
+      if bash "$SCRIPT_DIR/swil.sh" dm "$dm_user" "$dm_text" >/dev/null 2>&1; then
+        _log "DONE $agent_name dm → @$dm_user"
+        # Recipient only, never the body. memory.md keeps a local preview so the
+        # agent remembers what it said; the lab event feeds /lab, and private
+        # conversations stay out of the observation layer by design.
+        emit_lab_event "cycle" "act" "success" "dm" "→@$dm_user"
+        return 0
+      fi
+      _log "WARN $agent_name dm to @$dm_user failed"
+      emit_lab_event "cycle" "act" "warn" "dm" "dm request failed" "$dm_user"
+      return 1
+      ;;
+
+    nothing)
+      _log "DONE $agent_name — chose to do nothing"
+      emit_lab_event "cycle" "act" "success" "nothing" "chose to do nothing"
+      return 0
+      ;;
+
+    *)
+      _log "SKIP $agent_name — unknown action: $action"
+      emit_lab_event "cycle" "act" "skip" "-" "unknown action" "$action"
+      return 1
+      ;;
+  esac
 }
 
 build_rhythm_guidance() {
@@ -235,11 +480,21 @@ run_agent() {
   # validator bounds it at 40 chars; `deepseek:deepseek-v4-flash` is 26 chars,
   # so it fits — the old 20-char bound did not (this line's PATCH used to
   # 400 and get silently swallowed by the `|| true` below).
-  bash "$SCRIPT_DIR/swil.sh" update-profile \
-    "{\"agentBackend\":\"${ai_backend}${ai_model:+:$ai_model}\"}" >/dev/null 2>&1 || true
+  #
+  # Log the failure instead of swallowing it. `|| true` with stderr sent to
+  # /dev/null is what hid a 403 on every `humans/` round: the server used to
+  # refuse agentBackend for isAgent:false accounts, so two of them stayed null
+  # and six kept pre-guard values — invisible until someone diffed the roster
+  # against the API by hand (2026-08-05). Still non-fatal; this is profile
+  # metadata, not the round.
+  local backend_sync_err
+  if ! backend_sync_err="$(bash "$SCRIPT_DIR/swil.sh" update-profile \
+      "{\"agentBackend\":\"${ai_backend}${ai_model:+:$ai_model}\"}" 2>&1 >/dev/null)"; then
+    _log "WARN $agent_name — agentBackend sync failed: ${backend_sync_err:0:160}"
+  fi
 
   # Step 2: Build context for the LLM
-  local personality context_now recent_memory global_feed timeline_feed rhythm_guidance feed_context notification_context
+  local personality context_now recent_memory global_feed timeline_feed rhythm_guidance feed_context notification_context thread_context
 
   personality="$(cat "$pfile")"
   context_now="$(cat "$ROOT_DIR/context/now.md" 2>/dev/null || echo '(no context file)')"
@@ -276,7 +531,11 @@ run_agent() {
   today_post_count="${today_post_count:-0}"
 
   # Fetch a wide slice of the recommended feed as reaction targets (breadth).
-  global_feed="$(bash "$SCRIPT_DIR/swil.sh" feed global 40 recommended 2>/dev/null | \
+  # Kept as raw JSON so the thread-depth pass below can reuse it instead of
+  # paying for a second identical request.
+  local feed_raw
+  feed_raw="$(bash "$SCRIPT_DIR/swil.sh" feed global 40 recommended 2>/dev/null || echo '')"
+  global_feed="$(echo "$feed_raw" | \
     jq -r '
       .data.items[0:25][] |
       "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）♥\(.likeCount) 💬\(.commentCount): \(.text | gsub("\n";" ") | .[0:220])"
@@ -290,14 +549,46 @@ run_agent() {
       "postId:\(.id) | @\(.author.username)（\(.createdAt[0:10])）: \(.text | gsub("\n";" ") | .[0:140])"
     ' 2>/dev/null || echo '')"
 
+  # Open the comment threads under the busiest posts the agent has NOT already
+  # engaged with. Without this the agent only ever sees top-level text, so the
+  # single conversation it can join is whichever one already pinged its
+  # notifications — every other discussion on the platform is invisible to it,
+  # and `parentId` replies are unreachable by choice. Three threads ≈ 6 cheap
+  # reads and turns "reply into an ongoing thread" into a real option.
+  local thread_targets tid
+  thread_context=""
+  thread_targets="$(echo "$feed_raw" | \
+    jq -r --arg engaged "$engaged_ids" '
+      ($engaged | split(",")) as $skip |
+      [ .data.items[]
+        | select(.commentCount >= 2)
+        | select(.id as $i | ($skip | index($i)) | not)
+      ] | sort_by(-.commentCount) | .[0:3][] | .id
+    ' 2>/dev/null || true)"
+  if [[ -n "${thread_targets//[[:space:]]/}" ]]; then
+    while IFS= read -r tid; do
+      [[ -z "$tid" ]] && continue
+      thread_context+="$(bash "$SCRIPT_DIR/swil.sh" thread "$tid" 6 2>/dev/null || true)"$'\n\n'
+    done <<< "$thread_targets"
+  fi
+
   # Fetch unread notifications so agent can respond to mentions, replies, likes
   notification_context="$(bash "$SCRIPT_DIR/swil.sh" notifications 8 2>/dev/null | \
     jq -r '
       .data.items[0:8][] |
       "- [\(.type)] @\(.actor.username)（\(.actor.displayName)）" +
-      if .post then "：帖子「\(.post.textPreview[0:50])」" else "" end +
-      if .comment then " / 评论ID:\(.comment.id) 内容：「\(.comment.textPreview[0:50])」" else "" end
+      if .post then "：postId:\(.post.id) 帖子「\(.post.textPreview[0:50])」" else "" end +
+      if .comment then " / 评论ID:\(.comment.id)（属于上面那个 postId）内容：「\(.comment.textPreview[0:50])」" else "" end
     ' 2>/dev/null || echo '（暂无新互动）')"
+
+  # Who this account may DM: people it follows, people who follow it, and anyone
+  # it already has a conversation with. Best-effort — if this fails the account
+  # simply loses the DM action for one round. apply_plan_guardrails validates the
+  # chosen recipient against this list, so an empty list means no DM can be sent
+  # rather than any DM being allowed.
+  local contacts_list dm_context
+  contacts_list="$(bash "$SCRIPT_DIR/swil.sh" contacts 2>/dev/null || echo '')"
+  dm_context="$(bash "$SCRIPT_DIR/swil.sh" dms 6 2>/dev/null || echo '')"
 
   build_rhythm_guidance "$pfile" "$today_post_count"
   rhythm_guidance="$RHYTHM_GUIDANCE"
@@ -346,24 +637,39 @@ $global_feed
 ${timeline_feed:+
 ## 平台时间线（按时间倒序，含更早的帖子，给你更宽的视野）
 $timeline_feed}
+${thread_context:+
+## 正在进行的讨论（几条热帖的完整评论区）
+下面每条评论前面的 [24位ID] 就是它的 commentId。想接着某条评论往下说，
+就用 {"action":"comment","postId":"该帖ID","parentId":"该评论ID","text":"..."}。
+不感兴趣就跳过——不必为了用上这块内容而硬接话。
+
+$thread_context}
+${contacts_list:+
+## 可以私信的人（只有这些人；写名单外的人会被丢弃）
+$contacts_list}
+${dm_context:+
+## 最近的私信会话
+$dm_context}
 
 ---
-请根据你的性格、行为规则和「发帖节律」，决定现在要做什么。
+请根据你的性格、行为规则和「发帖节律」，决定这一轮要做什么。
 
 上面的“本轮节律约束”是硬规则，不要违背。
 ${backend_action_constraint}
 
-你可以选择以下任意一个行动，也可以什么都不做：
-- 发一条帖子（post）← 优先选项
-- 评论某条帖子（comment）
-- 回复某条评论（reply，使用 parentId 字段）
-- 给某条帖子点赞（like）
-- 转发/引用某条你强烈共鸣或想放大的帖子（echo）
-- 关注一个用户（follow）
-- 什么都不做（nothing）
+你这一轮有 ${ACTION_BUDGET:-5} 个动作的预算。按你的性格决定这一轮做哪些事——
+可以只做一件，也可以做满预算。别硬凑数量，但也别只发一条帖子就走。
 
-**请只输出一个合法的 JSON 对象，不要有任何其他文字：**
+硬规则（违反的动作会被直接丢弃）：
+- 最多 1 条 post，最多 1 条 echo；其余预算必须花在互动上（comment / reply / like / follow / dm）
+- 私信只能发给上面「可以私信的人」名单里的人
+- 同一条帖子不要重复做同一个动作
 
+**只输出一个合法的 JSON 对象，不要有任何其他文字：**
+
+{"plan":[ ...按你想执行的顺序排列的动作... ]}
+
+每个动作的格式：
 发帖（纯文字）：{"action":"post","text":"你的帖子内容"}
 发帖（带图片）：{"action":"post","text":"你的帖子内容","imageTopic":"english keyword for image search"}
 评论帖子：{"action":"comment","postId":"帖子的24位ID","text":"评论内容"}
@@ -372,11 +678,13 @@ ${backend_action_constraint}
 转发（纯转发）：{"action":"echo","postId":"帖子的24位ID"}
 引用转发（带你的评价）：{"action":"echo","postId":"帖子的24位ID","text":"你的引用语"}
 关注：{"action":"follow","username":"用户名（不带@）"}
-不做：{"action":"nothing"}
+私信：{"action":"dm","username":"用户名（不带@）","text":"私信内容"}
+这一轮什么都不做：{"plan":[{"action":"nothing"}]}
 
 imageTopic 说明：可选字段，填写与帖子内容相关的英文关键词（如 "technology"、"nature"、"city night"），系统会自动配图。不想配图时省略此字段即可。
 parentId 说明：回复通知中的评论时使用，填写通知里的评论ID（24位十六进制）。
 follow 说明：当 feed 里反复出现某个值得长期关注的用户时使用；同一个用户不要重复关注（你已经关注的人不会重复出现互动通知里）。
+dm 说明：私信是私下说话，不是公开发言。用在只想对一个人说、不适合放在帖子下面的时候；对方看得到你的名字。
 PROMPT
 )"
 
@@ -389,258 +697,114 @@ PROMPT
     return 75
   fi
 
-  # `decision` may contain multiple JSON documents (codex sometimes echoes
-  # multiple candidate JSONs); jq -r emits one .action per doc, so collapse to
-  # the first non-empty token to avoid case-statement misses on "comment\ncomment".
-  local action decision_first
-  decision_first="$(echo "$decision" | head -c 4096)"
-  action="$(echo "$decision_first" | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
-  action="${action:-nothing}"
+  # Turn the raw response into a validated plan. normalize_plan absorbs the
+  # shape differences between backends (codex likes to emit several candidate
+  # documents); apply_plan_guardrails enforces the budget, the one-post/one-echo
+  # ceiling, the rhythm veto, and the DM contact list.
+  #
+  # The old forced-retry blocks are gone: when the rhythm forbids posting there
+  # is nothing to re-ask, the post is simply dropped from the plan. That removes
+  # a whole extra LLM round-trip per vetoed account.
+  local plan plan_count landed=0 attempted=0
+  plan="$(normalize_plan "$decision")"
+  local allowed_actions=""
+  if [[ "$ai_backend" == "codex" ]]; then
+    allowed_actions="post,nothing"
+  fi
+  plan="$(apply_plan_guardrails "$plan" "$RHYTHM_POLICY" "${ACTION_BUDGET:-5}" "$contacts_list" "$allowed_actions")"
+  plan_count="$(echo "$plan" | jq 'length' 2>/dev/null || echo 0)"
 
-  case "$RHYTHM_POLICY" in
-    must_post)
-      if [[ "$action" != "post" ]]; then
-        local forced_post_prompt
-        _log "RETRY $agent_name — forcing post to satisfy rhythm"
-        forced_post_prompt="$(cat <<PROMPT
-$user_prompt
-
-上一次输出违反了硬规则。
-现在只允许输出一个合法 JSON 对象，且 action 必须是 post：
-{"action":"post","text":"你的帖子内容"}
-PROMPT
-)"
-        decision="$(ask_llm_json "$ai_backend" "$ai_model" "$personality" "$forced_post_prompt" || true)"
-        action="$(echo "$decision" | head -c 4096 | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
-        action="${action:-nothing}"
-      fi
-      ;;
-    no_post)
-      if [[ "$action" == "post" ]]; then
-        if [[ "$RHYTHM_PREFER_NON_POST" == "nothing" ]]; then
-          decision='{"action":"nothing"}'
-          action="nothing"
-        else
-          local forced_non_post_prompt
-          _log "RETRY $agent_name — forbidding post to satisfy rhythm"
-          forced_non_post_prompt="$(cat <<PROMPT
-$user_prompt
-
-上一次输出违反了硬规则：今天不能发帖。
-现在只允许输出非 post 的合法 JSON 对象。
-优先动作：$RHYTHM_PREFER_NON_POST
-
-评论：{"action":"comment","postId":"帖子的24位ID","text":"评论内容"}
-点赞：{"action":"like","postId":"帖子的24位ID"}
-不做：{"action":"nothing"}
-PROMPT
-)"
-          decision="$(ask_llm_json "$ai_backend" "$ai_model" "$personality" "$forced_non_post_prompt" || true)"
-          action="$(echo "$decision" | head -c 4096 | jq -r '.action // "nothing"' 2>/dev/null | head -1 | tr -d '[:space:]' || echo 'nothing')"
-          action="${action:-nothing}"
-        fi
-      fi
-      ;;
-  esac
-
-  if [[ -z "$decision" ]]; then
-    _log "SKIP $agent_name — could not parse JSON decision"
-    emit_lab_event "cycle" "act" "skip" "-" "could not parse JSON decision"
+  if [[ "$plan_count" -eq 0 ]]; then
+    _log "SKIP $agent_name — empty plan after guardrails"
+    emit_lab_event "cycle" "act" "skip" "-" "empty plan after guardrails"
     return 75
   fi
 
-  if [[ "$RHYTHM_POLICY" == "must_post" && "$action" != "post" ]]; then
-    _log "SKIP $agent_name — still failed to produce required post"
-    emit_lab_event "cycle" "act" "skip" "$action" "failed to satisfy must-post rhythm" "$RHYTHM_POLICY"
+  _log "$agent_name planned: $(echo "$plan" | jq -r '[.[].action] | join(", ")')"
+
+  # Step 4: Execute the plan, in order. One failure does not stop the rest.
+  local idx action_json
+  for (( idx = 0; idx < plan_count; idx++ )); do
+    action_json="$(echo "$plan" | jq -c ".[$idx]")"
+    attempted=$(( attempted + 1 ))
+    if execute_action "$action_json" "$agent_name"; then
+      landed=$(( landed + 1 ))
+    fi
+  done
+
+  # The contract cycle-one.sh depends on: a round where nothing landed must not
+  # be followed by a dream, or the dream rewrites the persona from memory this
+  # round never refreshed and manufactures drift that never happened.
+  if [[ "$landed" -eq 0 ]]; then
+    _log "FAIL $agent_name — all ${attempted} planned actions failed; dream will be skipped"
     return 75
   fi
+  _log "$agent_name landed ${landed}/${attempted} actions"
 
-  if [[ "$RHYTHM_POLICY" == "no_post" && "$action" == "post" ]]; then
-    _log "SKIP $agent_name — still tried to post despite no-post rule"
-    emit_lab_event "cycle" "act" "skip" "$action" "violated no-post rhythm" "$RHYTHM_POLICY"
-    return 75
+  # Smart mark-read: only mark notifications the agent semantically *responded
+  # to*. Untouched mentions and replies stay unread so the next round still sees
+  # them. Matching on any notification sharing a postId would silently clear a
+  # "someone commented on X" item merely because the agent liked something else
+  # involving X, losing that context for the next round. So:
+  #   - a reply (comment with parentId): match that specific comment.id
+  #   - a top-level comment: match mention/comment/reply notifications on its post
+  #   - like / follow / echo / dm: never mark — they are not responses
+  #   - a plan that was only `nothing`: clear everything, so an idle agent is not
+  #     stuck rereading the same 8 items forever
+  #
+  # Now plan-aware: a round may contain several comments, so every comment in
+  # the plan contributes its targets and the whole set is marked in one call.
+  local comment_targets notif_ids_json
+  comment_targets="$(echo "$plan" | jq -c '[.[] | select(.action == "comment")
+    | {pid: (.postId // ""), cid: (.parentId // "")}]' 2>/dev/null || echo '[]')"
+
+  if [[ "$(echo "$plan" | jq -r '[.[].action] | unique | join(",")')" == "nothing" ]]; then
+    bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
+  elif [[ "$comment_targets" != "[]" && -n "$comment_targets" ]]; then
+    notif_ids_json="$(bash "$SCRIPT_DIR/swil.sh" notifications 20 2>/dev/null | \
+      jq --argjson targets "$comment_targets" -c '
+        [.data.items[]? as $n
+          | select(any($targets[];
+              (((.cid | length) > 0) and ($n.comment.id == .cid))
+              or
+              (((.cid | length) == 0) and ($n.post.id == .pid)
+                and ($n.type == "mention" or $n.type == "comment" or $n.type == "reply"))
+            ))
+          | $n.id]
+      ' 2>/dev/null || echo '[]')"
+    if [[ "$notif_ids_json" != "[]" && -n "$notif_ids_json" ]]; then
+      bash "$SCRIPT_DIR/swil.sh" mark-notifications-read-ids "$notif_ids_json" >/dev/null 2>&1 || true
+    fi
   fi
-
-  _log "$agent_name decided: $action"
-
-  # Step 4: Execute the action
-  case "$action" in
-    post)
-      local text image_topic
-      text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
-      text="$(collapse_doubled_text "$text")"
-      image_topic="$(echo "$decision" | jq -r '.imageTopic // ""' 2>/dev/null | tr -d '\n' | sed 's/  */ /g' || echo '')"
-      if [[ -z "$text" ]]; then
-        _log "SKIP $agent_name post — empty text"
-        emit_lab_event "cycle" "act" "skip" "post" "post skipped: empty text"
-      else
-        if bash "$SCRIPT_DIR/swil.sh" post "$text" "$image_topic"; then
-          _log "DONE $agent_name posted${image_topic:+ [img:$image_topic]}: ${text:0:60}…"
-          emit_lab_event "cycle" "act" "success" "post" "${text:0:200}"
-        else
-          _log "WARN $agent_name post failed"
-          ACTION_FAILED=1
-          emit_lab_event "cycle" "act" "warn" "post" "post request failed"
-        fi
-      fi
-      ;;
-
-    comment)
-      local post_id comment_text parent_id
-      post_id="$(echo "$decision" | jq -r '.postId // ""')"
-      comment_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
-      comment_text="$(collapse_doubled_text "$comment_text")"
-      parent_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
-      if [[ -z "$post_id" || -z "$comment_text" ]]; then
-        _log "SKIP $agent_name comment — missing postId or text"
-        emit_lab_event "cycle" "act" "skip" "comment" "comment skipped: missing postId or text"
-      else
-        if bash "$SCRIPT_DIR/swil.sh" comment "$post_id" "$comment_text" "$parent_id"; then
-          _log "DONE $agent_name commented on $post_id${parent_id:+ (reply to $parent_id)}"
-          emit_lab_event "cycle" "act" "success" "comment" "${comment_text:0:200}" "" "$post_id"
-        else
-          _log "WARN $agent_name comment failed"
-          ACTION_FAILED=1
-          emit_lab_event "cycle" "act" "warn" "comment" "comment request failed" "" "$post_id"
-        fi
-      fi
-      ;;
-
-    like)
-      local like_post_id
-      like_post_id="$(echo "$decision" | jq -r '.postId // ""')"
-      if [[ -z "$like_post_id" ]]; then
-        _log "SKIP $agent_name like — missing postId"
-        emit_lab_event "cycle" "act" "skip" "like" "like skipped: missing postId"
-      else
-        if bash "$SCRIPT_DIR/swil.sh" like "$like_post_id"; then
-          _log "DONE $agent_name liked $like_post_id"
-          emit_lab_event "cycle" "act" "success" "like" "liked post" "" "$like_post_id"
-        else
-          _log "WARN $agent_name like failed"
-          ACTION_FAILED=1
-          emit_lab_event "cycle" "act" "warn" "like" "like request failed" "" "$like_post_id"
-        fi
-      fi
-      ;;
-
-    follow)
-      local follow_target
-      follow_target="$(echo "$decision" | jq -r '.username // ""' | tr -d '@[:space:]')"
-      if [[ -z "$follow_target" ]]; then
-        _log "SKIP $agent_name follow — missing username"
-        emit_lab_event "cycle" "act" "skip" "follow" "follow skipped: missing username"
-      else
-        if bash "$SCRIPT_DIR/swil.sh" follow "$follow_target" >/dev/null 2>&1; then
-          _log "DONE $agent_name followed @$follow_target"
-          emit_lab_event "cycle" "act" "success" "follow" "followed @$follow_target"
-        else
-          _log "WARN $agent_name follow @$follow_target failed (likely already following)"
-          emit_lab_event "cycle" "act" "warn" "follow" "follow request failed" "$follow_target"
-        fi
-      fi
-      ;;
-
-    echo)
-      local echo_post_id echo_text
-      echo_post_id="$(echo "$decision" | jq -r '.postId // ""')"
-      echo_text="$(echo "$decision" | jq -r '.text // ""' | tr -d '\n' | sed 's/  */ /g')"
-      echo_text="$(collapse_doubled_text "$echo_text")"
-      if [[ -z "$echo_post_id" ]]; then
-        _log "SKIP $agent_name echo — missing postId"
-        emit_lab_event "cycle" "act" "skip" "echo" "echo skipped: missing postId"
-      else
-        if bash "$SCRIPT_DIR/swil.sh" echo "$echo_post_id" "$echo_text"; then
-          _log "DONE $agent_name echoed $echo_post_id${echo_text:+ (quote: ${echo_text:0:40})}"
-          emit_lab_event "cycle" "act" "success" "echo" "${echo_text:0:200}" "" "$echo_post_id"
-        else
-          _log "WARN $agent_name echo failed"
-          ACTION_FAILED=1
-          emit_lab_event "cycle" "act" "warn" "echo" "echo request failed" "" "$echo_post_id"
-        fi
-      fi
-      ;;
-
-    nothing)
-      _log "DONE $agent_name — chose to do nothing"
-      emit_lab_event "cycle" "act" "success" "nothing" "chose to do nothing"
-      ;;
-
-    *)
-      _log "SKIP $agent_name — unknown action: $action"
-      emit_lab_event "cycle" "act" "skip" "-" "unknown action" "$action"
-      ;;
-  esac
-
-  # An action that was attempted and failed is NOT a completed round. Without
-  # this, a failed post logged WARN, fell through, and returned 0 — so
-  # cycle-one.sh dreamed on memory the round never updated, which is the exact
-  # stale-memory drift this contract exists to prevent. (`follow` is excluded:
-  # "already following" is a benign no-op, not a failed round.)
-  if [[ "${ACTION_FAILED:-0}" == "1" ]]; then
-    _log "FAIL $agent_name — action ${action} failed; dream will be skipped"
-    return 75
-  fi
-
-  # Smart mark-read: only mark notifications related to the post/comment the
-  # agent acted on. Untouched mentions / replies stay unread so the next run
-  # still sees them. If we couldn't determine a target, fall back to all-read
-  # (preserves prior behavior, prevents notification backlog runaway).
-  local responded_post_id responded_comment_id
-  responded_post_id="$(echo "$decision" | jq -r '.postId // ""' 2>/dev/null || echo '')"
-  responded_comment_id="$(echo "$decision" | jq -r '.parentId // ""' 2>/dev/null || echo '')"
-
-  # Type-filtered mark-read: only mark notifications the agent semantically
-  # *responded to*. Previous version matched any notification with the same
-  # post.id, which would silently mark a comment-on-post-X notification as
-  # read merely because the agent chose to like-some-other-thing involving
-  # post-X — losing context for next run. Now:
-  #   - comment with parentId (reply): match the specific comment.id
-  #   - comment top-level: match mention/comment notifications on this post
-  #     (i.e., things asking for a textual response)
-  #   - like / follow: do NOT mark — they aren't notification responses
-  #   - nothing: clear all so the same backlog doesn't loop forever
-  case "$action" in
-    comment)
-      if [[ -n "$responded_post_id" ]]; then
-        local notif_ids_json
-        notif_ids_json="$(bash "$SCRIPT_DIR/swil.sh" notifications 20 2>/dev/null | \
-          jq --arg pid "$responded_post_id" --arg cid "$responded_comment_id" -c '
-            [.data.items[]?
-              | select(
-                  (($cid | length > 0) and (.comment.id == $cid))
-                  or
-                  (($cid | length == 0) and (.post.id == $pid)
-                    and (.type == "mention" or .type == "comment" or .type == "reply"))
-                )
-              | .id]
-          ' 2>/dev/null || echo '[]')"
-        if [[ "$notif_ids_json" != "[]" && -n "$notif_ids_json" ]]; then
-          bash "$SCRIPT_DIR/swil.sh" mark-notifications-read-ids "$notif_ids_json" >/dev/null 2>&1 || true
-        fi
-      fi
-      ;;
-    nothing)
-      # Idle turn: clear ambient queue so the agent isn't stuck on the same
-      # 8 items forever. Mentions/replies that haven't been answered will
-      # re-arrive as new notifications when actors interact again.
-      bash "$SCRIPT_DIR/swil.sh" mark-notifications-read >/dev/null 2>&1 || true
-      ;;
-    *)
-      # post / like / follow / unknown: leave notifications alone. They'll
-      # be addressed (or cleared via `nothing`) on a future run.
-      :
-      ;;
-  esac
 
   # Persona fidelity (Feature 1): embed recent posts and ship the vector so the
   # lab can track "stated self vs revealed self". Best-effort; never blocks.
   bash "$SCRIPT_DIR/behavior-snapshot.sh" "$(basename "$1")" >/dev/null 2>&1 || true
 
-  ) || _log "ERROR in agent $(basename "$1") — subshell exited non-zero"
+  # Propagate the subshell's exit code. `( … ) || _log "…"` looks equivalent but
+  # is not: `_log` succeeds, so it becomes run_agent's status and every non-zero
+  # return from inside the subshell (66 no-personality, 75 lock/login/LLM
+  # failure, 75 ACTION_FAILED) was reported to Main as 0. That silently disabled
+  # the whole exit-code contract below — cycle-one.sh dreamed on rounds whose
+  # act never landed, which is exactly the stale-memory drift pollution the
+  # contract exists to prevent. Observed 2026-08-05 on lvchuang: a 404'd comment
+  # logged "dream will be skipped" and was immediately followed by
+  # "auto-run complete (rc=0)" and a dream. Capture $? before anything else runs.
+  ) || {
+    local rc=$?
+    _log "ERROR in agent $(basename "$1") — subshell exited non-zero (rc=${rc})"
+    return "${rc}"
+  }
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+# Sourced with SOURCE_ONLY=1, this file defines its helpers and stops. That is
+# how agent/scripts/tests/plan.test.sh loads normalize_plan and
+# apply_plan_guardrails; without the guard, sourcing would kick off a real round.
+if [[ "${SOURCE_ONLY:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 _log "=== auto-run start ==="
 

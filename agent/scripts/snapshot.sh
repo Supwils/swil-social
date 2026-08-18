@@ -93,6 +93,16 @@ if ! echo "$EMBED_RESP" | jq -e '.embeddings[0] | length > 0' >/dev/null 2>&1; t
   exit 1
 fi
 
+# The embedder clips anything past its max_seq_length (8192 tokens for bge-m3)
+# and still returns a perfectly well-formed 1024-dim vector, so an over-long
+# personality yields a drift score computed on a *clipped* persona with nothing
+# to show for it. Four accounts already cross that line. Say so — the snapshot
+# still uploads, because a partial vector beats a gap in the trajectory, but the
+# reading deserves an asterisk.
+if [[ "$(echo "$EMBED_RESP" | jq -r '.truncated // 0')" != "0" ]]; then
+  echo "snapshot: WARN personality exceeded the embedder's max_seq_length — vector covers only the leading portion" >&2
+fi
+
 EMBEDDING_JSON="$(echo "$EMBED_RESP" | jq -c '.embeddings[0]')"
 
 # Character-based 280 truncation. `head -c 280` cuts at byte 280, which lands

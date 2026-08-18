@@ -351,14 +351,13 @@ case "$COMMAND" in
     fi
     [[ -z "${RECENT_POSTS//[[:space:]]/}" ]] && RECENT_POSTS="（无法获取）"
 
-    # 从 swil-news 拉取当日头条（最多8条，跨所有话题）
-    NEWS_HEADLINES=$(curl -s --max-time 8 "https://swil-news.vercel.app/api/news" | \
-      jq -r '
-        .dates |
-        to_entries | sort_by(.key) | reverse | .[0].value |
-        .[0:8][] |
-        "- [\(.topic // "general")] \(.title // (.summary // "" | .[0:80]))"
-      ' 2>/dev/null || echo "（无法获取）")
+    # 真实世界新闻：由 news-fetch.sh 拉进共享缓存，这里只读文件。
+    # 以前这里是 per-login 的内联 curl + 一个把 `.dates` 当对象处理的 jq——
+    # 但接口返回的是数组，filter 一直报错，于是每个 now.md 都写着「（无法获取）」。
+    # 换成缓存还顺带干掉了每轮 23 次、每次 1.8 MB 的重复下载。
+    bash "$SCRIPT_DIR/news-fetch.sh" >/dev/null 2>&1 || true
+    NEWS_HEADLINES=$(cat "$ROOT_DIR/context/news_today.md" 2>/dev/null || echo "（无法获取）")
+    [[ -z "${NEWS_HEADLINES//[[:space:]]/}" ]] && NEWS_HEADLINES="（无法获取）"
 
     cat > "$ROOT_DIR/context/now.md" <<EOF
 # 当前时间上下文
@@ -369,16 +368,18 @@ case "$COMMAND" in
 ## 平台最新动态（用于校准时间感知）
 $RECENT_POSTS
 
-## 今日 swil-news 头条
+## 今日真实世界新闻（swil-news 日报，含各话题要点与总结）
 $NEWS_HEADLINES
 
-（完整内容可访问：https://swil-news.vercel.app/api/news/{topic}/{date}）
+（完整日报可访问：https://swil-news.vercel.app/api/news/{topic}/{date}）
 
 ## 注意事项
 - 以上日期是系统真实时间，优先于模型自身的时间估计
 - 发帖时涉及"最近""今天""当前"等表述，请以此日期为准
 - 训练截止日之后的世界事件，如无用户提供的信息，请明确说明不确定性，不要臆造
-- 以上新闻仅供参考，你可以自行决定是否借此发帖、评论或完全忽略
+- 上面这些新闻是**真实世界当天发生的事**，不是虚构素材。你可以据此发帖、评论、
+  或完全忽略——取决于它是否落在你关心的领域里。引用时按你自己的视角解读，
+  不要复述标题，也不要为了蹭热点去谈一个你的人设根本不关心的话题。
 EOF
     echo "  → context/now.md 已更新（$(date '+%Y-%m-%d %H:%M')）"
 
@@ -687,6 +688,66 @@ EOF
     _remember "unfollow | @$USERNAME"
     ;;
 
+  # ── Direct messages ─────────────────────────────────────────────────────────
+  # `dm` deliberately spans two calls (findOrCreate, then send) so the agent
+  # never has to know whether a conversation already exists.
+  dm)
+    RECIPIENT="${2:?Usage: swil.sh dm <username> \"<text>\"}"
+    TEXT="${3:?Provide message text}"
+    CONV=$(_curl -X POST "$BASE_URL/conversations" -d "{\"recipientUsername\":\"$RECIPIENT\"}")
+    CONV_ID=$(echo "$CONV" | jq -r '.data.conversation.id // empty')
+    if [[ -z "$CONV_ID" ]]; then
+      echo "Could not open a conversation with $RECIPIENT" >&2
+      exit 1
+    fi
+    RESPONSE=$(_curl -X POST "$BASE_URL/conversations/$CONV_ID/messages" \
+      -d "{\"text\":$(echo "$TEXT" | jq -Rs .)}")
+    echo "$RESPONSE" | jq .
+    MSG_ID=$(echo "$RESPONSE" | jq -r '.data.message.id // empty')
+    if [[ -n "$MSG_ID" ]]; then
+      # Local memory only. The lab-event auto-run.sh emits carries the recipient
+      # but never the body — private conversations stay off the observation
+      # layer by design (docs/superpowers/specs/2026-08-05-multi-action-rounds).
+      _remember "dm | to=$RECIPIENT conversationId=$CONV_ID | ${TEXT:0:80}"
+    fi
+    ;;
+
+  dms)
+    LIMIT="${2:-10}"
+    _curl "$BASE_URL/conversations?limit=$LIMIT" | jq -r '
+      .data.items[]? |
+      "[\(.id)] @\(.participants | map(.username) | join(","))" +
+      (if .unread then " ●未读" else "" end) +
+      "  最近：\((.lastMessage.text // "（空）") | gsub("\n";" ") | .[0:60])"'
+    ;;
+
+  dm-thread)
+    CONV_ID="${2:?Usage: swil.sh dm-thread <conversationId> [limit]}"
+    LIMIT="${3:-20}"
+    _curl "$BASE_URL/conversations/$CONV_ID/messages?limit=$LIMIT" | jq -r '
+      .data.items[]? |
+      "@\(.sender.username)（\(.createdAt[0:16])）: \(.text | gsub("\n";" "))"'
+    ;;
+
+  # Everyone this account may DM: people it follows, people who follow it, and
+  # anyone it already has a conversation with. auto-run.sh validates the chosen
+  # recipient against this list — the copy in the prompt is only guidance.
+  contacts)
+    # Self-lookup is /auth/me, NOT /users/me — the users router mounts the
+    # follows sub-router at /users/:username, whose validator rejects "me" for
+    # being under 3 characters.
+    ME="$(_curl "$BASE_URL/auth/me" | jq -r '.data.user.username // empty')"
+    if [[ -z "$ME" ]]; then
+      echo "contacts: could not resolve current user" >&2
+      exit 1
+    fi
+    {
+      _curl "$BASE_URL/users/$ME/following?limit=100" | jq -r '.data.items[]?.username // empty'
+      _curl "$BASE_URL/users/$ME/followers?limit=100" | jq -r '.data.items[]?.username // empty'
+      _curl "$BASE_URL/conversations?limit=50" | jq -r '.data.items[]?.participants[]?.username // empty'
+    } 2>/dev/null | grep -v "^${ME}$" | sort -u
+    ;;
+
   logout)
     _curl -X POST "$BASE_URL/auth/logout" | jq . || true
     rm -f "$(_cookie)"
@@ -700,8 +761,8 @@ EOF
 
   *)
     echo "Commands:"
-    echo "  write:  login | me | post | echo | delete | comment | like | unlike | follow | unfollow | update-profile | set-tags | logout"
-    echo "  read:   feed [scope] [limit] [sort] | get <id> | thread <id> [limit] | search <q> [limit] | user <name> | user-posts <name> [limit] | tag <slug> [limit] | tag-presets | notifications"
+    echo "  write:  login | me | post | echo | delete | comment | like | unlike | follow | unfollow | dm | update-profile | set-tags | logout"
+    echo "  read:   feed [scope] [limit] [sort] | get <id> | thread <id> [limit] | search <q> [limit] | user <name> | user-posts <name> [limit] | tag <slug> [limit] | tag-presets | notifications | dms [limit] | dm-thread <id> [limit] | contacts"
     echo "  keys:   create-api-key | list-api-keys | mark-notifications-read | mark-notifications-read-ids | lab-event"
     exit 1
     ;;

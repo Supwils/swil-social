@@ -1,0 +1,650 @@
+import json as _json
+from urllib.parse import parse_qs, urlsplit
+
+import httpx
+import pytest
+
+from swil_agent.api.auth import ApiKeyAuth
+from swil_agent.api.client import ApiClient, ApiError
+from swil_agent.api.dto import LabEvent
+from swil_agent.api.resources import Resources, WriteNotVerifiedError
+
+
+def _resources(handler) -> Resources:
+    client = ApiClient(
+        "https://example.test", ApiKeyAuth("k"), transport=httpx.MockTransport(handler)
+    )
+    return Resources(client)
+
+
+# ── create_post ──────────────────────────────────────────────────────────
+
+
+def test_create_post_returns_server_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/posts"
+        return httpx.Response(201, json={"data": {"post": {"id": "post-1"}}})
+
+    assert _resources(handler).create_post("hello") == "post-1"
+
+
+def test_create_post_without_id_raises_write_not_verified() -> None:
+    """A 200 with no created resource is the codex silent-fail signature."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).create_post("hello")
+
+
+def test_create_post_sends_board_id_when_given() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"post": {"id": "p"}}})
+
+    _resources(handler).create_post("hi", board_id="board-9")
+    assert seen["boardId"] == "board-9"
+
+
+def test_create_post_omits_board_id_when_absent() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"post": {"id": "p"}}})
+
+    _resources(handler).create_post("hi")
+    assert "boardId" not in seen
+
+
+def test_create_post_with_image_uses_plural_images_multipart_field() -> None:
+    """Regression guard for the brief's wrong assumption: multer is
+    configured with the plural field name "images"
+    (posts.routes.ts: upload.fields([{ name: 'images', maxCount: 4 }, ...]))
+    and the controller reads fields['images']. A body that instead posts the
+    singular "image" would still 201 (multer just sees zero files under
+    'images') — losing the picture silently. This asserts the actual bytes
+    landed under the "images" multipart field."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["content-type"].startswith("multipart/form-data")
+        body = request.content
+        assert b'name="images"' in body
+        assert b"raw-image-bytes" in body
+        assert b'name="image"' not in body
+        return httpx.Response(201, json={"data": {"post": {"id": "p-img"}}})
+
+    result = _resources(handler).create_post("hi", image=("photo.jpg", b"raw-image-bytes"))
+    assert result == "p-img"
+
+
+# ── create_comment ───────────────────────────────────────────────────────
+
+
+def test_create_comment_returns_server_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/posts/p1/comments"
+        return httpx.Response(201, json={"data": {"comment": {"id": "c-1"}}})
+
+    assert _resources(handler).create_comment("p1", "text") == "c-1"
+
+
+def test_create_comment_sends_parent_id_when_given() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"comment": {"id": "c"}}})
+
+    _resources(handler).create_comment("p1", "text", parent_id="c0")
+    assert seen["parentId"] == "c0"
+
+
+def test_create_comment_omits_parent_id_when_absent() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"comment": {"id": "c"}}})
+
+    _resources(handler).create_comment("p1", "text")
+    assert "parentId" not in seen
+
+
+def test_create_comment_without_id_raises() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"ok": True}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).create_comment("p1", "text")
+
+
+# ── like_post ────────────────────────────────────────────────────────────
+
+
+def test_like_post_accepts_confirmed_liked_true() -> None:
+    """Real shape (likes.controller.ts wrapping likes.service.ts's `like()`)
+    is {"data": {"likeCount": N, "liked": true}} — richer than the brief's
+    "just a parseable envelope" assumption, and this asserts on the actual
+    state field per the task's own instruction to do so when one exists."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/posts/p1/like"
+        return httpx.Response(200, json={"data": {"likeCount": 4, "liked": True}})
+
+    _resources(handler).like_post("p1")  # must not raise
+
+
+def test_like_post_raises_when_liked_flag_missing() -> None:
+    """A 2xx envelope that parses fine but never confirms the like landed —
+    exactly the shape swil.sh's `_curl ... | jq .` could not detect."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).like_post("p1")
+
+
+def test_like_post_raises_when_liked_is_false() -> None:
+    """A response shaped like the *unlike* endpoint's (`liked: false`) must
+    not be accepted as a successful like."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"likeCount": 3, "liked": False}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).like_post("p1")
+
+
+# ── follow ───────────────────────────────────────────────────────────────
+
+
+def test_follow_succeeds_on_204_no_content() -> None:
+    """follows.controller.ts returns `noContent(res)` -> a bare 204, not a
+    JSON envelope at all. This is the real shape — the brief assumed a
+    postable JSON body existed to check."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/users/ada/follow"
+        return httpx.Response(204)
+
+    _resources(handler).follow("ada")  # must not raise
+
+
+def test_follow_treats_already_following_conflict_as_success() -> None:
+    """follows.service.ts throws AppError.conflict('Already following this
+    user') -> 409 {"error": {"code": "CONFLICT", ...}}. Per the Bash
+    contract this must be swallowed as success, deliberately, not by an
+    accidentally-masked exit code."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409, json={"error": {"code": "CONFLICT", "message": "Already following this user"}}
+        )
+
+    _resources(handler).follow("ada")  # must not raise
+
+
+def test_follow_propagates_non_conflict_errors() -> None:
+    """A 404 (target user does not exist) must NOT be swallowed the way
+    CONFLICT is — only the specific "already following" case is a no-op."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404, json={"error": {"code": "NOT_FOUND", "message": "User not found"}}
+        )
+
+    with pytest.raises(ApiError) as excinfo:
+        _resources(handler).follow("ghost")
+    assert excinfo.value.status == 404
+
+
+def test_follow_raises_write_not_verified_on_unexpected_2xx_status() -> None:
+    """If the server ever answered 200 instead of 204 (e.g. a future body was
+    added), this must not be silently treated as success without inspection
+    — it must fail loudly until the code is updated to read that body."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).follow("ada")
+
+
+# ── send_dm ──────────────────────────────────────────────────────────────
+
+
+def test_send_dm_creates_conversation_then_sends_message() -> None:
+    """Real flow, derived from messages.routes.ts (and corroborated by an
+    uncommitted `dm` case in swil.sh not present in this checkout — see
+    Resources.send_dm's docstring), is two calls: POST /conversations
+    {recipientUsername} -> conversation id, then
+    POST /conversations/{id}/messages {text} -> message id. The brief's
+    `POST /messages` with `{"username","text"}` does not exist on the
+    server at all."""
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, _json.loads(request.content)))
+        if request.url.path == "/api/v1/conversations":
+            assert _json.loads(request.content) == {"recipientUsername": "someone"}
+            return httpx.Response(201, json={"data": {"conversation": {"id": "conv-1"}}})
+        assert request.url.path == "/api/v1/conversations/conv-1/messages"
+        assert _json.loads(request.content) == {"text": "hi"}
+        return httpx.Response(201, json={"data": {"message": {"id": "m-1"}}})
+
+    result = _resources(handler).send_dm("someone", "hi")
+
+    assert result == "m-1"
+    assert [path for path, _ in calls] == [
+        "/api/v1/conversations",
+        "/api/v1/conversations/conv-1/messages",
+    ]
+
+
+def test_send_dm_raises_when_message_has_no_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/conversations":
+            return httpx.Response(201, json={"data": {"conversation": {"id": "conv-1"}}})
+        return httpx.Response(200, json={"data": {"message": {}}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).send_dm("someone", "hi")
+
+
+def test_send_dm_does_not_send_message_when_conversation_creation_fails() -> None:
+    """This is the test that isolates the conversation-id check specifically
+    (a prior sibling test asserted only `pytest.raises(WriteNotVerifiedError)`
+    against a handler that returns the same conversation-shaped body for
+    every path — that could not tell "the conversation-id check caught it"
+    apart from "the downstream message-id check caught it on a second call
+    the code should never have made," so it was removed as misleading).
+    Here, `calls` proves there was no second call at all: if the
+    conversation-id check were deleted, `send_dm` would proceed to call
+    `POST /conversations/None/messages`, this same handler would answer
+    that too, and `calls` would have two entries instead of one — that is
+    the mutation this test is built to catch."""
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"data": {"conversation": {}}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).send_dm("someone", "hi")
+    assert calls == ["/api/v1/conversations"]
+
+
+# ── get_boards ───────────────────────────────────────────────────────────
+
+
+def test_get_boards_maps_slug_to_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "items": [
+                        {"slug": "perception", "id": "b1"},
+                        {"slug": "making", "id": "b2"},
+                    ]
+                }
+            },
+        )
+
+    assert _resources(handler).get_boards() == {"perception": "b1", "making": "b2"}
+
+
+def test_get_boards_returns_empty_mapping_when_items_missing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    assert _resources(handler).get_boards() == {}
+
+
+# ── me ───────────────────────────────────────────────────────────────────
+
+
+def test_me_reads_auth_me_not_bare_me_or_users_me() -> None:
+    """authRouter.get('/me', ...) is mounted at /api/v1/auth
+    (server/src/app.ts: app.use('/api/v1/auth', authRouter)) — the real path
+    is /auth/me, not /me and not /users/me."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/auth/me"
+        return httpx.Response(200, json={"data": {"user": {"username": "ada"}}})
+
+    assert _resources(handler).me() == {"username": "ada"}
+
+
+def test_me_raises_when_user_object_missing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    with pytest.raises(RuntimeError):
+        _resources(handler).me()
+
+
+# ── read endpoints ───────────────────────────────────────────────────────
+
+
+def test_feed_global_requests_limit_and_sort() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": [{"id": "p1"}]}})
+
+    result = _resources(handler).feed_global(limit=40, sort="recommended")
+
+    assert seen[0].endswith("/api/v1/feed/global?limit=40&sort=recommended")
+    assert result == [{"id": "p1"}]
+
+
+def test_feed_board_requests_slug_limit_and_sort() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    _resources(handler).feed_board("perception", limit=12, sort="latest")
+
+    assert seen[0].endswith("/api/v1/feed/board/perception?limit=12&sort=latest")
+
+
+def test_search_posts_url_encodes_the_query() -> None:
+    """`q` must round-trip through httpx's own URL-encoding, so this decodes
+    the captured URL's query string rather than asserting on the raw
+    (encoded) bytes — the brief's table notes "q is URL-encoded by httpx"."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    _resources(handler).search_posts("语言 边界", limit=12)
+
+    assert seen[0].startswith("https://example.test/api/v1/posts/search?q=")
+    parsed = parse_qs(urlsplit(seen[0]).query)
+    assert parsed["q"] == ["语言 边界"]
+    assert parsed["limit"] == ["12"]
+
+
+def test_get_post_returns_the_post_dict() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/posts/p1"
+        return httpx.Response(200, json={"data": {"id": "p1", "text": "hi"}})
+
+    assert _resources(handler).get_post("p1") == {"id": "p1", "text": "hi"}
+
+
+def test_get_post_returns_empty_dict_when_data_is_not_a_post() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": []})
+
+    assert _resources(handler).get_post("p1") == {}
+
+
+def test_get_comments_requests_limit() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": [{"id": "c1"}]}})
+
+    result = _resources(handler).get_comments("p1", limit=6)
+
+    assert seen[0].endswith("/api/v1/posts/p1/comments?limit=6")
+    assert result == [{"id": "c1"}]
+
+
+def test_notifications_requests_unread_only() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    _resources(handler).notifications(limit=8, unread_only=True)
+
+    assert seen[0].endswith("/api/v1/notifications?limit=8&unreadOnly=true")
+
+
+def test_notifications_omits_unread_only_when_false() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    _resources(handler).notifications(limit=8, unread_only=False)
+
+    assert seen[0].endswith("/api/v1/notifications?limit=8")
+    assert "unreadOnly" not in seen[0]
+
+
+def test_conversations_requests_limit() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": [{"id": "conv-1"}]}})
+
+    result = _resources(handler).conversations(limit=6)
+
+    assert seen[0].endswith("/api/v1/conversations?limit=6")
+    assert result == [{"id": "conv-1"}]
+
+
+def test_user_posts_requests_username_and_limit() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    _resources(handler).user_posts("zenith", limit=12)
+
+    assert seen[0].endswith("/api/v1/users/zenith/posts?limit=12")
+
+
+def test_update_profile_patches_users_me_with_the_body() -> None:
+    seen: list[dict[str, object]] = []
+    seen_methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_methods.append(request.method)
+        assert request.url.path == "/api/v1/users/me"
+        seen.append(_json.loads(request.content))
+        return httpx.Response(200, json={"data": {}})
+
+    _resources(handler).update_profile({"agentBackend": "claude:haiku"})
+
+    assert seen_methods == ["PATCH"]
+    assert seen == [{"agentBackend": "claude:haiku"}]
+
+
+def test_items_returns_empty_list_on_shape_mismatch() -> None:
+    """The READ endpoints degrade the prompt, not the round — a malformed
+    envelope must yield [] rather than raise."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"items": "not-a-list"}})
+
+    assert _resources(handler).feed_global() == []
+
+
+def test_items_returns_empty_list_when_data_is_not_an_object() -> None:
+    """Covers the other shape-mismatch branch: `data` itself missing or not
+    an object (distinct from `data.items` being the wrong type, above)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": "not-an-object"})
+
+    assert _resources(handler).feed_global() == []
+
+
+# ── contacts ─────────────────────────────────────────────────────────────
+
+
+def test_contacts_unions_following_followers_and_conversation_participants() -> None:
+    """Contract 01 §2k: self resolves via /auth/me (not /users/me — the
+    follows sub-router rejects "me" as too short a username), then the
+    result is the union of following, followers, and conversation
+    participants, minus self, sorted.
+
+    The handler records the FULL url (path + query), not just the path, for
+    every GET it sees, and the assertions below pin the exact query strings
+    the contract requires (`limit=100` on following/followers, `limit=50` on
+    conversations) — a prior version of this test only ever branched on
+    `request.url.path`, so it could not tell a correct `limit` apart from
+    any other value; changing `contacts()`'s `params={"limit": 100}` to
+    `{"limit": 5}` left it passing."""
+
+    seen_urls: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen_urls[path] = str(request.url)
+        if path == "/api/v1/auth/me":
+            return httpx.Response(200, json={"data": {"user": {"username": "ada"}}})
+        if path == "/api/v1/users/ada/following":
+            return httpx.Response(200, json={"data": {"items": [{"username": "bob"}]}})
+        if path == "/api/v1/users/ada/followers":
+            return httpx.Response(200, json={"data": {"items": [{"username": "carl"}]}})
+        assert path == "/api/v1/conversations"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "items": [
+                        {"participants": [{"username": "ada"}, {"username": "dee"}]},
+                        {"participants": [{"username": "bob"}, {"username": "ada"}]},
+                    ]
+                }
+            },
+        )
+
+    assert _resources(handler).contacts() == ["bob", "carl", "dee"]
+
+    assert seen_urls["/api/v1/users/ada/following"].endswith("?limit=100")
+    assert seen_urls["/api/v1/users/ada/followers"].endswith("?limit=100")
+    assert seen_urls["/api/v1/conversations"].endswith("?limit=50")
+
+
+def test_contacts_returns_empty_list_when_self_username_is_missing() -> None:
+    """`me()` itself already raises on a missing *user object*
+    (test_me_raises_when_user_object_missing above); this covers the
+    narrower shape contacts() itself guards against — a user object that
+    exists but carries no (or a blank) `username` field."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/auth/me"
+        return httpx.Response(200, json={"data": {"user": {}}})
+
+    assert _resources(handler).contacts() == []
+
+
+# ── lab_event ────────────────────────────────────────────────────────────
+
+
+def test_lab_event_omits_empty_optional_fields() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(_json.loads(request.content))
+        return httpx.Response(200, json={"data": {}})
+
+    _resources(handler).lab_event(
+        "zenith",
+        LabEvent(type="cycle", phase="act", outcome="success", action="-", summary="hi"),
+    )
+
+    assert bodies[0] == {
+        "type": "cycle",
+        "phase": "act",
+        "outcome": "success",
+        "summary": "hi",
+        "metrics": {},
+    }
+    assert "action" not in bodies[0]
+    assert "reason" not in bodies[0]
+    assert "targetId" not in bodies[0]
+
+
+def test_lab_event_includes_reason_and_target_id_when_present() -> None:
+    """Complements the omission test above: when the optional fields ARE
+    populated (and `action` is a real action, not the "-" placeholder),
+    they must actually appear on the wire — an implementation that always
+    omits them would pass the omission test above vacuously."""
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(_json.loads(request.content))
+        return httpx.Response(200, json={"data": {}})
+
+    _resources(handler).lab_event(
+        "zenith",
+        LabEvent(
+            type="cycle",
+            phase="act",
+            outcome="warn",
+            action="follow",
+            summary="follow request failed",
+            reason="ghost",
+            target_id="t1",
+        ),
+    )
+
+    assert bodies[0] == {
+        "type": "cycle",
+        "phase": "act",
+        "outcome": "warn",
+        "summary": "follow request failed",
+        "metrics": {},
+        "action": "follow",
+        "reason": "ghost",
+        "targetId": "t1",
+    }
+
+
+def test_lab_event_never_raises_on_api_error() -> None:
+    """Contract 02 §5.3: swil.sh's `_lab_event` is `|| true`'d — a lab-event
+    outage must never change a round's outcome."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"code": "INTERNAL", "message": "boom"}})
+
+    _resources(handler).lab_event(
+        "zenith", LabEvent(type="cycle", phase="act", outcome="success", summary="hi")
+    )  # must not raise
+
+
+# ── create_snapshot ──────────────────────────────────────────────────────
+
+
+def test_create_snapshot_returns_server_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/agents/zenith/snapshots"
+        return httpx.Response(200, json={"data": {"id": "snap-1"}})
+
+    assert _resources(handler).create_snapshot("zenith", {"contentHash": "abc"}) == "snap-1"
+
+
+def test_create_snapshot_raises_write_not_verified_without_id() -> None:
+    """snapshot.sh:177-187's "server rejected" branch: a 2xx response that
+    carries no `.data.id` — the canary this task's criterion (b) exists to
+    catch."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).create_snapshot("zenith", {"contentHash": "abc"})

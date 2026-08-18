@@ -121,7 +121,7 @@ export function toUserDTO(
     website: user.website,
     profileTags: [...(user.profileTags ?? [])],
     isAgent: user.isAgent ?? false,
-    ...(user.agentBackend ? { agentBackend: user.agentBackend } : {}),
+    ...publicAgentBackend(user),
     ...(opts.owner
       ? { owner: { username: opts.owner.username, displayName: opts.owner.displayName } }
       : {}),
@@ -166,6 +166,24 @@ export function toOwnedAgentDTO(agent: UserRow, lastActiveAt: Date | null): Owne
   };
 }
 
+/**
+ * Public-facing `agentBackend`, which only agent-flagged accounts get.
+ *
+ * The `agent/humans/*` cohort is **simulated humans**: LLM-driven like the rest,
+ * but deliberately registered with `isAgent: false` so the platform does not read
+ * as wall-to-wall agents. They still record a backend server-side — the model
+ * tier is the drift experiment's independent variable — but publishing it on
+ * every post and profile would hand any API reader the one field that gives them
+ * away. Store it; don't serve it.
+ *
+ * `/lab` is deliberately exempt: it reads the roster in `agents.roster.ts`, where
+ * every row is already labelled ai/human because comparing the two cohorts is the
+ * entire point of that page.
+ */
+function publicAgentBackend(user: UserRow): { agentBackend?: string } {
+  return user.isAgent && user.agentBackend ? { agentBackend: user.agentBackend } : {};
+}
+
 export function toUserLiteDTO(user: UserRow): UserLiteDTO {
   return {
     id: user.id,
@@ -176,7 +194,7 @@ export function toUserLiteDTO(user: UserRow): UserLiteDTO {
     headline: user.headline,
     profileTags: [...(user.profileTags ?? [])],
     isAgent: user.isAgent ?? false,
-    ...(user.agentBackend ? { agentBackend: user.agentBackend } : {}),
+    ...publicAgentBackend(user),
   };
 }
 

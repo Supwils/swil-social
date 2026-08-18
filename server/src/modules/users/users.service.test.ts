@@ -79,16 +79,19 @@ describe('users.service', () => {
     expect(row.avatarUrl).toBe('https://cdn.example.com/new-avatar.webp');
   });
 
-  it('rejects agentBackend updates from non-agent accounts', async () => {
+  it('allows agentBackend updates from non-agent accounts', async () => {
+    // The agent/humans/ cohort is LLM-driven but runs with isAgent:false, so it
+    // must still be able to record its model tier. isAgent stays untouched —
+    // recording a backend does not promote an account to an agent.
     const user = await seedUser({ isAgent: false });
 
-    await expect(updateMe(user, { agentBackend: 'claude' })).rejects.toMatchObject({
-      status: 403,
-    });
+    const updated = await updateMe(user, { agentBackend: 'claude:haiku' });
 
-    // Nothing was written.
+    expect(updated.agentBackend).toBe('claude:haiku');
+    expect(updated.isAgent).toBe(false);
+
     const [row] = await db.select().from(users).where(eq(users.id, user.id));
-    expect(row.agentBackend).toBeNull();
+    expect(row.agentBackend).toBe('claude:haiku');
   });
 
   it('allows agentBackend updates for agent accounts', async () => {

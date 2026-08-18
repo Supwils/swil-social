@@ -27,11 +27,38 @@ from pydantic import BaseModel, Field
 MODEL_NAME = os.environ.get("EMBEDDER_MODEL", "BAAI/bge-m3")
 DEVICE = os.environ.get("EMBEDDER_DEVICE", "auto")  # auto | mps | cpu | cuda
 
+# Forward-pass sub-batch. bge-m3 is XLM-RoBERTa-large (24 layers / 16 heads) with
+# an 8192-token window, so activation memory scales with batch × seq². The
+# sentence-transformers default of 32 means one 64-text request can put 32
+# max-length sequences on the GPU at once; 4 keeps the worst case bounded.
+BATCH_SIZE = int(os.environ.get("EMBEDDER_BATCH_SIZE", "4"))
+
+# 0 = keep whatever the model config declares (8192 for bge-m3).
+#
+# Deliberately NOT lowered by default: the drift experiment compares cosine
+# similarities across snapshots recorded over months, and shortening the window
+# would silently change the ruler mid-experiment — new vectors would not be
+# comparable to stored ones. Truncation is instead made *visible* (see
+# `truncated` in EmbedResp and the startup//health reporting) so the four
+# personalities that already exceed 8192 tokens stop being silently clipped
+# without anyone knowing.
+MAX_SEQ_LEN = int(os.environ.get("EMBEDDER_MAX_SEQ_LEN", "0"))
+
 HERE = Path(__file__).resolve().parent
 CACHE_PATH = HERE / "cache.sqlite"
 
 _state: dict[str, object] = {}
 _cache_lock = Lock()
+
+# Serialises the forward pass. `/embed` is a sync endpoint, so FastAPI dispatches
+# it on anyio's threadpool — without this lock the N parallel cycle-one.sh
+# processes of a round all call model.encode() concurrently. On 2026-08-13 five
+# of them drove this daemon to 27.8 GB of unified memory (measured: 7.7 GB
+# resident / 16 GB peak footprint for ONE max-length pass), pushed the machine
+# into swap, and made dream.sh's 8 s health probe time out — which fail-opened
+# the drift gate and let three dreams through unvetted. `_cache_lock` only ever
+# guarded SQLite; it never covered the model.
+_model_lock = Lock()
 
 
 def _pick_device(requested: str) -> str:
@@ -47,6 +74,37 @@ def _pick_device(requested: str) -> str:
     except Exception:
         pass
     return "cpu"
+
+
+def _release_device_cache(device: str) -> None:
+    """Hand cached GPU blocks back to the OS after a forward pass.
+
+    PyTorch's MPS/CUDA caching allocators keep freed blocks for reuse and never
+    shrink on their own, so on Apple Silicon's unified memory the daemon's
+    footprint only ever ratchets upward — it sat at 7.7 GB resident after a
+    single full-personality embed. Without this the process looks like a leak.
+    """
+    if device not in ("mps", "cuda"):
+        return
+    try:
+        import torch
+
+        if device == "mps":
+            torch.mps.empty_cache()
+        else:
+            torch.cuda.empty_cache()
+    except Exception:
+        # Never fail a request over cache hygiene.
+        pass
+
+
+def _count_tokens(model: object, text: str) -> int:
+    """Token length under the model's own tokenizer, or -1 if unavailable."""
+    try:
+        tok = model.tokenizer  # type: ignore[attr-defined]
+        return len(tok.encode(text, add_special_tokens=True, truncation=False))
+    except Exception:
+        return -1
 
 
 def _init_cache() -> sqlite3.Connection:
@@ -79,13 +137,21 @@ async def lifespan(_app: FastAPI):
     device = _pick_device(DEVICE)
     print(f"[embedder] loading {MODEL_NAME} on device={device}", flush=True)
     model = SentenceTransformer(MODEL_NAME, device=device)
+    if MAX_SEQ_LEN > 0:
+        model.max_seq_length = MAX_SEQ_LEN
     # Warm the GPU + cache one round-trip
     _ = model.encode(["warmup"], normalize_embeddings=True)
+    _release_device_cache(device)
     _state["model"] = model
     _state["device"] = device
     _state["dim"] = int(model.get_sentence_embedding_dimension() or 0)
+    _state["max_seq_length"] = int(getattr(model, "max_seq_length", 0) or 0)
     _state["cache"] = _init_cache()
-    print(f"[embedder] ready · dim={_state['dim']}", flush=True)
+    print(
+        f"[embedder] ready · dim={_state['dim']} "
+        f"max_seq_length={_state['max_seq_length']} batch_size={BATCH_SIZE}",
+        flush=True,
+    )
     try:
         yield
     finally:
@@ -112,6 +178,10 @@ class EmbedResp(BaseModel):
     embeddings: list[list[float]]
     cache_hits: int
     cache_misses: int
+    # How many of this request's texts were longer than max_seq_length and so
+    # had their tail dropped before embedding. Non-zero means the vector does
+    # not represent the whole document.
+    truncated: int = 0
 
 
 @app.get("/health")
@@ -121,6 +191,8 @@ def health() -> dict[str, object]:
         "model": MODEL_NAME,
         "device": _state.get("device"),
         "dim": _state.get("dim"),
+        "max_seq_length": _state.get("max_seq_length"),
+        "batch_size": BATCH_SIZE,
     }
 
 
@@ -147,14 +219,39 @@ def embed(req: EmbedReq) -> EmbedResp:
     misses_idx = [i for i, s in enumerate(shas) if s not in found]
     miss_texts = [req.texts[i] for i in misses_idx]
 
+    # Truncation is reported for EVERY requested text, not just cache misses. A
+    # cached vector was built from the same clipped input, so scoping this to
+    # misses would make `truncated: 0` mean "not truncated" on one call and
+    # "cached, unknown" on the next — the caller cannot tell which.
+    truncated = 0
+    max_seq = int(_state.get("max_seq_length") or 0)
+    if max_seq:
+        for t in req.texts:
+            n = _count_tokens(model, t)
+            if n > max_seq:
+                truncated += 1
+                # Loud on purpose: everything past this point is dropped from
+                # the vector, so a drift score for such a document is measured
+                # on a clipped persona. Four accounts already cross this line
+                # and nothing said so until now.
+                print(
+                    f"[embedder] WARN input truncated: {n} tokens > "
+                    f"max_seq_length={max_seq} ({n - max_seq} dropped)",
+                    flush=True,
+                )
+
     new_vecs: list[np.ndarray] = []
     if miss_texts:
-        new_vecs_raw = model.encode(  # type: ignore[union-attr]
-            miss_texts,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-        )
+        # One forward pass at a time — see _model_lock.
+        with _model_lock:
+            new_vecs_raw = model.encode(  # type: ignore[union-attr]
+                miss_texts,
+                batch_size=BATCH_SIZE,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+            )
+            _release_device_cache(str(_state.get("device")))
         new_vecs = [np.asarray(v, dtype=np.float32) for v in new_vecs_raw]
         with _cache_lock:
             cache.executemany(
@@ -176,4 +273,5 @@ def embed(req: EmbedReq) -> EmbedResp:
         embeddings=embeddings,
         cache_hits=len(req.texts) - len(misses_idx),
         cache_misses=len(misses_idx),
+        truncated=truncated,
     )

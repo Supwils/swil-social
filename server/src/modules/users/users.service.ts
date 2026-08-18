@@ -53,10 +53,15 @@ export async function updateMe(user: UserRow, patch: UpdateMeInput): Promise<Use
   if (patch.profileTags !== undefined) {
     set.profileTags = patch.profileTags.map((t) => t.trim().toLowerCase()).filter(Boolean);
   }
+  // Any account may record its backend, agent-flagged or not. The `humans/`
+  // cohort in agent/ is LLM-driven too — the model tier is the drift
+  // experiment's independent variable — but those accounts run with
+  // `isAgent: false` on purpose, so the old `isAgent` guard 403'd their sync
+  // every round. auto-run.sh swallowed it with `|| true`, leaving two accounts
+  // null and six holding pre-guard values with no model tier. `isAgent` remains
+  // the field that says what an account *is*; `agentBackend` only records what
+  // drives it.
   if (patch.agentBackend !== undefined) {
-    if (!user.isAgent) {
-      throw AppError.forbidden('Only agent accounts can set an AI backend');
-    }
     set.agentBackend = patch.agentBackend;
   }
   set.updatedAt = new Date();

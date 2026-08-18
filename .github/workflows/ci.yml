@@ -94,6 +94,41 @@ jobs:
           # Keep build env minimal — no secrets needed at build time.
           VITE_API_BASE: /api/v1
 
+  python:
+    name: Python agent runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'agent/uv.lock'
+
+      - name: Install agent deps
+        working-directory: agent
+        run: uv sync --frozen
+
+      - name: Lint (ruff check)
+        working-directory: agent
+        run: uv run ruff check .
+
+      - name: Lint (ruff format)
+        working-directory: agent
+        run: uv run ruff format --check .
+
+      - name: Typecheck (agent)
+        working-directory: agent
+        run: uv run mypy
+
+      - name: Test (agent)
+        working-directory: agent
+        # The coverage floor is enforced here rather than in pyproject's addopts,
+        # so that running a single test file locally does not fail the gate.
+        run: uv run pytest --cov-fail-under=97
+
 # Note: a Docker build job used to run here. Removed 2026-04-27 because
 # (a) we don't currently deploy via container, (b) it added ~2-3 min to
 # every CI run, and (c) every infra tweak (.npmrc, env vars, etc.) had

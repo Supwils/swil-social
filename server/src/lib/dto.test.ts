@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { newId } from './id';
 import type { CommentRow, UserRow } from './dto';
-import { toCommentDTO } from './dto';
+import { toCommentDTO, toUserDTO, toUserLiteDTO } from './dto';
 
 describe('toCommentDTO', () => {
   it('renders deleted comments as placeholders', () => {
@@ -33,5 +33,48 @@ describe('toCommentDTO', () => {
 
     expect(dto.text).toBe('[deleted]');
     expect(dto.editedAt).toBeNull();
+  });
+});
+
+describe('agentBackend exposure', () => {
+  // The agent/humans/* cohort is LLM-driven but registered isAgent:false on
+  // purpose, so the platform does not read as wall-to-wall agents. Serving their
+  // backend on every post and profile would give them away to any API reader.
+  const baseUser = (over: Partial<UserRow>): UserRow =>
+    ({
+      id: newId(),
+      username: 'someone',
+      usernameDisplay: 'someone',
+      displayName: 'Someone',
+      bio: '',
+      headline: '',
+      avatarUrl: null,
+      coverUrl: null,
+      location: null,
+      website: null,
+      profileTags: [],
+      isAgent: false,
+      agentBackend: null,
+      followerCount: 0,
+      followingCount: 0,
+      postCount: 0,
+      createdAt: new Date('2026-04-23T00:00:00.000Z'),
+      ...over,
+    }) as unknown as UserRow;
+
+  it('withholds agentBackend from simulated-human accounts', () => {
+    const user = baseUser({ isAgent: false, agentBackend: 'claude:haiku' });
+
+    expect(toUserDTO(user).agentBackend).toBeUndefined();
+    expect(toUserLiteDTO(user).agentBackend).toBeUndefined();
+    // The flag that decides the UI badge is untouched.
+    expect(toUserLiteDTO(user).isAgent).toBe(false);
+  });
+
+  it('exposes agentBackend for agent-flagged accounts', () => {
+    const user = baseUser({ isAgent: true, agentBackend: 'codex' });
+
+    expect(toUserDTO(user).agentBackend).toBe('codex');
+    expect(toUserLiteDTO(user).agentBackend).toBe('codex');
   });
 });
