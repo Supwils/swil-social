@@ -65,6 +65,40 @@ def _imported_modules(path: Path) -> set[str]:
     return names
 
 
+def test_the_langgraph_guard_can_actually_fail(tmp_path: Path, monkeypatch) -> None:
+    """The guard below is only worth having if it can fire. Feed
+    `_imported_modules` a module that violates the rule and assert it is
+    reported -- this is what makes `test_no_module_outside_graph_imports_langgraph`
+    non-vacuous now that `langgraph` is an actual dependency (previously
+    nothing could import it even by mistake, so that test always passed
+    for the wrong reason).
+
+    A prior architecture guard in this codebase shipped as a substring
+    search over source text; a legitimately-written absolute import
+    (`from X import Y`) walked straight past it. Pinning this against the
+    real `_imported_modules` helper -- the same AST walker the guard test
+    below uses -- is what would have caught that class of mistake.
+
+    `_own_package` (called internally by `_imported_modules`) requires its
+    argument to sit under `_ROOT`, so a bare `tmp_path` file (elsewhere on
+    disk) would raise `ValueError` on `relative_to` before the import-parsing
+    logic under test ever runs. `_ROOT` is monkeypatched to `tmp_path` for
+    the duration of this test so the only thing that can make it fail is
+    `_imported_modules` itself mishandling the absolute `from X import Y`
+    form -- not an unrelated path-resolution error.
+    """
+    monkeypatch.setattr("tests.unit.test_architecture._ROOT", tmp_path)
+    offender = tmp_path / "offender.py"
+    offender.write_text("from langgraph.graph import StateGraph\n", encoding="utf-8")
+    imported = _imported_modules(offender)
+    # Mirrors the exact predicate `test_no_module_outside_graph_imports_langgraph`
+    # uses below: `_imported_modules` resolves `from langgraph.graph import
+    # StateGraph` to fully-qualified names ("langgraph.graph",
+    # "langgraph.graph.StateGraph"), never the bare top-level "langgraph" --
+    # so the guard, and this sanity check, must split on "." before comparing.
+    assert any(m.split(".")[0] == "langgraph" for m in imported), imported
+
+
 def test_no_module_outside_graph_imports_langgraph() -> None:
     offenders: list[str] = []
     for path in PACKAGE.rglob("*.py"):

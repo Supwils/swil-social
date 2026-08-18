@@ -1,6 +1,7 @@
-"""Compose the whole act path into one function (design spec §7, contract
-`01` §1 + `02` §3-§5): health probe -> lock -> context -> rhythm -> plan ->
-guardrails -> execute -> tally.
+"""The act path as a sequence of steps, plus `run_act`, the function that
+composes them (design spec §7, contract `01` §1 + `02` §3-§5): health probe
+-> lock -> `agentBackend` sync -> context -> rhythm -> plan -> guardrails ->
+execute -> mark-read -> tally.
 
 This is the piece that replaces `auto-run.sh`'s exit-code contract
 (`return 66/75`, `rc=0`) with `ActOutcome`, a typed six-value enum. The
@@ -9,15 +10,28 @@ dream" is spelled out on `ActResult.grants_dream` (`models.py`) and is the
 actual deliverable here -- see the outcome-mapping table in
 `tests/unit/test_act_round.py`.
 
-Composed as plain calls into `build_context` / `decide_rhythm` /
-`plan_round` / `apply_guardrails` / `execute_action` -- every one of those
-functions is independently public and independently tested (Tasks 1-6).
-`run_act` adds no logic of its own beyond sequencing them, deciding which
-`ActOutcome` the sequence landed on, and writing `memory.md` lines for what
-executed. This matters for Plan 3: a LangGraph node can call any of those
-same step functions directly as its body, and get identical behavior to
-this module's non-graph orchestration, without a second copy of the act
-path living in the graph layer.
+Each stage of that sequence is a public function taking explicit arguments
+and returning a value -- `login_step`, `sync_backend_step`, `context_step`,
+`plan_step`, `guardrail_step`, `execute_step`, `finalize_step` -- with no
+shared mutable state between them and no class to instantiate. `run_act` is
+their composition and nothing else: it sequences them, takes the early
+returns between them, and assembles the `ActResult`.
+
+That split is the deliverable, not a tidying (Plan 3 ruling R4). Plan 3's
+`graph/nodes.py` adapts `CycleState` to these same functions, so the graph
+path and the direct CLI path run ONE implementation and cannot drift into
+two behaviours. Any logic that lived only inside `run_act`'s body would be
+logic the graph layer had to copy -- and a copy is exactly the failure this
+migration is structured to avoid. `test_act_round.py` is the oracle for
+that claim: it drives `run_act` end to end and must pass unchanged across
+any regrouping of these steps.
+
+Below the steps sit the underlying units, each independently public and
+independently tested (Tasks 1-6): `build_context`, `decide_rhythm`,
+`plan_round`, `apply_guardrails`, `execute_action`. The step functions add
+the WIRING between them (which rhythm field the planner gets, which
+contacts list the guardrails see) and the classifications the caller needs
+to name the round's `ActOutcome`.
 """
 
 from __future__ import annotations
@@ -29,7 +43,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from swil_agent.act.context import build_context
 from swil_agent.act.executor import execute_action
@@ -41,7 +55,17 @@ from swil_agent.api.resources import Resources
 from swil_agent.llm.base import Backend
 from swil_agent.llm.extract import collapse_doubled_text
 from swil_agent.locks import FileLock, act_lock_path
-from swil_agent.models import Action, ActionResult, ActOutcome, ActResult, Persona
+from swil_agent.models import (
+    ActContext,
+    Action,
+    ActionResult,
+    ActOutcome,
+    ActResult,
+    Persona,
+    Plan,
+    RhythmDecision,
+    VetoedAction,
+)
 from swil_agent.persona.rhythm import decide_rhythm
 
 logger = logging.getLogger(__name__)
@@ -346,9 +370,21 @@ def _agent_backend_value(persona: Persona) -> str:
     return f"{persona.backend}:{persona.model}" if persona.model else persona.backend
 
 
-def _sync_agent_backend(resources: Resources, persona: Persona, agent_name: str) -> None:
+def sync_backend_step(
+    *,
+    resources: Resources,
+    persona: Persona,
+    agent_name: str,
+    dry_run: bool = False,
+) -> None:
     """PATCH the account profile with `{"agentBackend": ...}` every act round
     (`auto-run.sh:473-494`).
+
+    Step 2 of the act path (see `run_act`): Bash's own position in the
+    sequence is after login and BEFORE any context is built, and this
+    function is called from there -- it is not deferred to the end of the
+    round. Skipped on `dry_run` for the same reason the lock is
+    (`login_step`): this is a WRITE, and a shadow round performs none.
 
     `agentBackend` is the drift experiment's INDEPENDENT VARIABLE, so a
     runtime that stops refreshing it lets the field go stale for the whole
@@ -366,6 +402,8 @@ def _sync_agent_backend(resources: Resources, persona: Persona, agent_name: str)
     (`publicAgentBackend` in `server/src/lib/dto.ts`); skipping the sync
     here would silently drop 8 of 23 accounts from the experiment.
     """
+    if dry_run:
+        return
     try:
         resources.update_profile({"agentBackend": _agent_backend_value(persona)})
     except ApiError as exc:
@@ -480,6 +518,355 @@ def _mark_notifications_read(resources: Resources, actions: list[Action]) -> Non
     resources.mark_notifications_read(_responded_notification_ids(notifications, targets))
 
 
+class LoginStep(NamedTuple):
+    """What `login_step` establishes before a round may begin.
+
+    `lock` is returned UNENTERED, and that is deliberate: the COMPOSER
+    decides the scope it is held for. `run_act` holds it across the whole
+    round; a LangGraph node cannot hold anything across nodes (a live
+    context manager is not serializable checkpoint state), which is why the
+    graph path takes a `RunLease` around the whole cycle instead
+    (`graph/leases.py`, ruling R2) and uses this step for the probe alone.
+    Returning an ALREADY-ENTERED stack would have made that second caller
+    impossible to write correctly.
+    """
+
+    online: bool
+    agent_name: str
+    lock: AbstractContextManager[object]
+
+
+def login_step(
+    *,
+    persona: Persona,
+    agent_root: Path,
+    health_check: Callable[[], bool],
+    dry_run: bool = False,
+) -> LoginStep:
+    """Step 1 of the act path: probe `/health`, then choose the round's
+    mutual exclusion (`auto-run.sh`'s `check_internet`, then `acquire_lock`).
+
+    ORDER IS THE CONTRACT, and it is why the probe and the lock are one step
+    rather than two: Bash's `check_internet` runs once in Main, BEFORE any
+    per-account work, so an offline probe means no lock is ever constructed,
+    let alone acquired -- an offline round can therefore never lose an
+    acquire race, nor disturb a lock another process is holding. Splitting
+    these apart invites a caller that acquires first and probes second,
+    which no test would fail but which changes what an outage does to the
+    roster.
+
+    `agent_name` is `basename "$agent_dir"` (`auto-run.sh:437`), i.e.
+    `persona.directory.name`, NOT the persona's `Username` bullet -- see
+    `run_act`'s docstring for the case where the two diverge.
+
+    F4: a dry run acquires NOTHING. `dry_run` executes no action, writes no
+    memory line and PATCHes no profile, so it needs no mutual exclusion --
+    and taking the lock made the documented "safe inspection command"
+    actively unsafe: a dry run launched while a real Bash round held the
+    lock cost that account its whole round (`auto-run.sh`'s own
+    `acquire_lock` failure path returns 75 and the account is skipped).
+    `nullcontext` rather than a second "shared" lock mode: there is no
+    resource to share access TO.
+    """
+    agent_name = persona.directory.name
+    if not health_check():
+        return LoginStep(online=False, agent_name=agent_name, lock=nullcontext())
+    lock: AbstractContextManager[object] = (
+        nullcontext() if dry_run else FileLock(act_lock_path(agent_root, agent_name))
+    )
+    return LoginStep(online=True, agent_name=agent_name, lock=lock)
+
+
+class ContextStep(NamedTuple):
+    """The read-side of a round: the planner's prompt inputs, plus the day's
+    rhythm decision derived from them."""
+
+    context: ActContext
+    rhythm: RhythmDecision
+
+
+def context_step(
+    *,
+    resources: Resources,
+    persona: Persona,
+    memory_text: str,
+    now: datetime,
+    rng: random.Random,
+    budget: int = 5,
+    context_now: str = "(no context file)",
+    feed_context: str = "",
+) -> ContextStep:
+    """Step 3 of the act path: `build_context` (read-side prompt assembly,
+    degrading per-block) then `decide_rhythm` (the day's post-budget /
+    probability gate).
+
+    One step rather than two because `decide_rhythm`'s `posts_today`
+    argument is `ctx.today_post_count` -- a field `build_context` computes
+    from `memory_text`. A caller that assembled the rhythm from anything
+    else (its own count of today's memory lines, say) would silently change
+    which accounts are allowed to post, so the wiring between the two is
+    kept here where exactly one implementation of it exists.
+    """
+    ctx = build_context(
+        resources,
+        persona,
+        memory_text=memory_text,
+        now=now,
+        budget=budget,
+        context_now=context_now,
+        feed_context=feed_context,
+    )
+    rhythm = decide_rhythm(persona.rhythm_text, ctx.today_post_count, rng)
+    return ContextStep(context=ctx, rhythm=rhythm)
+
+
+def plan_step(
+    *,
+    backend: Backend,
+    persona: Persona,
+    context: ActContext,
+    rhythm: RhythmDecision,
+) -> Plan | None:
+    """Step 4 of the act path: ask the backend for this round's plan.
+
+    Thin over `plan_round` on purpose -- what it carries is the WIRING, not
+    logic: the planner takes `rhythm_guidance`, one of `RhythmDecision`'s
+    three string fields, and handing it `prefer_non_post` (or `policy`)
+    instead would still typecheck, still run, and quietly change every
+    prompt the roster sees. Callers pass the whole `RhythmDecision` and this
+    step picks the field, so there is one place where that choice is made.
+
+    `None` is `plan_round`'s "the backend produced nothing at all" signal
+    (`BackendUnavailableError`, or output that parsed to no plan); the
+    caller maps it to `ActOutcome.BACKEND_UNAVAILABLE`.
+    """
+    return plan_round(backend, persona, context, rhythm_guidance=rhythm.guidance)
+
+
+class GuardrailStep(NamedTuple):
+    """What survived the guardrails, plus the two classifications a caller
+    needs to decide the round's `ActOutcome` without re-deriving them.
+
+    `empty_outcome` is `None` when actions survived, and otherwise carries
+    the reason the plan is empty:
+
+      * `VETOED_EMPTY` -- guardrails actually dropped something.
+      * `PLANNER_EMPTY` -- the model proposed nothing to begin with.
+
+    Bash logs both as `planned: nothing`, indistinguishable (design spec
+    §7.5) -- and that indistinguishability was the proximate cause of three
+    codex accounts landing in an uninterpretable state on 2026-08-16, which
+    is why the distinction is carried in the return value rather than
+    recomputed by each caller from `vetoed`'s emptiness.
+
+    `solo_nothing` is a SURVIVING plan whose only action is `nothing`: the
+    model explicitly chose to be quiet. It is `PLANNER_EMPTY` too -- the
+    same category as "proposed nothing", reached by a different route
+    through guardrails (a lone `nothing` is never dropped by stage 2, which
+    only strips `nothing` when it is mixed with other actions) -- but it is
+    still EXECUTED, so its lab event and log line fire the way Bash's do.
+    Hence a separate flag rather than a third `empty_outcome` value.
+    """
+
+    actions: list[Action]
+    vetoed: list[VetoedAction]
+    empty_outcome: ActOutcome | None
+    solo_nothing: bool
+
+
+def guardrail_step(
+    *,
+    plan: Plan,
+    persona: Persona,
+    rhythm: RhythmDecision,
+    context: ActContext,
+    budget: int = 5,
+) -> GuardrailStep:
+    """Step 5 of the act path: backend allow-list, rhythm veto, dm contacts,
+    one-post/one-echo + dedupe, budget cap -- then classify what is left.
+
+    PURE: no I/O of any kind. `apply_guardrails` is a function of the plan
+    and four already-computed values, and the three inputs that are easy to
+    misroute are assembled here so they are assembled once -- the allow-list
+    from `allowed_for(persona)` (never a raw literal), the policy from the
+    rhythm decision, and the dm contact list from the context the planner
+    was given rather than a fresh read (a re-read could return a DIFFERENT
+    contact set from the one the model was shown, silently vetoing a dm the
+    plan was entitled to make).
+    """
+    guarded = apply_guardrails(
+        plan,
+        policy=rhythm.policy,
+        budget=budget,
+        contacts=context.contacts,
+        allowed=allowed_for(persona),
+    )
+    if not guarded.actions:
+        empty = ActOutcome.VETOED_EMPTY if guarded.vetoed else ActOutcome.PLANNER_EMPTY
+        return GuardrailStep(
+            actions=guarded.actions,
+            vetoed=guarded.vetoed,
+            empty_outcome=empty,
+            solo_nothing=False,
+        )
+    solo_nothing = len(guarded.actions) == 1 and guarded.actions[0].kind == "nothing"
+    return GuardrailStep(
+        actions=guarded.actions,
+        vetoed=guarded.vetoed,
+        empty_outcome=None,
+        solo_nothing=solo_nothing,
+    )
+
+
+def _resolve_board_id(resources: Resources, persona: Persona) -> str | None:
+    """The `Board:` bullet resolved to a board id, ONCE per round (fix round
+    1, item 5).
+
+    Bash re-resolves on every `post` call (`swil.sh:426-432`), but guardrails
+    cap a round at one post, so resolving once -- and only when there is
+    something left to execute -- is behaviourally equivalent and cheaper.
+    Guarded on `persona.board` being truthy, exactly like Bash's own
+    `if [[ -n "$POST_BOARD" ]]`, so a persona with no `Board:` bullet never
+    pays the network call. A failed lookup (`ApiError`) degrades to `None` --
+    an unfiled post -- matching Bash's own "degrades to an unfiled post if
+    the endpoint is unavailable, never blocks" comment.
+    """
+    if not persona.board:
+        return None
+    try:
+        return resources.get_boards().get(persona.board)
+    except ApiError:
+        return None  # degrades to an unfiled post, matching swil.sh
+
+
+class ExecuteStep(NamedTuple):
+    """The write-side tally of a round: one `ActionResult` per attempted
+    action, in plan order, with `landed` counting those that actually
+    landed."""
+
+    results: list[ActionResult]
+    attempted: int
+    landed: int
+
+
+def execute_step(
+    *,
+    resources: Resources,
+    persona: Persona,
+    actions: list[Action],
+    agent_name: str,
+    now: datetime,
+    access_key: str | None = None,
+) -> ExecuteStep:
+    """Step 6 of the act path: execute every surviving action in order and
+    append its `memory.md` line.
+
+    The memory write is INSIDE this loop, not a later phase, and that is a
+    behavioural constraint rather than a layout preference: Bash's
+    `_remember` runs inside `swil.sh`'s own per-action case, so the
+    `memory/memory/success` lab event for action N is POSTed before action
+    N+1's write goes out. Collecting the results first and writing memory
+    afterwards would reorder the API calls a round makes -- invisible in the
+    return value, visible in `/lab`'s event stream and in what survives a
+    crash mid-round.
+
+    Board resolution happens once, here, because here is where it is first
+    needed -- the callers that return before this step (empty plan, dry run)
+    must never pay for it, which is what `test_board_resolution_is_skipped_
+    when_the_plan_ends_up_empty` pins.
+
+    `agent_name` is the DIRECTORY name and `persona.username` is the
+    `Username` bullet; both are passed to `execute_action`, which draws the
+    same distinction. `access_key or ""` matches `execute_action`'s own
+    `access_key: str = ""` default -- a bare `None` would be a `str | None`
+    where its signature demands `str`.
+    """
+    board_id = _resolve_board_id(resources, persona)
+
+    results: list[ActionResult] = []
+    landed = 0
+    for action in actions:
+        result = execute_action(
+            resources,
+            action,
+            agent_name=agent_name,
+            username=persona.username,
+            access_key=access_key or "",
+            board_id=board_id,
+        )
+        results.append(result)
+        if result.landed:
+            landed += 1
+        _write_memory_line(
+            persona.directory,
+            action,
+            result,
+            now=now,
+            resources=resources,
+            username=persona.username,
+        )
+    return ExecuteStep(results=results, attempted=len(actions), landed=landed)
+
+
+def finalize_step(
+    *,
+    resources: Resources,
+    actions: list[Action],
+    agent_name: str,
+    attempted: int,
+    landed: int,
+    solo_nothing: bool,
+) -> ActOutcome:
+    """Step 7 of the act path: the post-execution tail -- smart mark-read,
+    then the round's `ActOutcome`.
+
+    F3: Bash's smart mark-read (`auto-run.sh:768-803`) sits AFTER the
+    `landed == 0` early return (`auto-run.sh:762-765`), so a round where
+    nothing landed marks nothing -- those notifications must survive to the
+    next round. `landed > 0` reproduces that placement without an early
+    return of our own, since this step still has an `ActOutcome` to decide.
+
+    The outcome, in Bash's own order of precedence:
+
+      * `solo_nothing` -> `PLANNER_EMPTY`. The model explicitly chose to be
+        quiet; it already executed (lab event and log line fired), but the
+        label is not the landed/attempted formula's.
+      * `landed == 0` -> `LANDED_PARTIAL`, and a WARNING in BASH'S ORIGINAL
+        WORDING. Ruling (task-7-brief.md): Bash treats "every planned action
+        failed" as rc=75 and skips the dream, reasoning that dreaming on
+        unrefreshed memory manufactures drift that never happened (contract
+        `02` §3.2). Design spec §7.1 is explicit that only
+        `BACKEND_UNAVAILABLE` and `OFFLINE` deny the dream, so the spec wins
+        -- `ActResult.grants_dream` stays `True` -- but an operator grepping
+        the Python equivalent of `auto-run.log` still sees the same line
+        even though the decision underneath it changed. That increase in
+        dream attempts is a deliberate correction and must be recorded as a
+        change point in the drift series, not silently absorbed.
+      * `landed == attempted` -> `LANDED_ALL`; anything else ->
+        `LANDED_PARTIAL`.
+
+    `agent_name` is the DIRECTORY name in the FAIL line (fix round 1, item
+    2), matching Bash's own `$agent_name` there (auto-run.sh:763) -- NOT
+    `persona.username`, which an earlier version of that one call used
+    inconsistently with every other identifier in the round.
+    """
+    if landed > 0:
+        _mark_notifications_read(resources, actions)
+
+    if solo_nothing:
+        return ActOutcome.PLANNER_EMPTY
+    if landed == 0:
+        logger.warning(
+            "FAIL %s — all %d planned actions failed; dream will be skipped",
+            agent_name,
+            attempted,
+        )
+        return ActOutcome.LANDED_PARTIAL
+    if landed == attempted:
+        return ActOutcome.LANDED_ALL
+    return ActOutcome.LANDED_PARTIAL
+
+
 def run_act(
     *,
     persona: Persona,
@@ -515,30 +902,21 @@ def run_act(
          this round decide", and `ActOutcome` only ever answers the second
          one. The caller (a later task's CLI) catches `LockBusy` and treats
          it as a SKIP.
-      3. `build_context` -- read-side prompt assembly, degrading per-block.
-      4. `decide_rhythm` -- the day's post-budget/probability gate.
-      5. `plan_round` -- ask the backend. `None` means the backend produced
+      3. `sync_backend_step` -- the `agentBackend` PATCH, in Bash's own
+         position: after login, before any context is built.
+      4. `context_step` -- `build_context` (read-side prompt assembly,
+         degrading per-block) then `decide_rhythm` (the day's post-budget /
+         probability gate) off the count it computed.
+      5. `plan_step` -- ask the backend. `None` means the backend produced
          nothing at all -> `ActOutcome.BACKEND_UNAVAILABLE`.
-      6. `apply_guardrails` -- backend allow-list, rhythm veto, dm contacts,
-         one-post/one-echo + dedupe, budget cap.
-      7. An EMPTY action list after guardrails is `VETOED_EMPTY` when
-         `guarded.vetoed` is non-empty (guardrails actually dropped
-         something) and `PLANNER_EMPTY` when it is not (the model proposed
-         nothing to begin with). Bash logs both as `planned: nothing`,
-         indistinguishable -- design spec §7.5, and the proximate cause of
-         three codex accounts landing in an uninterpretable state on
-         2026-08-16. Nothing is executed either way; this classification
-         does not depend on `dry_run`, since there is nothing to execute
-         regardless.
-      8. A SURVIVING plan whose only action is `nothing` is also
-         `PLANNER_EMPTY` -- the model explicitly chose to be quiet, the same
-         category as "proposed nothing", just via a different route through
-         guardrails (a lone `nothing` is never dropped by stage 2, which
-         only strips `nothing` when mixed with other actions). It is still
-         executed (so its lab event and log line fire, matching Bash), but
-         the outcome label is `PLANNER_EMPTY`, not the landed/attempted
-         formula's `LANDED_ALL`.
-      9. `dry_run` stops here, before any execution: it returns `plan` and
+      6. `guardrail_step` -- backend allow-list, rhythm veto, dm contacts,
+         one-post/one-echo + dedupe, budget cap; plus the `empty_outcome`
+         (`VETOED_EMPTY` vs `PLANNER_EMPTY`) and `solo_nothing`
+         classifications, whose reasoning is on `GuardrailStep`.
+      7. An empty plan returns that `empty_outcome` here, executing nothing.
+         The classification does not depend on `dry_run`, since there is
+         nothing to execute regardless.
+      8. `dry_run` stops here, before any execution: it returns `plan` and
          `guarded.vetoed` with `results`/`attempted`/`landed` at their zero
          defaults. This is the shadow-round mode (design spec §9.4) the
          cutover depends on being genuinely inert -- no API writes, no
@@ -548,25 +926,23 @@ def run_act(
          `ActOutcome.LANDED_ALL` -- a label, not a prediction: `results == []`
          and `attempted == 0` are the fields a caller must check to know
          nothing actually ran; see `test_dry_run_never_calls_the_api_or_writes_memory`.
-      10. Otherwise, execute every surviving action in order via
-          `execute_action`, tally `landed`/`attempted`, and append a
-          memory.md line per landed action (`nothing` never gets one).
-      11. `landed == attempted` (with `attempted > 0`) -> `LANDED_ALL`.
-          Otherwise -> `LANDED_PARTIAL`, INCLUDING when `landed == 0`.
+      9. `execute_step` -- otherwise, execute every surviving action in
+         order, tally `landed`/`attempted`, and append a memory.md line per
+         landed action (`nothing` never gets one).
+      10. `finalize_step` -- smart mark-read, then the outcome:
+          `landed == attempted` (with `attempted > 0`) -> `LANDED_ALL`,
+          otherwise `LANDED_PARTIAL`, INCLUDING when `landed == 0` (which
+          also logs Bash's FAIL line). The ruling behind that last case --
+          the spec's dream-granting rule overriding Bash's rc=75 -- is
+          recorded on `finalize_step` itself.
 
-          Ruling (task-7-brief.md): Bash treats "every planned action
-          failed" as rc=75 and skips the dream, reasoning that dreaming on
-          unrefreshed memory manufactures drift that never happened
-          (contract `02` §3.2). Design spec §7.1 is explicit that only
-          `BACKEND_UNAVAILABLE` and `OFFLINE` deny the dream, so this
-          function follows the spec: `landed == 0` is recorded on the
-          result (`ActResult.landed == 0`, `ActResult.grants_dream is
-          True`) and logged at WARNING ("FAIL") level with BASH'S ORIGINAL
-          WORDING, so an operator grepping `auto-run.log`'s Python
-          equivalent sees the same line even though the underlying decision
-          -- whether the dream proceeds -- has changed. That increase in
-          dream attempts is a deliberate correction; it must be recorded as
-          a change point in the drift series, not silently absorbed.
+    Every numbered item above is a separately callable function in this
+    module, and this function's body is nothing but their sequence, the
+    early returns between them, and the `ActResult` assembly. That is the
+    point (ruling R4): `graph/nodes.py` adapts `CycleState` to these SAME
+    functions, so the graph path and the direct path cannot drift into two
+    behaviours. A block of logic that exists only inside `run_act` is a
+    block the graph would have to copy.
 
     Two things this function decides that the brief left open, recorded here
     and in task-7-report.md:
@@ -588,22 +964,16 @@ def run_act(
         1, item 2: an earlier version of that one log call passed
         `persona.username` instead, inconsistent with every other use of
         `agent_name` in this function).
-      * `board_id` is resolved HERE, once per round, from `persona.board`
+      * `board_id` is resolved INSIDE the round, once, from `persona.board`
         via `Resources.get_boards()` -- not injected as a parameter (fix
         round 1, item 5). Unlike `health_check`, which needed injection
         because nothing else in this package performs that raw unprefixed
-        HTTP GET, board lookup is a plain `Resources` read this function
+        HTTP GET, board lookup is a plain `Resources` read the act path
         already has everything it needs to make: `get_boards()` already
         exists (Task 1) and `Persona.board` is already populated (persona
-        loader). Bash re-resolves on every `post` call (`swil.sh:426-432`),
-        but guardrails cap a round at one post, so resolving once per round,
-        after the empty-plan/dry_run early returns (i.e. only when there is
-        something left to execute), is behaviourally equivalent and cheaper.
-        Guarded on `persona.board` being truthy, exactly like Bash's own
-        `if [[ -n "$POST_BOARD" ]]`, so a persona with no `Board:` bullet
-        never pays the network call. A failed lookup (`ApiError`) degrades
-        to `None` -- an unfiled post -- matching Bash's own "degrades to an
-        unfiled post if the endpoint is unavailable, never blocks" comment.
+        loader). It lives in `execute_step` (via `_resolve_board_id`), which
+        is what keeps it after the empty-plan / dry_run early returns; see
+        that function for the rest of the reasoning.
       * `access_key: str | None = None` (fix round 1, item 6) is a plain
         `run_act` parameter, NOT resolved internally from `Settings`. Unlike
         board resolution above (a plain `Resources` read, of the same kind
@@ -616,66 +986,58 @@ def run_act(
         `access_key` parameter as `access_key or ""`, matching that
         function's existing default.
     """
-    if not health_check():
+    login = login_step(
+        persona=persona,
+        agent_root=agent_root,
+        health_check=health_check,
+        dry_run=dry_run,
+    )
+    if not login.online:
         return ActResult(outcome=ActOutcome.OFFLINE)
 
-    agent_name = persona.directory.name
-    # F4: a dry run acquires NOTHING. `dry_run` executes no action, writes no
-    # memory line and PATCHes no profile, so it needs no mutual exclusion --
-    # and taking the lock made the documented "safe inspection command"
-    # actively unsafe: a dry run launched while a real Bash round held the
-    # lock cost that account its whole round (`auto-run.sh`'s own
-    # `acquire_lock` failure path returns 75 and the account is skipped).
-    # `nullcontext` rather than a second "shared" lock mode: there is no
-    # resource to share access TO.
-    lock: AbstractContextManager[object] = (
-        nullcontext() if dry_run else FileLock(act_lock_path(agent_root, agent_name))
-    )
-    with lock:
+    agent_name = login.agent_name
+    with login.lock:
         # F8: `agentBackend` profile sync -- `auto-run.sh:473-494`, in Bash's
         # own position in the sequence (after login, before any context is
-        # built), not deferred to the end of the round. Skipped on `dry_run`
-        # for the same reason the lock is: this is a WRITE.
-        if not dry_run:
-            _sync_agent_backend(resources, persona, agent_name)
+        # built), not deferred to the end of the round.
+        sync_backend_step(
+            resources=resources, persona=persona, agent_name=agent_name, dry_run=dry_run
+        )
 
-        ctx = build_context(
-            resources,
-            persona,
+        ctx, rhythm = context_step(
+            resources=resources,
+            persona=persona,
             memory_text=memory_text,
             now=now,
+            rng=rng,
             budget=budget,
             context_now=context_now,
             feed_context=feed_context,
         )
-        rhythm = decide_rhythm(persona.rhythm_text, ctx.today_post_count, rng)
 
-        plan = plan_round(backend, persona, ctx, rhythm_guidance=rhythm.guidance)
+        plan = plan_step(backend=backend, persona=persona, context=ctx, rhythm=rhythm)
         if plan is None:
             return ActResult(outcome=ActOutcome.BACKEND_UNAVAILABLE, rhythm=rhythm, context=ctx)
 
-        guarded = apply_guardrails(
-            plan,
-            policy=rhythm.policy,
+        guarded = guardrail_step(
+            plan=plan,
+            persona=persona,
+            rhythm=rhythm,
+            context=ctx,
             budget=budget,
-            contacts=ctx.contacts,
-            allowed=allowed_for(persona),
         )
 
-        if not guarded.actions:
-            outcome = ActOutcome.VETOED_EMPTY if guarded.vetoed else ActOutcome.PLANNER_EMPTY
+        if guarded.empty_outcome is not None:
             return ActResult(
-                outcome=outcome,
+                outcome=guarded.empty_outcome,
                 vetoed=guarded.vetoed,
                 rhythm=rhythm,
                 plan=plan,
                 context=ctx,
             )
-
-        is_solo_nothing = len(guarded.actions) == 1 and guarded.actions[0].kind == "nothing"
 
         if dry_run:
-            outcome = ActOutcome.PLANNER_EMPTY if is_solo_nothing else ActOutcome.LANDED_ALL
+            outcome = ActOutcome.PLANNER_EMPTY if guarded.solo_nothing else ActOutcome.LANDED_ALL
             return ActResult(
                 outcome=outcome,
                 vetoed=guarded.vetoed,
@@ -684,68 +1046,23 @@ def run_act(
                 context=ctx,
             )
 
-        # Board resolution (fix round 1, item 5): once per round, only when
-        # there is something left to execute (guardrails already confirmed
-        # that above) and only when the persona declares a Board bullet at
-        # all -- see the docstring's "known decisions" section.
-        board_id: str | None = None
-        if persona.board:
-            try:
-                board_id = resources.get_boards().get(persona.board)
-            except ApiError:
-                board_id = None  # degrades to an unfiled post, matching swil.sh
+        results, attempted, landed = execute_step(
+            resources=resources,
+            persona=persona,
+            actions=guarded.actions,
+            agent_name=agent_name,
+            now=now,
+            access_key=access_key,
+        )
 
-        results: list[ActionResult] = []
-        landed = 0
-        for action in guarded.actions:
-            result = execute_action(
-                resources,
-                action,
-                agent_name=agent_name,
-                username=persona.username,
-                access_key=access_key or "",
-                board_id=board_id,
-            )
-            results.append(result)
-            if result.landed:
-                landed += 1
-            _write_memory_line(
-                persona.directory,
-                action,
-                result,
-                now=now,
-                resources=resources,
-                username=persona.username,
-            )
-
-        attempted = len(guarded.actions)
-        if landed > 0:
-            # F3: Bash's smart mark-read (`auto-run.sh:768-803`) sits AFTER
-            # the `landed == 0` early return (`auto-run.sh:762-765`), so a
-            # round where nothing landed marks nothing -- those
-            # notifications must survive to the next round. `landed > 0`
-            # reproduces that placement without an early return of our own,
-            # since this function still has an `ActOutcome` to decide.
-            _mark_notifications_read(resources, guarded.actions)
-
-        if is_solo_nothing:
-            outcome = ActOutcome.PLANNER_EMPTY
-        elif landed == 0:
-            # `agent_name` here (fix round 1, item 2), matching Bash's own
-            # `$agent_name` in this exact log line (auto-run.sh:763) --
-            # NOT `persona.username`, which an earlier version of this line
-            # used inconsistently with every other identifier in this
-            # function.
-            logger.warning(
-                "FAIL %s — all %d planned actions failed; dream will be skipped",
-                agent_name,
-                attempted,
-            )
-            outcome = ActOutcome.LANDED_PARTIAL
-        elif landed == attempted:
-            outcome = ActOutcome.LANDED_ALL
-        else:
-            outcome = ActOutcome.LANDED_PARTIAL
+        outcome = finalize_step(
+            resources=resources,
+            actions=guarded.actions,
+            agent_name=agent_name,
+            attempted=attempted,
+            landed=landed,
+            solo_nothing=guarded.solo_nothing,
+        )
 
         return ActResult(
             outcome=outcome,

@@ -54,7 +54,7 @@ above delivery speed.**
 | Decision | Choice | Rationale |
 |---|---|---|
 | Topology | **Python package + CLI first; long-running service later** | Preserves current semantics; every step is verifiable against Bash and revertible |
-| Framework | **LangGraph, used as a durable state machine** — not as a tool-calling agent | Nodes are plain functions, so all three CLI backends survive and the deterministic executor is preserved. Buys checkpoint/resume, per-node retry, per-node timeout, event streams |
+| Framework | **LangGraph, used as a durable state machine** — not as a tool-calling agent | Nodes are plain functions, so all three CLI backends survive and the deterministic executor is preserved. Buys checkpoint/resume, per-node retry, event streams. ~~per-node timeout~~ — withdrawn 2026-08-18 on measurement, see §5.4; bounding lives in the subprocess and transport layers, where it actually kills the child |
 | Phase-1 scope | Core cycle (~3,000 LOC) + analysis/QA (~390 LOC) | The coupled, every-round, defect-dense part, plus the observability surface |
 | Cutover | **Golden fixtures → shadow round → canary accounts → full** | Mechanism, not luck; each stage independently revertible |
 | State store | **Local SQLite**; zero changes to `server/` or Drizzle migrations in Phase 1 | Rollback is "call the Bash script again" |
@@ -233,18 +233,46 @@ built-in roster only.
 
 Node policies:
 
-| Node | Timeout | Retry | Notes |
+| Node | Retry | Bounded by | Notes |
 |---|---|---|---|
-| `login` | 30s | 2 | Probes `$SWIL_URL/health` |
-| `plan` | 300s | 2 | codex is ~3× slower; `node_attempt > 1` may select a fallback path |
+| `login` | 2 | `httpx` client timeout | Probes `$SWIL_URL/health` |
+| `plan` | 2 | `SubprocessRunner` 300s | codex is ~3× slower; `node_attempt > 1` may select a fallback path |
 | `guardrail` | — | — | Pure function, no I/O |
-| `execute` | 60s / action | 1 (transient only) | Permanent failures (404/403) are not retried |
-| `dream` | 600s | 1 | Bounds the known codex dream hang (vex) |
-| `gate` | 120s | 1 | Fail-open to scalar if distill/embed fails |
-| `snapshot` | 90s | 2 | Fail-soft; never blocks the cycle |
+| `execute` | 1 (transient only) | `httpx` + image fetch timeouts | Permanent failures (404/403) are not retried, via `RetryPolicy(retry_on=…)` |
+| `dream` | 1 | `SubprocessRunner` 300s per call, node deadline for the sum | Multiple LLM calls (candidate + 3× distill) |
+| `gate` | 1 | embedder client 60s | Fail-open to scalar if distill/embed fails |
+| `snapshot` | 2 | `httpx` client timeout | Fail-soft; never blocks the cycle |
 
-The `dream` timeout is the direct fix for the vex 12-minute codex hang: today it
-is caught only by a human noticing.
+**Corrected 2026-08-18 — the original per-node `Timeout` column was withdrawn,
+and with it the claim that "the `dream` timeout is the direct fix for the vex
+12-minute codex hang: today it is caught only by a human noticing."** Both were
+written against the Bash baseline and are false against the shipped Python.
+Measured, not reasoned:
+
+1. **LangGraph will not attach a timeout to a sync node at all.** `compile()`
+   raises `ValueError: Node timeouts are only supported for async nodes because
+   sync Python execution cannot be safely cancelled in-process.` Our core is
+   sync throughout (`subprocess.run`, `httpx.Client`).
+2. **The async form returns control but orphans the child.** An `async` node
+   with `timeout=1.0` wrapping `asyncio.to_thread(subprocess.run, …)` raised
+   `NodeTimeoutError` at 1.01s — and the child kept running and completed its
+   work 4s later. That trades an orphan lock for an orphan subprocess, which is
+   the failure class §7.3 exists to eliminate.
+3. **The vex hang is already fixed, one layer down.** `SubprocessRunner.run`
+   passes `timeout=DEFAULT_TIMEOUT` (300s) to `subprocess.run`, which *kills*
+   the child on expiry and returns `""`. That is strictly better than a node
+   timeout, which cannot.
+
+So bounding stays where it already works — in the transport and subprocess
+layers — and the graph layer keeps only what it demonstrably provides:
+`RetryPolicy` (verified: `retry_on` retried a transient 3× and did not retry a
+permanent at all) and checkpoint/resume (verified: a `CycleState` carrying a
+pydantic model round-trips through `SqliteSaver`; the type must be registered
+via `allowed_msgpack_modules`, or a future version will refuse it).
+
+A node whose body makes *several* bounded calls (`dream`) is still bounded in
+aggregate by an explicit deadline passed into the node body — not by the
+framework.
 
 ### 5.5 `CycleState`
 
@@ -440,10 +468,57 @@ fix for codex silent failures and the precondition for retiring §6.8.
 ### 7.3 Run leases replace PID lock files
 
 `lock_<name>` / `dream_lock_<name>` become a row in SQLite with a uniqueness
-constraint on `(tenant, agent)` and a heartbeat timestamp. A dead run's lease
-expires on its own.
+constraint on `(tenant, agent, kind)` and a heartbeat timestamp. A dead run's
+lease expires on its own.
 
-**Eliminates:** the SIGPIPE-141 orphan lock, the subagent-SIGTERM orphan lock, and
+**Amended 2026-08-18 — "replace" is the Stage 5 end state, not the mechanism.**
+Read literally, this section destroys mutual exclusion during Stages 3–4, when
+Bash and Python run the same 23-account roster: **a Bash round cannot see a
+SQLite row.** So a lease holds *two* halves until Bash stops running:
+
+1. the SQLite row — heartbeat, expiry, observability, and the death of the
+   orphan-lock class;
+2. the Bash-visible `.agent-state/lock_<name>` file — cross-runtime exclusion.
+   `locks.py` already writes it in Bash's exact format on purpose.
+
+Consequences that are not obvious and are each pinned by a test:
+
+- **Acquisition order is file lock first, then the row.** The reverse strands a
+  Bash-visible lock file on a Python-side failure, and a stranded lock makes
+  every later Bash round SKIP that account for the full staleness window. The
+  end state of both orderings is identical, so this is only observable as a
+  *sequence* — the test watches it via `sqlite3.set_trace_callback`.
+- **`kind` is part of the key**, because Bash locks act and dream separately
+  (`lock_<name>` vs `dream_lock_<name>`). Collapsing them would serialise a
+  dream behind an unrelated act.
+- **The heartbeat must also touch the lock file's mtime.** Bash computes
+  staleness from `stat -f %m` on the file (`auto-run.sh:422`), not from the row,
+  so a cycle running longer than the 1800s window would otherwise have its lock
+  *reclaimed by Bash while still held* — reintroducing exactly the concurrent
+  Bash+Python round this section exists to prevent.
+- **A lease reclaims its own expired row on entry.** Otherwise the row becomes a
+  new orphan class, strictly worse than the lock file it was meant to retire.
+- Expiry uses `<=` against the 1800s threshold because Bash's `age < 1800` means
+  *held*, so both halves expire at the same instant.
+
+The file-lock half is removed at **Stage 5**, and not before. A cleanup that
+deletes it earlier on the grounds that "the row is the lock now" would read as
+correct and would silently restore concurrent runs on one account.
+
+**Accuracy note (2026-08-18).** The claim below was written before the lease
+existed and overstates what it delivers. What is true: the row records the
+holder's pid, and a lease whose pid is no longer alive is reclaimable
+**immediately** rather than after the 1800s window, so an orphan self-clears in
+seconds instead of thirty minutes. What is not true: that orphans become
+impossible. A *recycled* pid reads as live and falls back to the 1800s TTL —
+degrading to the old behaviour rather than failing unsafely. Pid liveness also
+assumes a single host: if the lease DB ever moves to shared storage, `_pid_alive`
+would read foreign pids against the local process table and reclaim live leases.
+(No `host` column today, because SQLite over a network filesystem is already
+unsound.) Note `os.kill(pid, 0)` raising `PermissionError` means the process is
+**alive** and owned by another user — it must not be read as dead.
+
+**Reduces (was: "Eliminates"):** the SIGPIPE-141 orphan lock, the subagent-SIGTERM orphan lock, and
 the post-round manual lock sweep — three recurring operational costs.
 
 ### 7.4 The `active` file is removed
