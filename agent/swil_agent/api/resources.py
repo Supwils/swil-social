@@ -400,7 +400,7 @@ class Resources:
                 "(expected 204 No Content per follows.controller.ts)"
             )
 
-    def send_dm(self, username: str, text: str) -> str:
+    def send_dm(self, username: str, text: str) -> tuple[str, str]:
         """Two calls, NOT `POST /messages` as the brief guessed.
 
         There is no `/messages` route at all. Direct messages go through a
@@ -429,6 +429,13 @@ class Resources:
         with no id is just as much a silent-failure shape as a message sent
         with no id, so both raise `WriteNotVerifiedError` rather than only
         checking the final step.
+
+        Returns `(conversation_id, message_id)` -- widened from a bare
+        message id (fix round 1, task-7 review item 4) so a caller can
+        record `conversationId` the way `swil.sh`'s own `_remember "dm |
+        to=$RECIPIENT conversationId=$CONV_ID | ..."` does (swil.sh:711).
+        The conversation id was always resolved here; it just never left
+        this method before.
         """
         conv_payload = self._client.post("/conversations", json={"recipientUsername": username})
         conversation_id = _nested_id(conv_payload, "data", "conversation", "id")
@@ -440,7 +447,7 @@ class Resources:
         message_id = _nested_id(msg_payload, "data", "message", "id")
         if message_id is None:
             raise WriteNotVerifiedError(f"dm created no id; response={msg_payload}")
-        return message_id
+        return conversation_id, message_id
 
     def create_snapshot(self, username: str, payload: dict[str, Any]) -> str:
         """POST a personality snapshot; return the created id.

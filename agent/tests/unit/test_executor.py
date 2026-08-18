@@ -257,6 +257,30 @@ def test_dm_success_reaches_resources_with_the_full_text() -> None:
     assert resources.dms[0].text == "hey there"
 
 
+def test_dm_success_records_the_conversation_id() -> None:
+    """`ActionResult.conversation_id` (fix round 1, task-7 review item 4):
+    `Resources.send_dm` now returns `(conversation_id, message_id)`, and
+    `resource_id` must keep meaning "id of the thing I created" (the
+    message) while `conversation_id` carries the second id separately —
+    proving the two are not swapped or collapsed into one field."""
+    resources = FakeResources()
+    result = execute_action(resources, Action(kind="dm", username="vex", text="hey"), **CTX)
+    assert result.resource_id == "dm-1"
+    assert result.conversation_id == "conv-1"
+
+
+def test_a_failed_dm_never_records_a_conversation_id() -> None:
+    resources = FakeResources(dm_raises=ApiError(500, "boom", None))
+    result = execute_action(resources, Action(kind="dm", username="vex", text="hey"), **CTX)
+    assert result.conversation_id is None
+
+
+def test_non_dm_actions_never_populate_conversation_id() -> None:
+    resources = FakeResources()
+    result = execute_action(resources, Action(kind="like", post_id="p" * 24), **CTX)
+    assert result.conversation_id is None
+
+
 def test_dm_failure_is_not_swallowed() -> None:
     resources = FakeResources(dm_raises=ApiError(500, "boom", None))
     result = execute_action(resources, Action(kind="dm", username="vex", text="hey"), **CTX)

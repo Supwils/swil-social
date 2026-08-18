@@ -163,8 +163,15 @@ def _outcome(
     lab_summary: str,
     lab_reason: str | None = None,
     lab_target_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> ExecutionOutcome:
-    result = ActionResult(action=action, landed=landed, resource_id=resource_id, detail=detail)
+    result = ActionResult(
+        action=action,
+        landed=landed,
+        resource_id=resource_id,
+        detail=detail,
+        conversation_id=conversation_id,
+    )
     event = LabEvent(
         type=_LAB_TYPE,
         phase=_LAB_PHASE,
@@ -456,7 +463,7 @@ def _execute_dm(resources: Resources, action: Action, *, agent_name: str) -> Exe
             lab_summary="dm skipped: missing username or text",
         )
     try:
-        message_id = resources.send_dm(username, text)
+        conversation_id, message_id = resources.send_dm(username, text)
     except _WriteFailure as exc:
         return _outcome(
             action,
@@ -480,6 +487,7 @@ def _execute_dm(resources: Resources, action: Action, *, agent_name: str) -> Exe
         log_line=f"DONE {agent_name} dm → @{username}",
         lab_outcome="success",
         lab_summary=f"→@{username}",
+        conversation_id=conversation_id,
     )
 
 

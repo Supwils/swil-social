@@ -2,24 +2,22 @@
 real accounts.
 
 Expectations here are DERIVED FROM THE FILES AT TEST TIME, not hardcoded. An
-earlier version of this test kept a hand-maintained `EXPECTED_BACKEND` map
-(one literal value per account) and broke on the very first run: it expected
-mangniu's `AI Backend` bullet to be `"haiku"`, but this worktree's committed
-files have no such bullet for mangniu at all -- only `- **Model:** haiku`.
+earlier version kept a hand-maintained `EXPECTED_BACKEND` map (one literal
+per account) and broke on its first run over a disagreement about mangniu's
+`AI Backend` bullet.
 
-That was not a parser bug and not a genuinely conflicting fact about
-mangniu -- it was two different trees. IN THE COMMITTED TREE this worktree
-resolves against, mangniu has no `AI Backend` bullet -- not in
-`personality.md`, its full archive, or the committed HEAD revision. That is
-NOT true of every tree: mangniu's `AI Backend: haiku` bullet DOES exist,
-right now, in the `main` checkout's working tree -- it is simply
-uncommitted there, so this worktree (which only sees committed content)
-never observes it. The original task-4 brief's `EXPECTED_BACKEND` map was
-captured from that main working tree, not from this worktree's commit --
-hence the mismatch. This also closes the open question about the CLAUDE.md
-memory note that mangniu's DB-recorded `agentBackend` is `"haiku:haiku"`:
-the live runtime reads the main working tree, where both bullets exist, so
-that record is unsurprising and not an anomaly worth chasing further.
+That was not a parser bug. It was two trees: the map had been captured from
+the `main` checkout's working tree, where the bullet existed as uncommitted
+work, while this worktree saw only committed content, where it did not.
+Both trees have since converged — mangniu's `- **AI Backend:** haiku` is
+committed now — but the lesson is why this module derives rather than
+hardcodes. A hand-maintained map is a second source of truth that goes stale
+every time a dream rewrites a personality file, and the roster is rewritten
+by dreams on purpose.
+
+It also settles the CLAUDE.md note that mangniu's DB-recorded `agentBackend`
+is `"haiku:haiku"`: with both an `AI Backend` and a `Model` bullet reading
+`haiku`, that record is the expected composition, not an anomaly.
 
 Because "an unrecognised `AI Backend` value passes through byte-for-byte,
 with no normalisation" is exactly the property mangniu's real bullet
@@ -267,12 +265,13 @@ def test_nonstandard_backend_value_round_trips_verbatim_synthetic(
 
     "An unrecognised AI Backend value passes through byte-for-byte, with no
     normalisation" is exactly the property mangniu's real bullet exists to
-    protect -- mangniu carries `- **AI Backend:** haiku` right now in the
-    `main` checkout's working tree (uncommitted; this worktree's committed
-    tree does not have it, see module docstring). Since that real-world case
-    isn't committed here, this test builds an equivalent synthetic account
-    so the property is always exercised, independent of which tree or which
-    round of dreams produced the current roster:
+    protect -- mangniu carries `- **AI Backend:** haiku`, which is now
+    committed (it was uncommitted work in the main checkout when this test
+    was written; see the module docstring). This test still builds a
+    synthetic account rather than leaning on mangniu, because the roster is
+    rewritten by dreams every round: a property that happens to be exercised
+    by whichever account currently carries an odd bullet is a property that
+    stops being exercised the moment a dream tidies that bullet away.
 
     - `"haiku"` pins the exact mangniu-shaped case: a real model-tier word
       that is nonetheless not one of the three known backend names, and must

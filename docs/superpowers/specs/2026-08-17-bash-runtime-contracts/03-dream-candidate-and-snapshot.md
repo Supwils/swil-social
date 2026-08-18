@@ -291,7 +291,15 @@ Order of operations after the candidate passes BOTH structural validation and th
    on disk separately (828-832): `_diff_narrative "$pfile" "$candidate" "$ai_backend"`. Uses
    `llm_text` with the SAME `$ai_backend` (not a neutral model) — a 2-3 sentence Chinese summary
    of what changed, capped at 1500 characters via python3 (char-safe, not byte-safe). Best-effort:
-   `|| echo ''` on failure.
+   `|| echo ''` on failure. Inside `_diff_narrative` itself (dream.sh:105-115), the call is
+   `llm_text "$backend" "" "$sys" "$usr"` — the SECOND argument (model) is a LITERAL empty
+   string, not `$ai_model`. `llm.sh`'s `_llm_raw` treats an empty model as "omit `--model`
+   entirely", so the diff narrative always runs on the backend CLI's own default tier,
+   independent of whatever model the persona's own `- **Model:**` bullet pinned for the
+   dream-rewrite call one step earlier. (This is the fourth transcription defect this doc's
+   README warns about — a prior version of this bullet did not call this out at all, letting
+   a reader assume the narrative reuses the persona's pinned model. See that README's
+   precedence rule: the script wins.)
 2. **Archive the old version** (834-847) — prepend to `$dir/personality.archive.md`:
    ```
    ---

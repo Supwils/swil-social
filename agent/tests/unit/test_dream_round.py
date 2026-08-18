@@ -1,0 +1,780 @@
+"""Tests for `swil_agent.dream.round` (task 12) -- the composition of the
+whole dream path: cooldown, candidate generation, the gate, and, on accept,
+the seven-step write sequence (contract `03` §4) that archives the old
+personality, writes the new one, updates the cooldown markers, appends a
+memory.md line, and uploads a snapshot.
+
+Ordering is observed through fakes (`FakePersonaSource`, `FakeState`,
+`FakeResources` all threading one shared `order` list, plus `TwoCallBackend`
+distinguishing the diff-narrative call by position), never through a
+`recorder=` parameter on `run_dream` itself -- ruling R8 (task-12-brief.md /
+progress.md). "A rejected dream touches nothing" and the two snapshot-failure
+tests use the REAL `GitPersonaSource` against a `tmp_path` roster instead,
+so they can assert on real bytes on disk, not merely on a fake's call log.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from swil_agent.api.client import ApiError
+from swil_agent.api.resources import WriteNotVerifiedError
+from swil_agent.config import Settings
+from swil_agent.dream.candidate import clean_candidate
+from swil_agent.dream.distill import anchor_cache_key
+from swil_agent.dream.round import build_snapshot_payload, run_dream
+from swil_agent.llm.base import BackendUnavailableError
+from swil_agent.locks import LockBusy, dream_lock_path
+from swil_agent.models import AspectSims, AspectVectors, Persona
+from swil_agent.persona.source import GitPersonaSource
+
+from ._runners import (
+    ExplodingBackend,
+    FakeEmbedder,
+    FakePersonaSource,
+    FakeResources,
+    FakeState,
+    RecordingRunner,
+    SilentBackend,
+    TwoCallBackend,
+)
+
+NOW = datetime(2026, 8, 17, 10, 0, 0)
+CAPTURED_AT = datetime(2026, 8, 17, 10, 0, 0, tzinfo=UTC)
+
+ORIGINAL = """# 测试
+
+## 身份
+- **Username:** zenith
+- **Display Name:** 测试
+- **Headline:** AI Agent
+- **Bio:** 一句话
+- **Follow Topics:** alpha,beta,gamma
+
+- **AI Backend:** claude
+
+## 发帖节律
+- 每次触发有 60% 概率选择 post
+"""
+
+
+def _valid_candidate(bio: str = "改写过的一句话") -> str:
+    return ORIGINAL.replace("一句话", bio)
+
+
+def _bad_username_candidate() -> str:
+    return ORIGINAL.replace("- **Username:** zenith", "- **Username:** someone_else")
+
+
+def _write_account(
+    tmp_path: Path, *, memory_text: str = "2026-08-01 | act | did a thing\n"
+) -> Path:
+    directory = tmp_path / "agents" / "zenith"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text(ORIGINAL, encoding="utf-8")
+    (directory / "memory.md").write_text(memory_text, encoding="utf-8")
+    return directory
+
+
+def _persona(directory: Path, *, model: str | None = None) -> Persona:
+    return Persona(
+        username="zenith",
+        directory=directory,
+        backend="claude",
+        model=model,
+        rhythm_text="60% 概率选择 post",
+        raw=ORIGINAL,
+    )
+
+
+def _write_anchor_cache(directory: Path, *, anchor_text: str, vectors: AspectVectors) -> None:
+    """Pre-seeds a cache HIT for `dream.distill.anchor_aspects`, same on-disk
+    shape `test_gate.py`'s own `_write_anchor_cache` builds -- see that
+    file's docstring for why (it lets a test control the anchor side's
+    vectors without spending an embedder/runner call on it)."""
+    key = anchor_cache_key(anchor_text, prompt_version="2")
+    payload = {
+        "key": key,
+        "cards": {"values": "unused-on-cache-hit", "style": "unused-on-cache-hit", "topic": "x"},
+        "vectors": {"values": vectors.values, "style": vectors.style, "topic": vectors.topic},
+    }
+    (directory / "personality.anchor.aspects.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _run(
+    tmp_path: Path,
+    directory: Path,
+    *,
+    persona: Persona | None = None,
+    persona_source: object | None = None,
+    resources: FakeResources | None = None,
+    backend: object | None = None,
+    runner: object | None = None,
+    embedder: FakeEmbedder | None = None,
+    state: FakeState | None = None,
+    settings: Settings | None = None,
+    auto: bool = False,
+):
+    return run_dream(
+        persona=persona if persona is not None else _persona(directory),
+        persona_source=persona_source if persona_source is not None else GitPersonaSource(tmp_path),
+        resources=resources if resources is not None else FakeResources(),
+        backend=backend
+        if backend is not None
+        else TwoCallBackend(candidate_response=_valid_candidate()),
+        runner=runner if runner is not None else RecordingRunner(),
+        embedder=embedder if embedder is not None else FakeEmbedder(vectors=[[1.0], [1.0]]),
+        state=state if state is not None else FakeState(),
+        settings=settings if settings is not None else Settings(drift_mode="scalar"),
+        agent_root=tmp_path,
+        now=NOW,
+        captured_at=CAPTURED_AT,
+        auto=auto,
+    )
+
+
+# ── Step 1: write-ordering ───────────────────────────────────────────────
+
+
+def test_the_write_sequence_matches_bash(tmp_path: Path) -> None:
+    """Mutation this catches: swapping any two of the seven steps (e.g.
+    writing the memlines marker after the memory append, or uploading the
+    snapshot before the personality write) changes this list."""
+    directory = _write_account(tmp_path)
+    order: list[str] = []
+    persona_source = FakePersonaSource(order=order)
+    state = FakeState(order=order)
+    resources = FakeResources(order=order)
+    backend = TwoCallBackend(candidate_response=_valid_candidate(), order=order)
+
+    result = _run(
+        tmp_path,
+        directory,
+        persona_source=persona_source,
+        state=state,
+        resources=resources,
+        backend=backend,
+    )
+
+    assert result.accepted is True
+    assert order == [
+        "diff_narrative",
+        "archive_prepend",
+        "personality_write",
+        "marker_last_dream",
+        "marker_memlines",
+        "memory_append",
+        "snapshot_upload",
+    ]
+
+
+def test_the_memlines_marker_is_written_before_the_memory_append(tmp_path: Path) -> None:
+    """The quirk from contract `03` §4: the memlines marker is written
+    BEFORE the "personality consolidated" housekeeping line is appended, so
+    that line self-counts toward the next round's cooldown-override tally.
+    Mutation this catches: computing/recording the memlines count AFTER
+    `append_memory` (or re-reading memory.md at that point) would record
+    101, not 100."""
+    memory_text = "\n".join(f"2026-08-01 | act | thing {i}" for i in range(100)) + "\n"
+    directory = _write_account(tmp_path, memory_text=memory_text)
+    assert memory_text.count("\n") == 100
+    state = FakeState()
+
+    result = _run(tmp_path, directory, state=state)
+
+    assert result.recorded_memlines == 100
+    assert state.last_dream_memlines("zenith") == 100
+
+
+def test_a_rejected_dream_touches_nothing(tmp_path: Path) -> None:
+    """Mutation this catches: calling `persona_source.archive_and_write` (or
+    anything else that writes) before checking `verdict.accepted`."""
+    directory = _write_account(tmp_path)
+    before_personality = (directory / "personality.md").read_text(encoding="utf-8")
+    before_memory = (directory / "memory.md").read_text(encoding="utf-8")
+    archive_path = directory / "personality.archive.md"
+    assert not archive_path.exists()
+    resources = FakeResources()
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_bad_username_candidate()),
+    )
+
+    assert result.accepted is False
+    assert result.proceeded is True
+    assert (directory / "personality.md").read_text(encoding="utf-8") == before_personality
+    assert (directory / "memory.md").read_text(encoding="utf-8") == before_memory
+    assert not archive_path.exists()
+    assert resources.calls == []
+
+
+# ── Step 2: snapshot failure ─────────────────────────────────────────────
+
+
+def test_a_snapshot_failure_does_not_roll_back_the_personality_write(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    candidate = _valid_candidate()
+    resources = FakeResources(snapshot_raises=WriteNotVerifiedError("rejected"))
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=candidate),
+    )
+
+    assert result.accepted is True
+    assert result.snapshot_ok is False
+    assert (directory / "personality.md").read_text(encoding="utf-8") == clean_candidate(candidate)
+
+
+def test_the_snapshot_failure_reason_comes_from_the_error_not_a_guess(tmp_path: Path) -> None:
+    """Preserves a lesson Bash learned the hard way (dream.sh's comment at
+    the WARN line, contract `03` §4.9): quote the failure's OWN message,
+    never a hardcoded guess like "(server or embedder unreachable)"."""
+    directory = _write_account(tmp_path)
+    resources = FakeResources(snapshot_raises=WriteNotVerifiedError("no api_key.txt"))
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+    )
+
+    assert result.accepted is True
+    assert "no api_key.txt" in (result.snapshot_reason or "")
+
+
+def test_snapshot_embed_failure_is_also_a_warn_not_a_rollback(tmp_path: Path) -> None:
+    """The OTHER way `snapshot.sh` can fail (contract `03` §5's failure mode
+    6-7): the embedder, not the server. `fail_on_call=3` fails the THIRD
+    embedder call -- the gate's scalar mode makes exactly two (anchor,
+    candidate), so the third is the snapshot's own candidate-text embed."""
+    directory = _write_account(tmp_path)
+    candidate = _valid_candidate()
+    embedder = FakeEmbedder(vectors=[[1.0], [1.0]], fail_on_call=3)
+
+    result = _run(
+        tmp_path,
+        directory,
+        backend=TwoCallBackend(candidate_response=candidate),
+        embedder=embedder,
+    )
+
+    assert result.accepted is True
+    assert result.snapshot_ok is False
+    assert result.snapshot_reason is not None
+    assert (directory / "personality.md").read_text(encoding="utf-8") == clean_candidate(candidate)
+
+
+# ── Step 3: snapshot payload shape ───────────────────────────────────────
+
+
+def test_snapshot_payload_shape() -> None:
+    payload = build_snapshot_payload(
+        text="x" * 400,
+        directory=Path("/agent/agents/zenith"),
+        agent_root=Path("/agent"),
+        embedding=[0.1] * 1024,
+        captured_at=datetime(2026, 8, 17, 12, tzinfo=UTC),
+    )
+    assert payload["snapshotType"] == "dream"
+    assert payload["capturedAt"] == "2026-08-17T12:00:00Z"
+    assert payload["archivePath"] == "agents/zenith/personality.md"
+    assert len(payload["excerpt"]) == 280
+    assert payload["contentHash"] == hashlib.sha256(("x" * 400).encode()).hexdigest()
+    assert payload["embedding"] == [0.1] * 1024
+    assert "diffNarrative" not in payload
+    assert "aspectDrift" not in payload
+
+
+def test_the_excerpt_counts_characters_not_bytes() -> None:
+    """Guards a real historical bug: Bash's first attempt used `head -c
+    280`, which split a multibyte CJK character and crashed the downstream
+    `jq --arg` under `set -e`. Mutation this catches: slicing `text.encode()`
+    to 280 BYTES instead of slicing the string to 280 characters."""
+    payload = build_snapshot_payload(
+        text="中" * 400,
+        directory=Path("/agent/agents/zenith"),
+        agent_root=Path("/agent"),
+        embedding=[0.1],
+        captured_at=datetime(2026, 8, 17, 12, tzinfo=UTC),
+    )
+    assert len(payload["excerpt"]) == 280
+    assert payload["excerpt"] == "中" * 280
+
+
+def test_excerpt_flattens_newlines_to_spaces() -> None:
+    payload = build_snapshot_payload(
+        text="line one\nline two",
+        directory=Path("/agent/agents/zenith"),
+        agent_root=Path("/agent"),
+        embedding=[0.1],
+        captured_at=datetime(2026, 8, 17, 12, tzinfo=UTC),
+    )
+    assert payload["excerpt"] == "line one line two"
+
+
+def test_optional_fields_are_omitted_when_absent() -> None:
+    payload = build_snapshot_payload(
+        text="hello",
+        directory=Path("/agent/agents/zenith"),
+        agent_root=Path("/agent"),
+        embedding=[0.1],
+        captured_at=datetime(2026, 8, 17, 12, tzinfo=UTC),
+        narrative="",
+        aspect_drift=None,
+    )
+    assert "diffNarrative" not in payload
+    assert "aspectDrift" not in payload
+
+
+def test_optional_fields_are_included_when_present() -> None:
+    payload = build_snapshot_payload(
+        text="hello",
+        directory=Path("/agent/agents/zenith"),
+        agent_root=Path("/agent"),
+        embedding=[0.1],
+        captured_at=datetime(2026, 8, 17, 12, tzinfo=UTC),
+        narrative="一些叙述",
+        aspect_drift={"mode": "aspect", "values": 0.9},
+    )
+    assert payload["diffNarrative"] == "一些叙述"
+    assert payload["aspectDrift"] == {"mode": "aspect", "values": 0.9}
+
+
+# ── Step 4: run_dream composition ────────────────────────────────────────
+
+
+def test_run_dream_raises_lock_busy_when_the_dream_lock_is_held(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    lock = dream_lock_path(tmp_path, "zenith")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("1", encoding="utf-8")
+
+    with pytest.raises(LockBusy):
+        _run(tmp_path, directory, backend=ExplodingBackend())  # must never be reached
+
+    assert lock.read_text(encoding="utf-8") == "1"
+
+
+def test_run_dream_releases_the_lock_even_when_a_step_raises(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        _run(tmp_path, directory, backend=ExplodingBackend())
+
+    assert not dream_lock_path(tmp_path, "zenith").exists()
+
+
+def test_cooldown_skip_touches_nothing(tmp_path: Path) -> None:
+    """Mutation this catches: calling `check_cooldown` but ignoring a
+    `proceed=False` result (or calling the backend regardless) -- the
+    ExplodingBackend trap makes either an uncaught error."""
+    directory = _write_account(tmp_path)
+    state = FakeState()
+    state.set_last_dream(hours_ago=1, memlines=100, name="zenith")
+
+    result = _run(
+        tmp_path,
+        directory,
+        state=state,
+        backend=ExplodingBackend(),
+        auto=True,
+    )
+
+    assert result.proceeded is False
+    assert result.accepted is False
+    assert "cooldown" in result.reason
+
+
+def test_empty_candidate_touches_nothing(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    persona_source = FakePersonaSource()
+    before = (directory / "personality.md").read_text(encoding="utf-8")
+
+    result = _run(
+        tmp_path,
+        directory,
+        persona_source=persona_source,
+        backend=SilentBackend(),
+    )
+
+    assert result.proceeded is True
+    assert result.accepted is False
+    assert result.reason == "LLM returned empty"
+    assert persona_source.archived == []
+    assert (directory / "personality.md").read_text(encoding="utf-8") == before
+
+
+def test_cooldown_override_proceeds_and_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The "accumulated enough new memory, break the cooldown early" path
+    (contract `03` §1.3) -- `cooldown.reason` is non-empty AND `proceed` is
+    `True`, distinct from both the silent-proceed paths (reason == "") and
+    the SKIP path (proceed == False)."""
+    memory_text = "\n".join(f"2026-08-01 | act | thing {i}" for i in range(20)) + "\n"
+    directory = _write_account(tmp_path, memory_text=memory_text)
+    state = FakeState()
+    state.set_last_dream(hours_ago=1, memlines=0, name="zenith")
+
+    with caplog.at_level(logging.INFO):
+        result = _run(tmp_path, directory, state=state, auto=True)
+
+    assert result.accepted is True
+    assert any("cooldown override" in r.message for r in caplog.records)
+
+
+def test_memory_archive_tail_is_read_when_present(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    lines = "\n".join(f"archived line {i}" for i in range(30)) + "\n"
+    (directory / "memory.archive.md").write_text(lines, encoding="utf-8")
+    backend = TwoCallBackend(candidate_response=_valid_candidate())
+
+    result = _run(tmp_path, directory, backend=backend)
+
+    assert result.accepted is True
+    assert "archived line 29" in backend.calls[0].user
+    assert "archived line 9" not in backend.calls[0].user  # only the last 20 lines
+
+
+def test_group_memory_degrades_to_empty_on_api_failure(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+    resources.fail("notifications")
+
+    result = _run(tmp_path, directory, resources=resources)
+
+    assert result.accepted is True
+
+
+def test_echo_hint_is_consumed_and_forwarded_into_the_prompt(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    state_dir = tmp_path / ".agent-state"
+    state_dir.mkdir(parents=True)
+    flag = state_dir / "echo_flag_zenith"
+    flag.write_text("换个话题试试", encoding="utf-8")
+    backend = TwoCallBackend(candidate_response=_valid_candidate())
+
+    result = _run(tmp_path, directory, backend=backend)
+
+    assert result.accepted is True
+    assert not flag.exists()
+    assert "换个话题试试" in backend.calls[0].user
+
+
+def test_diff_narrative_falls_back_to_empty_string_on_backend_failure(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    backend = TwoCallBackend(
+        candidate_response=_valid_candidate(),
+        narrative_raises=BackendUnavailableError("dead"),
+    )
+
+    result = _run(tmp_path, directory, backend=backend)
+
+    assert result.accepted is True
+    assert result.narrative == ""
+
+
+def test_diff_narrative_call_passes_no_model_override_even_when_the_persona_has_one(
+    tmp_path: Path,
+) -> None:
+    """dream.sh's own `_diff_narrative` calls `llm_text "$backend" "" "$sys"
+    "$usr"` -- a LITERAL empty model argument, NOT `$ai_model` -- verified by
+    reading the script directly (dream.sh:105-115), not assumed from the
+    contract doc. Mutation this catches: passing `persona.model` into the
+    diff-narrative request instead of `None`."""
+    directory = _write_account(tmp_path)
+    persona = _persona(directory, model="opus")
+    backend = TwoCallBackend(candidate_response=_valid_candidate())
+
+    _run(tmp_path, directory, persona=persona, backend=backend)
+
+    assert backend.calls[0].model == "opus"
+    assert backend.calls[1].model is None
+
+
+def test_aspect_drift_is_attached_to_the_snapshot_payload_in_aspect_mode(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    directory = _write_account(tmp_path)
+    _write_anchor_cache(
+        directory,
+        anchor_text=ORIGINAL,
+        vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
+    )
+    embedder = FakeEmbedder([[1.0], [1.0], [0.99], [0.99], [0.99]])
+    runner = RecordingRunner('{"values":"a","style":"b","topic":"c"}')
+    resources = FakeResources()
+
+    with caplog.at_level(logging.WARNING):
+        result = _run(
+            tmp_path,
+            directory,
+            resources=resources,
+            backend=TwoCallBackend(candidate_response=_valid_candidate()),
+            runner=runner,
+            embedder=embedder,
+            settings=Settings(drift_mode="aspect"),
+        )
+
+    assert result.accepted is True
+    assert result.verdict is not None
+    assert result.verdict.sims == AspectSims(values=0.99, style=0.99, topic=0.99)
+    _, payload = resources.snapshots[0]
+    assert payload["aspectDrift"] == {
+        "mode": "aspect",
+        "promptVersion": "2",
+        "values": 0.99,
+        "style": 0.99,
+        "topic": 0.99,
+        "breached": [],
+    }
+
+
+# ── Fix round 1, item 1: lab events (dream.sh's `_post_agent_event`) ────────
+
+
+def test_a_structural_rejection_emits_a_fail_event_with_the_validators_reason(
+    tmp_path: Path,
+) -> None:
+    """The required proof for fix round 1, item 1: a structural rejection
+    must be observable through `/lab`, not just through a return value.
+    Mutation this catches: `run_dream` returning early on a structural
+    reject without ever calling `_emit`."""
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_bad_username_candidate()),
+    )
+
+    assert result.accepted is False
+    fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
+    assert len(fail_events) == 1
+    event = fail_events[0]
+    assert event.type == "dream"
+    assert event.phase == "dream"
+    assert "Username drift" in event.summary
+    assert event.metrics == {}
+
+
+def test_a_drift_rejection_emits_a_fail_event_with_metrics(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+    # sim = 0.0 * ... well below the 0.82 default threshold.
+    embedder = FakeEmbedder(vectors=[[1.0], [0.0]])
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        embedder=embedder,
+    )
+
+    assert result.accepted is False
+    fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
+    assert len(fail_events) == 1
+    event = fail_events[0]
+    assert "drift too large" in event.summary
+    assert event.metrics["similarity"] == 0.0
+    assert event.metrics["drift"] == 1.0
+
+
+def test_a_lab_event_outage_does_not_change_the_dream_outcome(tmp_path: Path) -> None:
+    """The second required proof for fix round 1, item 1: an events outage
+    must never change what `run_dream` returns -- `_emit` swallows whatever
+    `resources.lab_event` raises. Mutation this catches: calling
+    `resources.lab_event` directly instead of through `_emit`."""
+    directory = _write_account(tmp_path)
+    resources = FakeResources(lab_event_raises=ApiError(500, "boom", None))
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+    )
+
+    assert result.accepted is True
+    assert result.snapshot_ok is True
+    assert resources.lab_events == []  # every attempt raised, so nothing landed
+
+
+def test_a_lab_event_outage_does_not_change_a_rejection_either(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources(lab_event_raises=ApiError(500, "boom", None))
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_bad_username_candidate()),
+    )
+
+    assert result.accepted is False
+    assert resources.lab_events == []
+
+
+def test_dream_started_event_fires_once_cooldown_and_lock_pass(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+    )
+
+    assert result.accepted is True
+    started = [e for e in resources.lab_events if e.outcome == "started"]
+    assert len(started) == 1
+    assert started[0].type == "dream"
+    assert started[0].summary == "dream started"
+
+
+def test_cooldown_skip_never_emits_a_started_event(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    state = FakeState()
+    state.set_last_dream(hours_ago=1, memlines=100, name="zenith")
+    resources = FakeResources()
+
+    result = _run(
+        tmp_path,
+        directory,
+        state=state,
+        resources=resources,
+        backend=ExplodingBackend(),
+        auto=True,
+    )
+
+    assert result.proceeded is False
+    assert resources.lab_events == []
+
+
+def test_accept_emits_dream_success_and_snapshot_success_events(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+    )
+
+    assert result.accepted is True
+    outcomes = [(e.type, e.phase, e.outcome, e.summary) for e in resources.lab_events]
+    assert ("dream", "dream", "started", "dream started") in outcomes
+    assert ("dream", "dream", "success", "personality updated") in outcomes
+    assert ("snapshot", "snapshot", "success", "snapshot uploaded") in outcomes
+
+
+def test_snapshot_failure_emits_a_warn_event_with_the_real_reason(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources(snapshot_raises=WriteNotVerifiedError("no api_key.txt"))
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+    )
+
+    assert result.accepted is True
+    warn_events = [e for e in resources.lab_events if e.type == "snapshot" and e.outcome == "warn"]
+    assert len(warn_events) == 1
+    assert warn_events[0].summary == "snapshot upload failed"
+    assert warn_events[0].reason == "no api_key.txt"
+
+
+def test_llm_empty_output_emits_a_fail_event(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+
+    result = _run(tmp_path, directory, resources=resources, backend=SilentBackend())
+
+    assert result.accepted is False
+    assert result.proceeded is True
+    fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
+    assert len(fail_events) == 1
+    assert fail_events[0].summary == "LLM returned empty"
+
+
+def test_embedder_unreachable_emits_a_warn_event_but_still_accepts(tmp_path: Path) -> None:
+    """Contract `03` §4's fail-open path: the drift check could not run at
+    all, so the dream is accepted anyway, but the gap is logged as a WARN
+    lab event, not silently absorbed into the eventual success event."""
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+    embedder = FakeEmbedder(fail_always=True)
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        embedder=embedder,
+    )
+
+    assert result.accepted is True
+    warn_events = [e for e in resources.lab_events if e.outcome == "warn" and e.type == "dream"]
+    assert len(warn_events) == 1
+    assert warn_events[0].summary == "embedder unreachable, skipped drift check"
+
+
+def test_an_aspect_mode_drift_rejection_emits_aspect_shaped_metrics(tmp_path: Path) -> None:
+    directory = _write_account(tmp_path)
+    _write_anchor_cache(
+        directory,
+        anchor_text=ORIGINAL,
+        vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
+    )
+    resources = FakeResources()
+    embedder = FakeEmbedder(
+        [
+            [1.0],  # scalar: anchor (unused -- aspect mode decides)
+            [1.0],  # scalar: candidate
+            [0.99],  # candidate "values" card -> fine
+            [0.10],  # candidate "style" card -> breaches
+            [0.99],  # candidate "topic" card -> fine
+        ]
+    )
+    runner = RecordingRunner('{"values":"a","style":"b","topic":"c"}')
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        runner=runner,
+        embedder=embedder,
+        settings=Settings(drift_mode="aspect"),
+    )
+
+    assert result.accepted is False
+    fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
+    assert len(fail_events) == 1
+    assert fail_events[0].metrics == {
+        "aspects": {"values": 0.99, "style": 0.10, "topic": 0.99},
+        "breached": ["style"],
+        "mode": "aspect",
+    }

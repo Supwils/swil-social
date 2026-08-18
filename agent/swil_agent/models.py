@@ -36,10 +36,24 @@ class VetoedAction(BaseModel):
 
 
 class ActionResult(BaseModel):
+    """One executed action's outcome.
+
+    `conversation_id` (fix round 1, task-7 review item 4) is populated only
+    for a landed `dm`: `resource_id` stays the created MESSAGE id, matching
+    every other kind's "id of the thing I created" convention, so this is a
+    second, dm-only field rather than overloading `resource_id` or `detail`
+    (the latter is already a free-text failure/note channel matched by
+    shape elsewhere -- see `act/round.py`'s `_PARENT_UNUSABLE_DETAIL`
+    sentinel). It lets `act/round.py`'s memory-line writer record
+    `conversationId=...` the way `swil.sh:711`'s `_remember` does, instead
+    of the `messageId=` substitute this task shipped with initially.
+    """
+
     action: Action
     landed: bool
     resource_id: str | None = None
     detail: str | None = None
+    conversation_id: str | None = None
 
 
 class ActOutcome(StrEnum):
@@ -89,12 +103,128 @@ class AspectSims(BaseModel):
     topic: float
 
 
+class AspectThresholds(BaseModel):
+    """Per-aspect drift gate lower bounds -- a candidate whose similarity to
+    the anchor falls STRICTLY BELOW its own threshold breaches that aspect.
+
+    Calibrated 2026-07-03 against real distilled-card data (see
+    `docs/superpowers/specs/2026-07-02-per-aspect-drift-design.md`). The
+    original design hypothesis was that `values` should be guarded strictest;
+    a shadow round refuted it -- keyword-distilled cards put all three
+    aspects on roughly the same ~0.70 band, and `values` came out the
+    *lowest* (least stable) of the three, not the highest. The thresholds
+    are therefore symmetric-ish by measurement, not asymmetric by design --
+    do not "fix" them back toward a values-strictest shape.
+    """
+
+    values: float = 0.63
+    style: float = 0.72
+    topic: float = 0.71
+
+
+class AspectCards(BaseModel):
+    """Three keyword cards distilled from a personality document (task 9,
+    `dream/distill.py`'s `distill_cards`) -- the model-neutral ruler's raw
+    output before embedding.
+
+    Field names are `values` / `style` / `topic` -- SINGULAR `topic`, even
+    though the distiller prompt's own instructions say `TOPICS` (plural). That
+    mismatch is deliberate and baked into `dream.sh`'s prompt text itself
+    (contract `04` §3); every consumer -- `_anchor_aspects`, the gate,
+    `_aspect_breached`, `snapshot.sh`'s payload -- reads the singular key, so
+    "fixing" it to `topics` here would silently break the JSON contract the
+    whole per-aspect drift system depends on.
+    """
+
+    values: str
+    style: str
+    topic: str
+
+
+class AspectVectors(BaseModel):
+    """The embedded form of `AspectCards` -- one bge-m3 vector (1024-dim) per
+    aspect, cached alongside the cards in `<dir>/personality.anchor.aspects.json`
+    (task 9, `dream/distill.py`'s `anchor_aspects`). Compared against a
+    candidate's own `AspectVectors` via `dream/drift.py`'s `cosine_sim`, one
+    aspect at a time, to produce an `AspectSims`.
+    """
+
+    values: list[float]
+    style: list[float]
+    topic: list[float]
+
+
 class DreamVerdict(BaseModel):
     accepted: bool
     reason: str
     breached: list[str] = Field(default_factory=list)
     sims: AspectSims | None = None
     attempt: int = 1
+
+
+class CooldownDecision(BaseModel):
+    """The outcome of `dream.check_cooldown` (task 10, `dream/candidate.py`;
+    contract `03` §1.3).
+
+    `reason` holds only the message BODY -- e.g. `"cooldown (1h < 12h, +4 new
+    memories)"` or `"cooldown override: +8 new memories since last dream"` --
+    never the `"SKIP $name — "` / plain log-line prefix Bash prepends
+    (`dream.sh:504`/`507`); a caller logging this decision adds that prefix
+    itself, the same way `render_dream_prompt`'s output is prefix-free text
+    a caller writes into its own log line.
+
+    `reason` stays `""` for every SILENT proceed path (force mode, first-ever
+    dream, or an elapsed cooldown) -- Bash logs nothing for those three cases
+    either (contract `03` §1.3: "cooldown elapsed → proceed silently, no log
+    line").
+    """
+
+    proceed: bool
+    reason: str = ""
+    override: bool = False
+
+
+class DreamResult(BaseModel):
+    """The outcome of one `run_dream` round (`dream/round.py`, task 12).
+
+    `proceeded` distinguishes a cooldown SKIP (`proceeded=False`, only
+    `reason` populated -- `check_cooldown` never asked the LLM for anything)
+    from an attempt that actually ran the dream-rewrite call (`proceeded=
+    True`), matching Bash's SKIP vs FAIL/DONE split (contract `03` §1.4).
+    `accepted` is the single flag that answers "did personality.md actually
+    change": true only once the full archive/write/marker/memory sequence
+    has run. A structural or drift rejection is `proceeded=True,
+    accepted=False`, with `reason` and (for a drift-side rejection)
+    `verdict` explaining why -- `verdict` stays `None` on a structural
+    failure, since `evaluate_candidate` is never reached in that case
+    (`evaluate_candidate` itself returns a `DreamVerdict` for both a
+    structural AND a drift rejection, but a structural one is caught
+    earlier by `run_dream`, before `evaluate_candidate` is even called --
+    see that module's ordering note).
+
+    `recorded_memlines` is the exact value written to
+    `last_dream_memlines_<name>` -- populated only when `accepted=True`,
+    and always the memory.md line count taken BEFORE the "personality
+    consolidated" housekeeping line was appended (contract `03` §4 steps
+    4-5; see `dream.candidate.FilesystemDreamState.record_dream`'s
+    docstring for why that ordering is deliberate).
+
+    `snapshot_ok` / `snapshot_reason` describe the LAST step (contract `03`
+    §4.9): a snapshot failure never flips `accepted` back to `False` -- the
+    personality write has already committed by the time the snapshot is
+    attempted. `snapshot_reason` is the upload failure's own message, never
+    a hardcoded guess (see `dream/round.py`'s module docstring for the
+    2026-07-31 incident this preserves).
+    """
+
+    proceeded: bool
+    accepted: bool = False
+    reason: str = ""
+    verdict: DreamVerdict | None = None
+    narrative: str = ""
+    recorded_memlines: int | None = None
+    snapshot_ok: bool = False
+    snapshot_reason: str | None = None
 
 
 class ActContext(BaseModel):

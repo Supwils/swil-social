@@ -50,6 +50,12 @@ ignore = ["RUF001"]
 # byte-for-byte pin into a paraphrase of its own expected value. Every other
 # line in this file is subject to the normal E501 limit.
 "tests/unit/test_planner.py" = ["E501"]
+# Same reasoning as test_planner.py above: `_EXPECTED_EMPTY_USER` /
+# `_EXPECTED_POPULATED_USER` are triple-quoted pins of dream.sh's own
+# rendered heredoc output (contract 03 §2.4) -- some of its real lines (the
+# echo-chamber sentence, the closing paragraph) exceed 100 columns on their
+# own. Wrapping them would insert a newline the real prompt never contains.
+"tests/unit/test_dream_candidate.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.13"

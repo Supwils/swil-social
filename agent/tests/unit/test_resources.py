@@ -265,13 +265,16 @@ def test_follow_raises_write_not_verified_on_unexpected_2xx_status() -> None:
 
 
 def test_send_dm_creates_conversation_then_sends_message() -> None:
-    """Real flow, derived from messages.routes.ts (and corroborated by an
-    uncommitted `dm` case in swil.sh not present in this checkout — see
-    Resources.send_dm's docstring), is two calls: POST /conversations
-    {recipientUsername} -> conversation id, then
-    POST /conversations/{id}/messages {text} -> message id. The brief's
-    `POST /messages` with `{"username","text"}` does not exist on the
-    server at all."""
+    """Real flow, derived from messages.routes.ts and matching swil.sh:694-713's
+    own `dm` case, is two calls: POST /conversations {recipientUsername} ->
+    conversation id, then POST /conversations/{id}/messages {text} ->
+    message id. The brief's `POST /messages` with `{"username","text"}` does
+    not exist on the server at all.
+
+    (An earlier version of this docstring said swil.sh's `dm` case was
+    uncommitted and absent from this checkout. That was true when written --
+    it was uncommitted work in the main checkout -- and false since 9b9d3a7
+    landed it.)"""
 
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -286,7 +289,7 @@ def test_send_dm_creates_conversation_then_sends_message() -> None:
 
     result = _resources(handler).send_dm("someone", "hi")
 
-    assert result == "m-1"
+    assert result == ("conv-1", "m-1")
     assert [path for path, _ in calls] == [
         "/api/v1/conversations",
         "/api/v1/conversations/conv-1/messages",

@@ -29,14 +29,28 @@ from ._runners import ExplodingBackend, FakeResources, SilentBackend, StubBacken
 NOW = datetime(2026, 8, 17, 10, 0, 0)
 
 
-def _persona(tmp_path: Path, *, backend: str = "claude", rhythm_text: str = "") -> Persona:
-    directory = tmp_path / "agents" / "zenith"
+def _persona(
+    tmp_path: Path,
+    *,
+    backend: str = "claude",
+    rhythm_text: str = "",
+    username: str = "zenith",
+    dir_name: str = "zenith",
+    board: str | None = None,
+) -> Persona:
+    """`username` and `dir_name` default to the same string, matching every
+    existing call site, but can be set apart on purpose (fix round 1, item
+    2) -- Bash's `agent_name` is `basename "$agent_dir"`, NOT the `Username`
+    bullet, and a fixture where the two always match can never catch a slip
+    that uses one where the other belongs."""
+    directory = tmp_path / "agents" / dir_name
     directory.mkdir(parents=True, exist_ok=True)
     return Persona(
-        username="zenith",
+        username=username,
         directory=directory,
         backend=backend,
         rhythm_text=rhythm_text,
+        board=board,
         raw="PERSONA",
     )
 
@@ -69,6 +83,7 @@ def _run(
     health_check: Callable[[], bool] | None = None,
     dry_run: bool = False,
     rng: random.Random | None = None,
+    access_key: str | None = None,
 ) -> ActResult:
     return run_act(
         persona=persona or _persona(tmp_path),
@@ -80,6 +95,7 @@ def _run(
         rng=rng or random.Random(0),
         health_check=health_check or (lambda: True),
         dry_run=dry_run,
+        access_key=access_key,
     )
 
 
@@ -138,6 +154,23 @@ def _scenario(name: str, tmp_path: Path) -> ActResult:
         backend = StubBackend('{"plan":[{"action":"nothing"}]}')
         return _run(tmp_path, backend=backend)
 
+    if name == "planner_returned_empty_plan":
+        # The SECOND route to PLANNER_EMPTY (fix round 1, item 1): the
+        # backend's own JSON is `{"plan":[]}` -- `normalize_plan` yields
+        # `Plan(actions=[])`, so `guarded.actions == []` AND
+        # `guarded.vetoed == []` with NOTHING for guardrails to have
+        # removed, because there was never anything in the plan to begin
+        # with. This is `round.py`'s `if not guarded.actions:` branch, NOT
+        # the solo-`[nothing]` branch `model_chose_nothing` exercises --
+        # the two reach `PLANNER_EMPTY` through different code paths, and
+        # this scenario was previously untested: flipping
+        # `ActOutcome.VETOED_EMPTY if guarded.vetoed else
+        # ActOutcome.PLANNER_EMPTY` to always return `VETOED_EMPTY` failed
+        # no test before this scenario existed. Mutation this pins: that
+        # exact flip.
+        backend = StubBackend('{"plan":[]}')
+        return _run(tmp_path, backend=backend)
+
     if name == "backend_silent":
         # Mutation this pins: swap SilentBackend for a StubBackend that
         # returns real JSON and this becomes a landed/vetoed outcome, not
@@ -167,6 +200,7 @@ def _scenario(name: str, tmp_path: Path) -> ActResult:
         ("some_actions_fail", ActOutcome.LANDED_PARTIAL, True),
         ("guardrails_empty_the_plan", ActOutcome.VETOED_EMPTY, True),
         ("model_chose_nothing", ActOutcome.PLANNER_EMPTY, True),
+        ("planner_returned_empty_plan", ActOutcome.PLANNER_EMPTY, True),
         ("backend_silent", ActOutcome.BACKEND_UNAVAILABLE, False),
         ("platform_unreachable", ActOutcome.OFFLINE, False),
         # Bash treats "every planned action failed" as rc=75 and skips the
@@ -187,6 +221,32 @@ def test_outcome_mapping(
     assert result.grants_dream is grants_dream
 
 
+def test_two_planner_empty_routes_have_different_vetoed_shapes(tmp_path: Path) -> None:
+    """The deliverable's missing cell (fix round 1, item 1): both
+    `model_chose_nothing` and `planner_returned_empty_plan` land on
+    `PLANNER_EMPTY`, but they reach it through genuinely different guardrail
+    outputs -- a solo `[nothing]` that SURVIVED guardrails (non-empty
+    `guarded.actions`, `is_solo_nothing` override) vs. an empty plan that
+    guardrails never touched at all (`guarded.actions == []`,
+    `guarded.vetoed == []`). Both must have an empty `vetoed` list -- that
+    is what distinguishes PLANNER_EMPTY from VETOED_EMPTY -- but they are
+    not the same code path, which is why flipping `round.py`'s
+    `VETOED_EMPTY if guarded.vetoed else PLANNER_EMPTY` ternary only shows
+    up if BOTH routes are tested."""
+    empty_plan_result = _scenario("planner_returned_empty_plan", tmp_path)
+    solo_nothing_result = _scenario("model_chose_nothing", tmp_path)
+    assert empty_plan_result.outcome is ActOutcome.PLANNER_EMPTY
+    assert solo_nothing_result.outcome is ActOutcome.PLANNER_EMPTY
+    assert empty_plan_result.vetoed == []
+    assert solo_nothing_result.vetoed == []
+    # The shape difference the two routes actually take: the empty-plan
+    # route never reaches execute_action (nothing to execute), the
+    # solo-nothing route does (for lab-event/log parity -- see
+    # test_solo_nothing_still_executes_for_lab_event_parity).
+    assert empty_plan_result.results == []
+    assert len(solo_nothing_result.results) == 1
+
+
 def test_every_action_failing_logs_fail_and_records_landed_zero(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -198,6 +258,26 @@ def test_every_action_failing_logs_fail_and_records_landed_zero(
     assert result.landed == 0
     assert result.attempted == 1
     assert "FAIL zenith — all 1 planned actions failed; dream will be skipped" in caplog.text
+
+
+def test_fail_log_uses_the_directory_name_not_the_username(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fix round 1, item 2: Bash's own FAIL line (`auto-run.sh:763`) is
+    keyed on `$agent_name` (`basename "$agent_dir"`), not the `Username`
+    bullet -- an earlier version of this log call passed `persona.username`
+    instead, a slip the default `_persona()` fixture could never catch
+    because it always sets `username` and `dir_name` to the same string.
+    This test sets them apart on purpose: `directory.name` must appear in
+    the log line, and the (deliberately different) `username` must not."""
+    persona = _persona(tmp_path, username="not-the-directory-name", dir_name="zenith")
+    post_id = "p" * 24
+    backend = StubBackend(f'{{"plan":[{{"action":"like","postId":"{post_id}"}}]}}')
+    resources = FakeResources(like_raises=ApiError(500, "boom", None))
+    with caplog.at_level(logging.WARNING, logger="swil_agent.act.round"):
+        _run(tmp_path, persona=persona, backend=backend, resources=resources)
+    assert "FAIL zenith — all 1 planned actions failed" in caplog.text
+    assert "not-the-directory-name" not in caplog.text
 
 
 def test_backend_unavailable_is_not_the_same_as_planner_empty(tmp_path: Path) -> None:
@@ -350,6 +430,23 @@ def test_memory_line_for_post_includes_the_image_tag(tmp_path: Path) -> None:
     assert lines == ["2026-08-17 | post | id=post-1 | [img:city night] look"]
 
 
+def test_memory_line_image_tag_is_never_doubled_text_collapsed(tmp_path: Path) -> None:
+    """Fix round 1, item 3: `executor.py`'s module docstring is explicit
+    that `collapse_doubled_text` applies to `post.text`/`comment.text`/
+    `echo.text`/`dm.text` and NEVER to `imageTopic` -- an earlier version of
+    `round.py`'s `_memory_note` ran `image_topic` through the same
+    collapsing function it used for `text`, which could make the
+    `[img:...]` memory-line tag disagree with the topic string actually
+    used to fetch the image. This exact literal (`"citynight" * 6`, >= 40
+    chars and an exact self-duplicate) is the one `test_executor.py`'s own
+    `test_image_topic_is_not_collapsed` uses to prove the same rule at the
+    executor layer; reused here so the two layers are pinned by an
+    identical input, not merely similarly-worded assertions."""
+    topic = "citynight" * 6
+    lines = _run_and_collect_memory(tmp_path, [Action(kind="post", text="x", image_topic=topic)])
+    assert lines == [f"2026-08-17 | post | id=post-1 | [img:{topic}] x"]
+
+
 def test_memory_line_for_comment_includes_parent_id_on_a_real_reply(tmp_path: Path) -> None:
     post_id = "p" * 24
     parent_id = "c" * 24
@@ -395,10 +492,14 @@ def test_memory_line_for_echo_without_a_quote_has_no_trailing_tag(tmp_path: Path
     assert lines == [f"2026-08-17 | echo | id=post-1 echoOf={post_id}"]
 
 
-def test_memory_line_for_dm_uses_message_id_not_conversation_id(tmp_path: Path) -> None:
-    """Documented divergence: `Resources.send_dm` never surfaces the
-    conversation id it resolved, only the created message id -- see
-    `act/round.py`'s `_memory_note` docstring and task-7-report.md.
+def test_memory_line_for_dm_matches_swil_sh_711_byte_for_byte(tmp_path: Path) -> None:
+    """Fix round 1, item 4: `swil.sh:711`'s own `_remember` call is
+    `_remember "dm | to=$RECIPIENT conversationId=$CONV_ID | ${TEXT:0:80}"`.
+    `Resources.send_dm` now returns `(conversation_id, message_id)`
+    (resources.py/executor.py, this same fix round) and `ActionResult`
+    carries the conversation id in its own field, so this line now
+    byte-matches the Bash shape instead of the earlier `messageId=`
+    substitute.
 
     `vex` must be pre-populated as a contact or guardrails' stage 4 (DM
     recipient must be in `ctx.contacts`) drops the action before it ever
@@ -408,7 +509,7 @@ def test_memory_line_for_dm_uses_message_id_not_conversation_id(tmp_path: Path) 
     lines = _run_and_collect_memory(
         tmp_path, [Action(kind="dm", username="vex", text="hey")], resources=resources
     )
-    assert lines == ["2026-08-17 | dm | to=vex messageId=dm-1 | hey"]
+    assert lines == ["2026-08-17 | dm | to=vex conversationId=conv-1 | hey"]
 
 
 def test_a_dm_outside_contacts_is_vetoed_not_executed(tmp_path: Path) -> None:
@@ -484,3 +585,120 @@ def test_offline_carries_neither_context_nor_plan(tmp_path: Path) -> None:
     result = _run(tmp_path, health_check=lambda: False)
     assert result.context is None
     assert result.plan is None
+
+
+# ── board resolution (fix round 1, item 5) ──────────────────────────────────
+
+
+def test_board_id_is_resolved_from_persona_board_and_threaded_into_the_post(
+    tmp_path: Path,
+) -> None:
+    persona = _persona(tmp_path, board="tech")
+    resources = FakeResources()
+    resources.board_lookup = {"tech": "board-1"}
+    backend = StubBackend('{"plan":[{"action":"post","text":"hello"}]}')
+    _run(tmp_path, persona=persona, backend=backend, resources=resources)
+    assert resources.created_posts[0].board_id == "board-1"
+    assert resources.get_boards_calls == 1
+
+
+def test_no_board_bullet_never_calls_get_boards(tmp_path: Path) -> None:
+    """Mutation this pins: dropping the `if persona.board:` guard would make
+    every round -- even one with no `Board:` bullet at all -- pay a network
+    call for nothing, matching Bash's own `if [[ -n "$POST_BOARD" ]]`."""
+    persona = _persona(tmp_path, board=None)
+    resources = FakeResources()
+    backend = StubBackend('{"plan":[{"action":"post","text":"hello"}]}')
+    _run(tmp_path, persona=persona, backend=backend, resources=resources)
+    assert resources.get_boards_calls == 0
+    assert resources.created_posts[0].board_id is None
+
+
+def test_board_resolution_failure_degrades_to_an_unfiled_post(tmp_path: Path) -> None:
+    """Matches swil.sh's own comment: "degrades to an unfiled post if the
+    endpoint is unavailable ... never blocks" -- a failed GET /boards must
+    not cost the round its post."""
+    persona = _persona(tmp_path, board="tech")
+    resources = FakeResources()
+    resources.fail("get_boards")
+    backend = StubBackend('{"plan":[{"action":"post","text":"hello"}]}')
+    result = _run(tmp_path, persona=persona, backend=backend, resources=resources)
+    assert result.outcome is ActOutcome.LANDED_ALL
+    assert resources.created_posts[0].board_id is None
+
+
+def test_board_lookup_miss_also_degrades_to_an_unfiled_post(tmp_path: Path) -> None:
+    """`persona.board` names a slug `get_boards()` doesn't have -- a plain
+    dict miss, not an `ApiError` -- must degrade the same way as an outright
+    failed lookup, not raise a `KeyError` out of `run_act`."""
+    persona = _persona(tmp_path, board="nonexistent-slug")
+    resources = FakeResources()
+    resources.board_lookup = {"tech": "board-1"}
+    backend = StubBackend('{"plan":[{"action":"post","text":"hello"}]}')
+    _run(tmp_path, persona=persona, backend=backend, resources=resources)
+    assert resources.created_posts[0].board_id is None
+
+
+def test_board_resolution_is_skipped_when_the_plan_ends_up_empty(tmp_path: Path) -> None:
+    """Board resolution happens after the empty-plan/dry_run early returns
+    (round.py), so a round that never reaches execution never pays the
+    network call either -- proven directly, not just implied by "once per
+    round"."""
+    persona = _persona(tmp_path, board="tech", rhythm_text="已有一条发帖记录时本轮不再发帖。")
+    backend = StubBackend('{"plan":[{"action":"post","text":"hello"}]}')
+    memory_text = f"2026-08-17 | post | id={'a' * 24} | earlier\n"
+    resources = FakeResources()
+    result = _run(
+        tmp_path, persona=persona, backend=backend, memory_text=memory_text, resources=resources
+    )
+    assert result.outcome is ActOutcome.VETOED_EMPTY
+    assert resources.get_boards_calls == 0
+
+
+# ── unsplash access_key (fix round 1, item 6) ───────────────────────────────
+
+
+def test_access_key_is_threaded_into_execute_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_act` does not resolve its own Unsplash credential -- it is a
+    plain, caller-supplied parameter (ruling, fix round 1 item 6). Spied at
+    the `execute_action` call site (patching the name `round.py` imported
+    it under) since `FakeResources` has no visibility into `access_key`
+    itself -- that argument only ever reaches a real `ImageFetcher`, which
+    this round never exercises (no `imageTopic` in the plan below)."""
+    import swil_agent.act.round as round_module
+
+    captured: dict[str, object] = {}
+    original = round_module.execute_action
+
+    def _spy(resources: object, action: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return original(resources, action, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(round_module, "execute_action", _spy)
+    backend = StubBackend('{"plan":[{"action":"nothing"}]}')
+    _run(tmp_path, backend=backend, access_key="unsplash-test-key")
+    assert captured["access_key"] == "unsplash-test-key"
+
+
+def test_access_key_defaults_to_empty_string_not_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`execute_action`'s own default is `access_key: str = ""` (routes
+    straight to the Picsum fallback) -- `run_act`'s `access_key or ""` must
+    never let a bare `None` reach it, which would be a `str | None` where
+    `execute_action`'s signature demands `str`."""
+    import swil_agent.act.round as round_module
+
+    captured: dict[str, object] = {}
+    original = round_module.execute_action
+
+    def _spy(resources: object, action: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return original(resources, action, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(round_module, "execute_action", _spy)
+    backend = StubBackend('{"plan":[{"action":"nothing"}]}')
+    _run(tmp_path, backend=backend)  # access_key left at its default (None)
+    assert captured["access_key"] == ""

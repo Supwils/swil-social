@@ -146,3 +146,31 @@ def test_persona_and_llm_do_not_import_api() -> None:
         for path in (PACKAGE / subpackage).rglob("*.py"):
             for module in _imported_modules(path):
                 assert not module.startswith("swil_agent.api"), f"{path} imports {module}"
+
+
+def test_drift_module_does_no_io_beyond_reading_anchor_files() -> None:
+    """`dream/drift.py` is pure math plus one file read (`resolve_anchor_text`).
+    This is what makes the routines it carries -- cosine similarity, aspect
+    breach, pairwise variance -- callable from a plain test with no daemon
+    and no network. The original Bash form was importable by nothing but a
+    shell, which is exactly why `_pairwise_variance`'s stdin-heredoc bug went
+    undetected for months (see `test_drift.py`'s module docstring).
+
+    AST-based via `_imported_modules` (the same helper `test_persona_and_llm_do_not_import_api`
+    uses immediately above for the identical dependency-direction shape), not
+    a substring search over the source text. A substring check for the
+    literal strings `"from ..api"` / `"from ..llm"` only catches the
+    relative-import spelling -- but every import anywhere under `swil_agent/`
+    is written absolute (`from swil_agent.api... import ...`), so that
+    spelling never appears in this codebase and the check was blind to the
+    only import style that could actually regress this module. `httpx` and
+    `subprocess` get the same treatment for the same reason: an `import
+    httpx as h` or any other aliasing would also have slipped past a bare
+    substring search.
+    """
+    imported = _imported_modules(PACKAGE / "dream" / "drift.py")
+    for module in imported:
+        top = module.split(".")[0]
+        assert top not in ("httpx", "subprocess"), f"drift.py imports {module}"
+        assert not module.startswith("swil_agent.api"), f"drift.py imports {module}"
+        assert not module.startswith("swil_agent.llm"), f"drift.py imports {module}"

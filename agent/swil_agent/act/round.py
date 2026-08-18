@@ -33,6 +33,7 @@ from swil_agent.act.context import build_context
 from swil_agent.act.executor import execute_action
 from swil_agent.act.guardrails import apply_guardrails
 from swil_agent.act.planner import plan_round
+from swil_agent.api.client import ApiError
 from swil_agent.api.resources import Resources
 from swil_agent.llm.base import Backend
 from swil_agent.llm.extract import collapse_doubled_text
@@ -68,24 +69,38 @@ def allowed_for(persona: Persona) -> list[str]:
     return ["post", "nothing"] if persona.backend == "codex" else []
 
 
-def _memory_text(raw: str | None) -> str:
-    """Whitespace-clean + doubled-text-collapse one field for a memory.md
-    note (contract `02` §4.2, cross-cutting facts).
+def _memory_field(raw: str | None) -> str:
+    """Whitespace-clean one field for a memory.md note, WITHOUT the
+    doubled-text collapse (contract `02` §4.2, cross-cutting facts).
 
     Mirrors `tr -d '\\n' | sed 's/  */ /g'` then `.strip()`, exactly like
-    `act/executor.py`'s private `_clean` applies to the copy of the text it
+    `act/executor.py`'s private `_clean` applies to the copy of the field it
     sends to the API -- reproduced here rather than imported because the
     memory line is built from the ORIGINAL `Action` the guardrails approved,
     independently of whatever the executor already did with its own copy of
-    the same field on the way to the wire. `test_memory_note_collapses_...`
-    pins this against the exact shape the brief specifies; a divergence
-    between this and `executor._clean` would show up as the two modules'
-    tests disagreeing on the same input, not as a shared import silently
-    drifting.
+    the same field on the way to the wire.
     """
     text = (raw or "").replace("\n", "")
-    text = _WHITESPACE_RUN.sub(" ", text).strip()
-    return collapse_doubled_text(text)
+    return _WHITESPACE_RUN.sub(" ", text).strip()
+
+
+def _memory_text(raw: str | None) -> str:
+    """`_memory_field` plus the doubled-text collapse -- for the fields
+    `act/executor.py`'s module docstring names as eligible for it:
+    `post.text`, `comment.text`, `echo.text`, `dm.text`. NEVER `imageTopic`
+    or a username (fix round 1, task-7 review item 3: an earlier version of
+    this module ran `image_topic` through this same collapsing function,
+    which could make the `[img:...]` memory-line tag disagree with the
+    topic string actually used to fetch the image -- a byte-compatibility
+    break in shared on-disk state that only fires on an exact-duplicate
+    topic string >= 40 chars, which is why it went unnoticed at first.
+    `_memory_field` above is the non-collapsing variant now used for
+    `image_topic`. `test_memory_note_collapses_...` pins this against the
+    exact shape the brief specifies; a divergence between this and
+    `executor._clean` would show up as the two modules' tests disagreeing
+    on the same input, not as a shared import silently drifting.
+    """
+    return collapse_doubled_text(_memory_field(raw))
 
 
 def _memory_username(raw: str | None) -> str:
@@ -116,7 +131,9 @@ def _memory_note(action: Action, result: ActionResult) -> str | None:
 
     if action.kind == "post":
         text = _memory_text(action.text)
-        topic = _memory_text(action.image_topic)
+        # image_topic never goes through the doubled-text collapse (fix
+        # round 1, item 3) -- _memory_field, not _memory_text.
+        topic = _memory_field(action.image_topic)
         img_tag = f"[img:{topic}] " if topic else ""
         return f"post | id={result.resource_id} | {img_tag}{text[:_MEMORY_PREVIEW_CAP]}"
     elif action.kind == "comment":
@@ -141,17 +158,20 @@ def _memory_note(action: Action, result: ActionResult) -> str | None:
         quote_tag = f" | {text[:_MEMORY_PREVIEW_CAP]}" if text else ""
         return f"echo | id={result.resource_id} echoOf={action.post_id}{quote_tag}"
     elif action.kind == "dm":
-        # DIVERGENCE (documented in task-7-report.md): Bash's dm memory line
-        # records `conversationId=$CONV_ID`, but `Resources.send_dm` (Task 1)
-        # returns only the created MESSAGE id -- the conversation id it
-        # resolved along the way never survives past that call, so this
-        # layer never has it either. Widening `send_dm`'s return contract to
-        # carry it is out of this task's scope; `messageId=` is substituted
-        # as the nearest identifier actually available, rather than
-        # fabricating a conversation id this module never had.
+        # Byte-matches swil.sh:711's `_remember "dm | to=$RECIPIENT
+        # conversationId=$CONV_ID | ${TEXT:0:80}"`. Fix round 1, item 4:
+        # an earlier version of this branch substituted `messageId=` here
+        # because `Resources.send_dm` used to return only the message id --
+        # `send_dm` now returns `(conversation_id, message_id)` (Task 1/6
+        # widened, see resources.py/executor.py) and `ActionResult` carries
+        # the conversation id in its own dedicated field, so this is a real
+        # byte-for-byte match now, not a documented substitute.
         text = _memory_text(action.text)
         username = _memory_username(action.username)
-        return f"dm | to={username} messageId={result.resource_id} | {text[:_MEMORY_PREVIEW_CAP]}"
+        return (
+            f"dm | to={username} conversationId={result.conversation_id} | "
+            f"{text[:_MEMORY_PREVIEW_CAP]}"
+        )
     else:
         # ActionKind is a closed 7-member Literal and `nothing` is handled by
         # the early return above, so every remaining member is covered by a
@@ -199,6 +219,7 @@ def run_act(
     context_now: str = "(no context file)",
     feed_context: str = "",
     dry_run: bool = False,
+    access_key: str | None = None,
 ) -> ActResult:
     """One act round: context -> rhythm -> plan -> guardrails -> execute.
 
@@ -287,16 +308,38 @@ def run_act(
         usually match but are not the same field (see CLAUDE.md's "Stray
         agents/<name> dir shadows a humans/ account" note for a case where
         they diverge). This function uses `persona.directory.name`
-        throughout -- for the lock path AND as `execute_action`'s
-        `agent_name` -- to stay faithful to what Bash actually keys on.
-      * `board_id` and the Unsplash `access_key` are left at `execute_action`'s
-        own defaults (unfiled post, empty key -> Picsum fallback):
-        `run_act`'s brief-specified signature carries neither a persona's
-        `Board` bullet resolution nor a settings object to source an
-        Unsplash key from. `act/executor.py`'s own docstring anticipates
-        board resolution belonging to "whichever caller assembles the
-        round" -- flagged here as a known, deliberate gap for a follow-up
-        task, not a silent omission.
+        throughout -- for the lock path, as `execute_action`'s `agent_name`,
+        AND as the identifier in the `landed == 0` FAIL log line (fix round
+        1, item 2: an earlier version of that one log call passed
+        `persona.username` instead, inconsistent with every other use of
+        `agent_name` in this function).
+      * `board_id` is resolved HERE, once per round, from `persona.board`
+        via `Resources.get_boards()` -- not injected as a parameter (fix
+        round 1, item 5). Unlike `health_check`, which needed injection
+        because nothing else in this package performs that raw unprefixed
+        HTTP GET, board lookup is a plain `Resources` read this function
+        already has everything it needs to make: `get_boards()` already
+        exists (Task 1) and `Persona.board` is already populated (persona
+        loader). Bash re-resolves on every `post` call (`swil.sh:426-432`),
+        but guardrails cap a round at one post, so resolving once per round,
+        after the empty-plan/dry_run early returns (i.e. only when there is
+        something left to execute), is behaviourally equivalent and cheaper.
+        Guarded on `persona.board` being truthy, exactly like Bash's own
+        `if [[ -n "$POST_BOARD" ]]`, so a persona with no `Board:` bullet
+        never pays the network call. A failed lookup (`ApiError`) degrades
+        to `None` -- an unfiled post -- matching Bash's own "degrades to an
+        unfiled post if the endpoint is unavailable, never blocks" comment.
+      * `access_key: str | None = None` (fix round 1, item 6) is a plain
+        `run_act` parameter, NOT resolved internally from `Settings`. Unlike
+        board resolution above (a plain `Resources` read, of the same kind
+        this function already performs several of), an Unsplash access key
+        is a credential, and credentials come from the composition root --
+        consistent with how
+        auth is already handled elsewhere in this package (`ApiClient`
+        takes a pre-built `AuthStrategy`, not a settings object it resolves
+        one from itself). Threaded straight into `execute_action`'s own
+        `access_key` parameter as `access_key or ""`, matching that
+        function's existing default.
     """
     if not health_check():
         return ActResult(outcome=ActOutcome.OFFLINE)
@@ -348,6 +391,17 @@ def run_act(
                 context=ctx,
             )
 
+        # Board resolution (fix round 1, item 5): once per round, only when
+        # there is something left to execute (guardrails already confirmed
+        # that above) and only when the persona declares a Board bullet at
+        # all -- see the docstring's "known decisions" section.
+        board_id: str | None = None
+        if persona.board:
+            try:
+                board_id = resources.get_boards().get(persona.board)
+            except ApiError:
+                board_id = None  # degrades to an unfiled post, matching swil.sh
+
         results: list[ActionResult] = []
         landed = 0
         for action in guarded.actions:
@@ -356,6 +410,8 @@ def run_act(
                 action,
                 agent_name=agent_name,
                 username=persona.username,
+                access_key=access_key or "",
+                board_id=board_id,
             )
             results.append(result)
             if result.landed:
@@ -366,9 +422,14 @@ def run_act(
         if is_solo_nothing:
             outcome = ActOutcome.PLANNER_EMPTY
         elif landed == 0:
+            # `agent_name` here (fix round 1, item 2), matching Bash's own
+            # `$agent_name` in this exact log line (auto-run.sh:763) --
+            # NOT `persona.username`, which an earlier version of this line
+            # used inconsistently with every other identifier in this
+            # function.
             logger.warning(
                 "FAIL %s — all %d planned actions failed; dream will be skipped",
-                persona.username,
+                agent_name,
                 attempted,
             )
             outcome = ActOutcome.LANDED_PARTIAL

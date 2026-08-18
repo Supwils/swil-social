@@ -27,10 +27,12 @@ These documents *describe* `agent/scripts/`. They are a convenience, not a secon
 truth. When a port is being written and the doc and the script disagree, read the script and
 implement that — then correct the doc, as was done for §2k below.
 
-This is not hypothetical. Two of the four documents have already been found wrong in ways a
-port would have inherited: one reconstructed a JSON file's shape from write code while 23
-real copies of it sat on disk, and one paraphrased a jq program in prose and lost two
-behaviours from it. Both were caught by an implementer reading the script anyway.
+This is not hypothetical. Three of the four documents have already been found wrong in ways
+a port would have inherited: one reconstructed a JSON file's shape from write code while 23
+real copies of it sat on disk, one paraphrased a jq program in prose and lost two behaviours
+from it, and one described a call's arguments accurately but incompletely, omitting the one
+argument (an empty model override) that changes which model tier a call actually runs on.
+All three were caught by an implementer reading the script anyway.
 
 ## Corrections applied after capture
 
@@ -95,3 +97,19 @@ message as `最近：（空）` where Bash renders `最近：`.
 
 Found during the Python port by an implementer who read `swil.sh:717-721` instead of
 trusting the summary. §2k now carries the program verbatim.
+
+### 4. Contract 03 §4.1 omitted `_diff_narrative`'s empty model argument
+
+The original text said the diff-narrative call "Uses `llm_text` with the SAME
+`$ai_backend` (not a neutral model)" and stopped there — true, but incomplete in a way
+that invites the wrong assumption. `_diff_narrative`'s own call (dream.sh:105-115) is
+`llm_text "$backend" "" "$sys" "$usr"`: the second argument (model) is a LITERAL empty
+string, not `$ai_model`. Per `llm.sh`'s `_llm_raw`, an empty model omits `--model`
+entirely, so the diff narrative always runs on the backend CLI's own default tier —
+NOT the persona's pinned `- **Model:**` bullet, even though the dream-rewrite call one
+step earlier does honour that bullet.
+
+Found during the Python port (task 12, fix round 1) by an implementer who read
+dream.sh:105-115 directly rather than trusting this doc, while deciding what model
+argument `dream/round.py`'s own diff-narrative helper should pass. §4.1 now states the
+empty argument and its consequence explicitly.
