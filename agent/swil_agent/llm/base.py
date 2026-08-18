@@ -36,6 +36,29 @@ class BackendUnavailableError(RuntimeError):
     """
 
 
+class BackendBinaryMissingError(RuntimeError):
+    """argv[0] is not on PATH -- the CLI this backend shells out to is not
+    installed on this machine.
+
+    DELIBERATELY NOT a subclass of `BackendUnavailableError`, and that is the
+    whole point of it existing. Every "the LLM said nothing" call site --
+    `act/planner.py`'s `plan_round`, `dream/round.py`'s `_generate_candidate`
+    and `_diff_narrative`, `dream/distill.py`'s `distill_cards` -- catches
+    `BackendUnavailableError` and degrades to `None`/`""`, exactly as Bash's
+    `llm_text` returns empty for a dead model. That degradation is right for
+    a model that answered with nothing and WRONG for a binary that does not
+    exist: it turns "codex is not installed" into "codex had nothing to say",
+    which is how a whole round can silently drop every account on one backend
+    with no loud error (CLAUDE.md's own DeepSeek-key note, and the "no
+    response from codex" incidents).
+
+    As a sibling type it passes straight through all of those handlers to the
+    composition root, which is the only layer that knows the account name and
+    the remedy -- `cli.py`'s `_backend_setup_guard` turns it into an
+    `AccountSetupError` and exits 75 with both.
+    """
+
+
 class CompletionRequest(BaseModel):
     system: str
     user: str
@@ -88,6 +111,21 @@ class SubprocessRunner:
             )
         except subprocess.TimeoutExpired:
             return ""
+        except FileNotFoundError as exc:
+            # `subprocess.run` raises `FileNotFoundError` when argv[0] itself
+            # is not on PATH. Left raw it escapes as the SAME exception type
+            # "this account directory does not exist" uses, and `cli.py`'s
+            # `act` reported a missing `claude`/`codex` binary as exit 66,
+            # "no such account" -- pointing whoever is debugging at the
+            # roster instead of at PATH. This project has already lost real
+            # time to "no response from codex" incidents (CLAUDE.md); an
+            # exit code naming the wrong thing makes the next one worse.
+            #
+            # Re-raised as `BackendBinaryMissingError` -- see that class for
+            # why it is NOT a `BackendUnavailableError`. Deliberately not
+            # `return ""` either: an empty string is indistinguishable from a
+            # dead LLM and would cost the same diagnosis.
+            raise BackendBinaryMissingError(f"executable not found on PATH: {argv[0]!r}") from exc
         return completed.stdout
 
 

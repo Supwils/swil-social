@@ -1,4 +1,5 @@
 import json as _json
+import logging
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -221,23 +222,46 @@ def test_follow_succeeds_on_204_no_content() -> None:
     _resources(handler).follow("ada")  # must not raise
 
 
-def test_follow_treats_already_following_conflict_as_success() -> None:
-    """follows.service.ts throws AppError.conflict('Already following this
-    user') -> 409 {"error": {"code": "CONFLICT", ...}}. Per the Bash
-    contract this must be swallowed as success, deliberately, not by an
-    accidentally-masked exit code."""
+def test_follow_raises_on_already_following_conflict(caplog: pytest.LogCaptureFixture) -> None:
+    """RULING R20 — this method must NOT swallow the 409, and the inverted
+    assertion is the point of this test.
+
+    `follows.service.ts` throws `AppError.conflict('Already following this
+    user')` -> 409 `{"error": {"code": "CONFLICT", …}}`. This method used to
+    `return` on it, on the reasoning that "treating CONFLICT as success
+    matches the Bash contract". It does not. `swil.sh` runs under
+    `set -euo pipefail` and `_curl` returns 1 for any status >= 400
+    (swil.sh:132-135), so `swil.sh follow` exits NON-ZERO on a 409 and
+    `auto-run.sh:243-252` takes its `else` branch: a `WARN` line, a `warn`
+    lab event, and (one level down, in the aborted `swil.sh` case) no
+    `_remember` call at all.
+
+    Swallowing it here mislabelled all three at once. Raising is also the
+    only shape a caller cannot ignore silently -- a returned flag can be
+    dropped on the floor, which is how the defect survived three reviews.
+
+    Mutation this catches: restoring `if exc.code == "CONFLICT": return`.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             409, json={"error": {"code": "CONFLICT", "message": "Already following this user"}}
         )
 
-    _resources(handler).follow("ada")  # must not raise
+    with pytest.raises(ApiError) as excinfo:
+        _resources(handler).follow("ada")
+    assert excinfo.value.status == 409
+    assert excinfo.value.code == "CONFLICT"
+    # And it is not downgraded to a log line on the way out either.
+    assert caplog.records == []
 
 
 def test_follow_propagates_non_conflict_errors() -> None:
-    """A 404 (target user does not exist) must NOT be swallowed the way
-    CONFLICT is — only the specific "already following" case is a no-op."""
+    """A 404 (target user does not exist) propagates too — after R20 every
+    non-2xx does, and this test's value is now that CONFLICT and NOT_FOUND
+    behave identically, exactly as they do in Bash (whose own message says
+    "likely already following" precisely because it cannot tell them
+    apart)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -721,3 +745,85 @@ def test_create_snapshot_raises_write_not_verified_without_id() -> None:
 
     with pytest.raises(WriteNotVerifiedError):
         _resources(handler).create_snapshot("zenith", {"contentHash": "abc"})
+
+
+# ── mark_notifications_read (swil.sh:657-664) ─────────────────────────────
+
+
+def test_mark_notifications_read_without_ids_sends_the_all_body() -> None:
+    """`swil.sh mark-notifications-read` -> `POST /notifications/read
+    {"all":true}`. The server's `readBody` is a strict `z.union` of
+    `{all: true}` XOR `{ids: [...]}`, so the two bodies must never merge."""
+    seen: list[dict[str, object]] = []
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        assert request.url.path == "/api/v1/notifications/read"
+        seen.append(_json.loads(request.content))
+        return httpx.Response(204)
+
+    _resources(handler).mark_notifications_read()
+
+    assert methods == ["POST"]
+    assert seen == [{"all": True}]
+
+
+def test_mark_notifications_read_with_ids_sends_the_ids_body() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(_json.loads(request.content))
+        return httpx.Response(204)
+
+    _resources(handler).mark_notifications_read(["a" * 24, "b" * 24])
+
+    assert seen == [{"ids": ["a" * 24, "b" * 24]}]
+
+
+def test_mark_notifications_read_with_an_empty_list_sends_nothing() -> None:
+    """The server's `ids` branch is `.min(1)` and would 400; `auto-run.sh:800`
+    guards the call the same way. Mutation this catches: dropping the early
+    return, which turns an idle round into a logged 400 every time."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        calls.append(request.method)
+        return httpx.Response(204)
+
+    _resources(handler).mark_notifications_read([])
+
+    assert calls == []
+
+
+def test_mark_notifications_read_tolerates_the_bare_204(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`noContent(res)` is `res.status(204).end()` -- an EMPTY body
+    (`notifications.routes.ts:64`). `ApiClient.post()` would raise `ApiError`
+    trying to `.json()`-parse that, so this must use `raw_post`.
+
+    Asserting on the LOG, not merely on "did not raise": this method's own
+    `except ApiError` swallows everything, so a `post`-based implementation
+    would still not raise -- it would just log a bogus
+    "mark-notifications-read failed (HTTP 204: )" on every single healthy
+    round, which is worse than the bug it hides. Mutation this catches:
+    swapping `raw_post` for `post`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    with caplog.at_level(logging.WARNING, logger="swil_agent.api.resources"):
+        _resources(handler).mark_notifications_read()
+
+    assert caplog.records == []
+
+
+def test_mark_notifications_read_never_raises_on_an_api_error() -> None:
+    """`auto-run.sh` ends both calls with `|| true`: housekeeping must never
+    fail a round whose actions already landed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"code": "INTERNAL"}})
+
+    _resources(handler).mark_notifications_read(["a" * 24])  # must not raise

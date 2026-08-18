@@ -378,3 +378,36 @@ def test_both_legs_transport_error_raises_image_fetch_error_not_httpx() -> None:
 
     with pytest.raises(ImageFetchError):
         fetch_unsplash_image("x", "key", transport=httpx.MockTransport(handler))
+
+
+def test_a_control_character_in_the_topic_degrades_instead_of_escaping() -> None:
+    r"""`httpx.InvalidURL` is NOT an `httpx.HTTPError` subclass, so before
+    ruling R22 it escaped this module entirely.
+
+    Reachable, and the consequence was a DEAD ROUND rather than a text-only
+    post: `_picsum_seed` replaces literal spaces only (faithfully -- Bash's
+    is `tr ' ' '-'`), so a TAB in a planner-supplied `imageTopic` survives
+    into the picsum URL, httpx rejects it as a non-printable ASCII
+    character, and the exception propagated out of `execute_action`, out of
+    `run_act`, and into `cli.py`'s guard as `SKIP <name> -- UNEXPECTED
+    InvalidURL` (exit 75) with every remaining action of that round
+    unexecuted. Bash degrades instead -- curl fails, `fetched=0`, and the
+    post goes out text-only -- so catching it is parity, not new policy.
+
+    Mutation this catches: dropping `httpx.InvalidURL` from either `except`
+    tuple. The test then errors with `InvalidURL` instead of raising
+    `ImageFetchError`.
+    """
+    with pytest.raises(ImageFetchError):
+        fetch_unsplash_image("city\tnight", "", transport=_never_called_transport())
+
+
+def _never_called_transport() -> httpx.MockTransport:
+    """The URL is rejected before any request is issued, so this handler
+    must never run -- if it does, the topic reached the wire sanitised and
+    the test is no longer exercising the bug."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError(f"request should never have been made: {request.url}")
+
+    return httpx.MockTransport(handler)

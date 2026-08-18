@@ -14,12 +14,17 @@ import logging
 import random
 from collections.abc import Callable
 from datetime import datetime
+from json import loads as _json_loads
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
 
-from swil_agent.act.round import allowed_for, run_act
-from swil_agent.api.client import ApiError
+from swil_agent.act.round import _memory_event, allowed_for, run_act
+from swil_agent.api.auth import ApiKeyAuth
+from swil_agent.api.client import ApiClient, ApiError
+from swil_agent.api.resources import Resources
 from swil_agent.llm.base import Backend
 from swil_agent.locks import LockBusy, act_lock_path
 from swil_agent.models import Action, ActOutcome, ActResult, Persona
@@ -702,3 +707,838 @@ def test_access_key_defaults_to_empty_string_not_none(
     backend = StubBackend('{"plan":[{"action":"nothing"}]}')
     _run(tmp_path, backend=backend)  # access_key left at its default (None)
     assert captured["access_key"] == ""
+
+
+# ── F4: a dry run must not contend for the account lock ────────────────────
+
+
+def test_dry_run_completes_while_someone_else_holds_the_lock(tmp_path: Path) -> None:
+    """A dry run executes nothing and writes nothing, so it needs no mutual
+    exclusion -- and taking the lock made the documented "safe inspection
+    command" actively unsafe: a dry run launched while a real Bash round was
+    live made THAT round lose the acquire race and SKIP
+    (`auto-run.sh:416-432` returns 75), silently costing the account its
+    round.
+
+    Mutation this catches: restoring the unconditional `with
+    FileLock(act_lock_path(...))` around the whole body -- `run_act` then
+    raises `LockBusy` here instead of returning a plan.
+    """
+    lock = act_lock_path(tmp_path, "zenith")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("999", encoding="utf-8")
+
+    result = _run(tmp_path, dry_run=True)
+
+    assert result.outcome is ActOutcome.PLANNER_EMPTY  # the solo-`nothing` plan
+    assert result.plan is not None
+    # Someone else's lock is still theirs, byte for byte.
+    assert lock.read_text(encoding="utf-8") == "999"
+
+
+def test_a_real_run_still_contends_for_the_lock(tmp_path: Path) -> None:
+    """The other half of the F4 change: skipping the lock is scoped to
+    `dry_run` ONLY. Mutation this catches: making the `nullcontext` branch
+    unconditional, which would let two concurrent real rounds interleave --
+    the duplicate-post/memory-corruption class the lock exists for."""
+    lock = act_lock_path(tmp_path, "zenith")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("999", encoding="utf-8")
+    with pytest.raises(LockBusy):
+        _run(tmp_path, dry_run=False)
+
+
+# ── F8: the agentBackend profile sync (auto-run.sh:473-494) ────────────────
+
+
+def test_agent_backend_is_synced_with_the_model_tier_suffix(tmp_path: Path) -> None:
+    """`"${ai_backend}${ai_model:+:$ai_model}"` -- the tier is the drift
+    experiment's independent variable, and until 2026-08-01 Bash sent the
+    bare backend, making every server-side record say "claude"."""
+    persona = _persona(tmp_path).model_copy(update={"backend": "claude", "model": "sonnet"})
+    resources = FakeResources()
+    _run(tmp_path, persona=persona, resources=resources)
+    assert resources.profile_patches == [{"agentBackend": "claude:sonnet"}]
+
+
+def test_agent_backend_without_a_model_bullet_has_no_trailing_colon(tmp_path: Path) -> None:
+    """`${ai_model:+...}` expands only for a NON-EMPTY model. Mutation this
+    catches: an unconditional f-string, which ships `"claude:None"` /
+    `"claude:"` for every account with no `- **Model:**` bullet -- four of
+    them today (CLAUDE.md's backend-bullet census)."""
+    resources = FakeResources()
+    _run(tmp_path, persona=_persona(tmp_path), resources=resources)
+    assert resources.profile_patches == [{"agentBackend": "claude"}]
+
+
+def test_a_failed_agent_backend_sync_warns_and_the_round_continues(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Bash's own comment: a bare `|| true` with stderr to /dev/null is what
+    hid a 403 on every `humans/` round for months. Non-fatal, but LOUD."""
+    resources = FakeResources(update_profile_raises=ApiError(403, "x" * 400, "FORBIDDEN"))
+    with caplog.at_level(logging.WARNING, logger="swil_agent.act.round"):
+        result = _run(tmp_path, resources=resources)
+    assert result.outcome is ActOutcome.PLANNER_EMPTY  # the round still ran
+    assert "agentBackend sync failed" in caplog.text
+    # Bash truncates to 160 chars (`${backend_sync_err:0:160}`); the 400-char
+    # body above proves the cap is applied rather than the message merely
+    # being short.
+    line = next(r.getMessage() for r in caplog.records if "agentBackend" in r.getMessage())
+    assert len(line.split("agentBackend sync failed: ", 1)[1]) == 160
+
+
+def test_dry_run_does_not_sync_the_agent_backend(tmp_path: Path) -> None:
+    """The sync is a PATCH -- a write -- and `--dry-run` is documented as
+    writing nothing."""
+    resources = FakeResources()
+    _run(tmp_path, resources=resources, dry_run=True)
+    assert resources.profile_patches == []
+
+
+# ── F3: smart mark-read (auto-run.sh:768-803) ─────────────────────────────
+
+
+def _notification(
+    notif_id: str, *, notif_type: str, post_id: str | None = None, comment_id: str | None = None
+) -> dict[str, object]:
+    item: dict[str, object] = {"id": notif_id, "type": notif_type}
+    if post_id is not None:
+        item["post"] = {"id": post_id}
+    if comment_id is not None:
+        item["comment"] = {"id": comment_id}
+    return item
+
+
+def test_a_plan_of_only_nothing_marks_everything_read(tmp_path: Path) -> None:
+    """`auto-run.sh:786-787`: an idle agent must not be stuck rereading the
+    same 8 items forever. `None` is the `{"all": true}` body."""
+    resources = FakeResources()
+    _run(tmp_path, resources=resources)  # default plan is a solo `nothing`
+    assert resources.marked_read == [None]
+
+
+def test_a_reply_marks_only_the_parent_comments_notification(tmp_path: Path) -> None:
+    """The `cid` clause: a reply matches that ONE `comment.id` and nothing
+    else. Mutation this catches: falling through to the postId clause for a
+    reply, which would also clear `n-post` below -- exactly the
+    "someone commented on X" context Bash's comment says must survive."""
+    post_id = "p" * 24
+    parent_id = "c" * 24
+    resources = FakeResources()
+    resources.notification_items = [
+        _notification("n-parent", notif_type="comment", post_id=post_id, comment_id=parent_id),
+        _notification("n-post", notif_type="comment", post_id=post_id, comment_id="d" * 24),
+    ]
+    backend = StubBackend(
+        json.dumps(
+            {
+                "plan": [
+                    {"action": "comment", "postId": post_id, "parentId": parent_id, "text": "hi"}
+                ]
+            }
+        )
+    )
+    _run(tmp_path, resources=resources, backend=backend)
+    assert resources.marked_read == [["n-parent"]]
+
+
+def test_a_top_level_comment_marks_only_response_type_notifications_on_its_post(
+    tmp_path: Path,
+) -> None:
+    """The `pid` clause: mention/comment/reply on that post, and only those.
+    Mutation this catches: dropping the type filter, which would also clear
+    the `like` and `follow` rows below."""
+    post_id = "p" * 24
+    resources = FakeResources()
+    resources.notification_items = [
+        _notification("n-mention", notif_type="mention", post_id=post_id),
+        _notification("n-comment", notif_type="comment", post_id=post_id),
+        _notification("n-reply", notif_type="reply", post_id=post_id),
+        _notification("n-like", notif_type="like", post_id=post_id),
+        _notification("n-follow", notif_type="follow"),
+        _notification("n-other-post", notif_type="comment", post_id="q" * 24),
+    ]
+    backend = StubBackend(
+        json.dumps({"plan": [{"action": "comment", "postId": post_id, "text": "hi"}]})
+    )
+    _run(tmp_path, resources=resources, backend=backend)
+    assert resources.marked_read == [["n-mention", "n-comment", "n-reply"]]
+
+
+def test_a_plan_with_no_comment_and_no_nothing_marks_nothing(tmp_path: Path) -> None:
+    """There is no third branch in Bash: a lone `like` clears no
+    notification. Mutation this catches: an unconditional `mark all` fallback
+    at the end of the block, which would wipe unread mentions the agent never
+    answered."""
+    post_id = "p" * 24
+    resources = FakeResources()
+    resources.notification_items = [_notification("n-1", notif_type="mention", post_id=post_id)]
+    backend = StubBackend(json.dumps({"plan": [{"action": "like", "postId": post_id}]}))
+    result = _run(tmp_path, resources=resources, backend=backend)
+    assert result.landed == 1
+    assert resources.marked_read == []
+
+
+def test_a_round_where_nothing_landed_marks_nothing(tmp_path: Path) -> None:
+    """Bash's mark-read block sits AFTER the `landed == 0` early return
+    (`auto-run.sh:762-765`), so those notifications survive to the next
+    round. Mutation this catches: hoisting the call above the `landed > 0`
+    guard."""
+    post_id = "p" * 24
+    resources = FakeResources(comment_returns_no_id=True)
+    resources.notification_items = [_notification("n-1", notif_type="mention", post_id=post_id)]
+    backend = StubBackend(
+        json.dumps({"plan": [{"action": "comment", "postId": post_id, "text": "hi"}]})
+    )
+    result = _run(tmp_path, resources=resources, backend=backend)
+    assert result.landed == 0
+    assert resources.marked_read == []
+
+
+def test_a_comment_matching_no_notification_marks_nothing_on_the_wire(tmp_path: Path) -> None:
+    """`_responded_notification_ids` returning `[]` reaches
+    `Resources.mark_notifications_read([])`, which sends NOTHING -- the
+    server's `ids` branch is `.min(1)` and `auto-run.sh:800` guards the call
+    the same way (`if [[ "$notif_ids_json" != "[]" ... ]]`).
+
+    Added by ruling R20's fake-fidelity audit: this is the state where a fake
+    that recorded the empty call would have diverged from the real method,
+    and the divergence would have been invisible because no test drove it."""
+    post_id = "p" * 24
+    resources = FakeResources()
+    # An unread notification the plan's comment does NOT respond to.
+    resources.notification_items = [_notification("n-1", notif_type="like", post_id=post_id)]
+    backend = StubBackend(
+        json.dumps({"plan": [{"action": "comment", "postId": post_id, "text": "hi"}]})
+    )
+    result = _run(tmp_path, resources=resources, backend=backend)
+    assert result.landed == 1
+    assert resources.marked_read == []
+
+
+def test_a_failed_notifications_read_degrades_to_marking_nothing(tmp_path: Path) -> None:
+    """`2>/dev/null || echo '[]'` around Bash's own re-read: housekeeping
+    must never turn a landed round into a failed one."""
+    post_id = "p" * 24
+    resources = FakeResources()
+    resources.fail("notifications")
+    backend = StubBackend(
+        json.dumps({"plan": [{"action": "comment", "postId": post_id, "text": "hi"}]})
+    )
+    result = _run(tmp_path, resources=resources, backend=backend)
+    assert result.outcome is ActOutcome.LANDED_ALL
+    assert resources.marked_read == []
+
+
+def test_dry_run_marks_no_notifications_read(tmp_path: Path) -> None:
+    resources = FakeResources()
+    _run(tmp_path, resources=resources, dry_run=True)
+    assert resources.marked_read == []
+
+
+# ── R19: a 409'd follow lands, but writes no memory line ──────────────────
+
+
+def test_a_successful_follow_still_writes_its_memory_line(tmp_path: Path) -> None:
+    """The other half: `swil.sh:682`'s `_remember "follow | @$USERNAME"` DOES
+    run on a genuine new follow, so the line itself is correct parity and must
+    not be lost while fixing the 409 case."""
+    lines = _run_and_collect_memory(tmp_path, [Action(kind="follow", username="vex")])
+    assert lines == ["2026-08-17 | follow | @vex"]
+
+
+def test_call_succeeded_defaults_to_landed_for_every_other_kind(tmp_path: Path) -> None:
+    """`_outcome` derives `call_succeeded` from `landed` unless a branch says
+    otherwise, so only `follow` can ever differ. Mutation this catches:
+    defaulting `call_succeeded` to a bare `True`, which would resurrect the
+    memory line for every FAILED post/comment/like/echo/dm as well -- a far
+    bigger contamination of `memory.md` than the one this ruling fixes."""
+    lines = _run_and_collect_memory(
+        tmp_path,
+        [Action(kind="like", post_id="p" * 24)],
+        resources=FakeResources(like_raises=ApiError(500, "boom", None)),
+    )
+    assert lines == []
+
+
+# ── R20: the 409 path, driven through the REAL Resources ──────────────────
+#
+# `FakeResources(follow_raises=...)` cannot drive this case. Its `follow()`
+# re-raises whatever it is handed, so the exception always reaches
+# `_execute_follow`'s `except` branch -- which is precisely the thing the real
+# method's CONFLICT-swallowing used to make unreachable. A fake whose
+# behaviour diverges from the method it stands in for is worse than no test:
+# it reports coverage OF the divergence. So these drive `run_act` with a real
+# `Resources` over `httpx.MockTransport`, and the 409 comes from the wire.
+
+
+def _recording_transport(
+    follow_status: int,
+) -> tuple[httpx.MockTransport, list[tuple[str, str]]]:
+    """A transport serving every endpoint one `run_act` round touches.
+
+    Reads (feed/notifications/conversations/contacts) answer with empty
+    envelopes so `build_context` produces a valid, empty context; the only
+    interesting response is `POST /users/vex/follow`, which answers
+    `follow_status`. Every request is recorded as `(method, path)` so a test
+    can assert the follow really was attempted rather than short-circuited
+    somewhere upstream.
+    """
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append((request.method, path))
+        if path == "/api/v1/users/vex/follow":
+            if follow_status == 204:
+                return httpx.Response(204)
+            return httpx.Response(
+                follow_status,
+                json={"error": {"code": "CONFLICT", "message": "Already following this user"}},
+            )
+        if path == "/api/v1/auth/me":
+            return httpx.Response(200, json={"data": {"user": {"username": "zenith"}}})
+        if path == "/api/v1/users/me":
+            return httpx.Response(200, json={"data": {}})
+        if path.endswith("/events"):
+            return httpx.Response(201, json={"data": {"event": {"id": "e1"}}})
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    return httpx.MockTransport(handler), seen
+
+
+def _live_resources(transport: httpx.MockTransport) -> Resources:
+    return Resources(ApiClient("https://example.test", ApiKeyAuth("k"), transport=transport))
+
+
+def test_an_already_following_409_warns_and_writes_no_memory_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """RULING R20. Bash splits this across two levels and the port has to too.
+
+    `swil.sh` runs under `set -euo pipefail` and `_curl` returns 1 for any
+    status >= 400 (swil.sh:132-135), so `swil.sh follow` exits NON-ZERO on a
+    409 and never reaches `_remember` (swil.sh:679-683). One level up,
+    `auto-run.sh:243-252` therefore takes its `else` branch -- `WARN <name>
+    follow @<user> failed (likely already following)` plus a `warn` lab event
+    -- and then `return 0`, because "already following" is the common outcome
+    and is not a failed ROUND.
+
+    So the correct shape for a 409 is: landed, WARN, `warn` event, NO memory
+    line. Python previously produced landed, DONE, `success` event, AND a
+    memory line -- wrong on three counts, including mislabelling the case in
+    `/lab`.
+
+    Mutation this catches: restoring `if exc.code == "CONFLICT": return` in
+    `Resources.follow`. Under it the round reports DONE, files a `success`
+    event, and appends `2026-08-17 | follow | @vex`.
+    """
+    transport, seen = _recording_transport(409)
+    persona = _persona(tmp_path)
+    backend = StubBackend(_plan_json([Action(kind="follow", username="vex")]))
+
+    with caplog.at_level(logging.WARNING, logger="swil_agent.act.executor"):
+        result = run_act(
+            persona=persona,
+            resources=_live_resources(transport),
+            backend=backend,
+            memory_text="",
+            agent_root=tmp_path,
+            now=NOW,
+            rng=random.Random(0),
+            health_check=lambda: True,
+        )
+
+    assert ("POST", "/api/v1/users/vex/follow") in seen  # it really was attempted
+    # Still a landed round -- `grants_dream` must not change.
+    assert result.landed == 1
+    assert result.attempted == 1
+    assert result.outcome is ActOutcome.LANDED_ALL
+    assert result.grants_dream is True
+    # Bash's `else` branch, both channels.
+    assert "WARN zenith follow @vex failed (likely already following)" in caplog.text
+    assert "DONE zenith followed @vex" not in caplog.text
+    assert "likely already following" in (result.results[0].detail or "")
+    # ... and NOTHING in memory.md.
+    assert not (persona.directory / "memory.md").exists()
+
+
+def test_a_409_files_a_warn_lab_event_not_a_success_one(tmp_path: Path) -> None:
+    """The `/lab` half of the same defect, asserted on the wire rather than
+    on a fake: `emit_lab_event "cycle" "act" "warn" "follow" "follow request
+    failed" "<target>"` (auto-run.sh:248). Mutation this catches: the same
+    restored CONFLICT swallow, which files `success`/`followed @vex`."""
+    transport, _ = _recording_transport(409)
+    events: list[dict[str, Any]] = []
+
+    def capturing(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events"):
+            events.append(_json_loads(request.content))
+        return transport.handler(request)  # type: ignore[attr-defined]
+
+    run_act(
+        persona=_persona(tmp_path),
+        resources=_live_resources(httpx.MockTransport(capturing)),
+        backend=StubBackend(_plan_json([Action(kind="follow", username="vex")])),
+        memory_text="",
+        agent_root=tmp_path,
+        now=NOW,
+        rng=random.Random(0),
+        health_check=lambda: True,
+    )
+
+    follow_events = [e for e in events if e.get("action") == "follow"]
+    assert [e["outcome"] for e in follow_events] == ["warn"]
+    assert follow_events[0]["summary"] == "follow request failed"
+    assert follow_events[0]["reason"] == "vex"
+
+
+def test_a_genuine_204_follow_still_lands_dones_and_remembers(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The other half, also through the real `Resources`: `swil.sh:682`'s
+    `_remember "follow | @$USERNAME"` DOES run on a genuine new follow, so
+    fixing the 409 case must not cost the success case its line, its DONE, or
+    its `success` event."""
+    transport, seen = _recording_transport(204)
+    persona = _persona(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="swil_agent.act.executor"):
+        result = run_act(
+            persona=persona,
+            resources=_live_resources(transport),
+            backend=StubBackend(_plan_json([Action(kind="follow", username="vex")])),
+            memory_text="",
+            agent_root=tmp_path,
+            now=NOW,
+            rng=random.Random(0),
+            health_check=lambda: True,
+        )
+
+    assert ("POST", "/api/v1/users/vex/follow") in seen
+    assert result.landed == 1
+    assert "DONE zenith followed @vex" in caplog.text
+    assert (persona.directory / "memory.md").read_text(encoding="utf-8").splitlines() == [
+        "2026-08-17 | follow | @vex"
+    ]
+
+
+# ── R21: `_remember`'s SECOND lab event (swil.sh:192-202) ─────────────────
+#
+# `_remember` does two things per memory line, not one: it appends to
+# memory.md AND fires an independent `memory/memory/success` event. So a
+# single successful `post` produces TWO POSTs to /agents/{username}/events
+# under Bash -- `cycle/act/success` from auto-run.sh's `emit_lab_event`, and
+# `memory/memory/success` from swil.sh's `_remember`. Python emitted one.
+#
+# Driven on the wire rather than through `FakeResources`, for two reasons:
+# the count of POSTs to /events IS the assertion, and `FakeResources
+# .lab_event` can raise where the real one contractually cannot -- so a fake
+# would be modelling a stricter world than production has.
+
+_POST_ID = "aaaaaaaaaaaaaaaaaaaaaaaa"
+_COMMENT_ID = "bbbbbbbbbbbbbbbbbbbbbbbb"
+_TARGET_POST_ID = "cccccccccccccccccccccccc"
+_CONV_ID = "dddddddddddddddddddddddd"
+_MESSAGE_ID = "eeeeeeeeeeeeeeeeeeeeeeee"
+
+
+def _wire_transport(
+    *,
+    events: list[dict[str, Any]],
+    events_status: int = 201,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    contacts: tuple[str, ...] = (),
+) -> httpx.MockTransport:
+    """Serves every endpoint one `run_act` round touches, recording each
+    `/agents/{username}/events` body into `events` in call order.
+
+    `events_status` lets a test answer that endpoint with a failure;
+    `on_event` fires at the moment the event POST is made, which is how the
+    ordering test observes whether memory.md was written first.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/events"):
+            body = _json_loads(request.content)
+            events.append(body)
+            if on_event is not None:
+                on_event(body)
+            if events_status >= 400:
+                return httpx.Response(events_status, json={"error": {"code": "INTERNAL"}})
+            return httpx.Response(events_status, json={"data": {"event": {"id": "e1"}}})
+        if path == "/api/v1/posts":
+            return httpx.Response(201, json={"data": {"post": {"id": _POST_ID}}})
+        if path.endswith("/comments"):
+            return httpx.Response(201, json={"data": {"comment": {"id": _COMMENT_ID}}})
+        if path.endswith("/like"):
+            return httpx.Response(200, json={"data": {"likeCount": 1, "liked": True}})
+        if path.endswith("/follow"):
+            return httpx.Response(204)
+        # `send_dm`'s two calls. Branch on METHOD, not just path: the same
+        # `/conversations` path is a GET in `build_context` (the dm-context
+        # block) and a POST here.
+        if path == "/api/v1/conversations" and request.method == "POST":
+            return httpx.Response(201, json={"data": {"conversation": {"id": _CONV_ID}}})
+        if path.endswith("/messages"):
+            return httpx.Response(201, json={"data": {"message": {"id": _MESSAGE_ID}}})
+        if path == "/api/v1/users/zenith/following":
+            return httpx.Response(
+                200, json={"data": {"items": [{"username": c} for c in contacts]}}
+            )
+        if path == "/api/v1/auth/me":
+            return httpx.Response(200, json={"data": {"user": {"username": "zenith"}}})
+        if path == "/api/v1/users/me":
+            return httpx.Response(200, json={"data": {}})
+        return httpx.Response(200, json={"data": {"items": []}})
+
+    return httpx.MockTransport(handler)
+
+
+def _run_on_the_wire(tmp_path: Path, action: Action, transport: httpx.MockTransport) -> ActResult:
+    return run_act(
+        persona=_persona(tmp_path),
+        resources=_live_resources(transport),
+        backend=StubBackend(_plan_json([action])),
+        memory_text="",
+        agent_root=tmp_path,
+        now=NOW,
+        rng=random.Random(0),
+        health_check=lambda: True,
+    )
+
+
+def _memory_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in events if e.get("type") == "memory"]
+
+
+def test_a_landed_post_emits_two_events_the_act_one_and_the_memory_one(
+    tmp_path: Path,
+) -> None:
+    """`_remember` (swil.sh:192-202) fires a SECOND, independent event for
+    every memory line, so one successful `post` is two POSTs to
+    /agents/{username}/events -- `cycle/act/success` then
+    `memory/memory/success`. Python emitted only the first, for every write
+    action kind, halving what `/lab`'s memory surfaces saw.
+
+    Captured in contract 02 §372 and then lost between the contract and the
+    plan: no task covered it, no ruling decided it, no §15 row recorded it.
+
+    Mutation this catches: deleting `_write_memory_line`'s
+    `resources.lab_event(...)` call -- the list below drops to one entry.
+    """
+    events: list[dict[str, Any]] = []
+    result = _run_on_the_wire(
+        tmp_path, Action(kind="post", text="hello"), _wire_transport(events=events)
+    )
+
+    assert result.landed == 1
+    assert sorted((e["type"], e["phase"], e["outcome"]) for e in events) == [
+        ("cycle", "act", "success"),
+        ("memory", "memory", "success"),
+    ]
+
+    # ORDER IS A KNOWN DIVERGENCE, asserted here so it stays visible rather
+    # than silently blessed. Bash fires the MEMORY event first: `swil.sh
+    # post` performs the write and calls `_remember` (which posts the memory
+    # event) entirely inside itself, and only when it returns does
+    # `auto-run.sh:175` call `emit_lab_event "cycle" "act" "success"`.
+    # Python is the reverse -- `execute_action` files its act event before
+    # returning, and `run_act` writes memory afterwards -- because the
+    # module seam puts memory.md in `act/round.py` and lab events for
+    # actions in `act/executor.py`. Both events land either way; only their
+    # arrival order at /agents/{u}/events differs (spec §15.1 row 13). If
+    # someone later reorders to match Bash, this assertion fails on purpose:
+    # update the §15 row with it.
+    assert [e["type"] for e in events] == ["cycle", "memory"]
+
+
+def test_the_memory_event_carries_the_whole_note_as_its_summary(tmp_path: Path) -> None:
+    """`_lab_event "memory" "memory" "success" "$action" "$note" "" ...` --
+    the summary is the ENTIRE flattened note, uncapped, unlike the act
+    events' 200-char cap. And `reason` is the 6th positional and is empty,
+    so `LabEvent.to_wire` omits it.
+
+    Mutation this catches: reusing the act path's `_SUMMARY_CAP`, or
+    summarising anything other than the note (e.g. just the text)."""
+    events: list[dict[str, Any]] = []
+    _run_on_the_wire(tmp_path, Action(kind="post", text="hello"), _wire_transport(events=events))
+
+    memory = _memory_events(events)[0]
+    assert memory["summary"] == f"post | id={_POST_ID} | hello"
+    assert memory["metrics"] == {}
+    assert "reason" not in memory
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_action", "expected_target"),
+    [
+        (Action(kind="post", text="hello"), "post", _POST_ID),
+        (
+            Action(kind="comment", post_id=_TARGET_POST_ID, text="hi"),
+            "comment",
+            _TARGET_POST_ID,
+        ),
+        (Action(kind="like", post_id=_TARGET_POST_ID), "like", _TARGET_POST_ID),
+        (Action(kind="follow", username="vex"), "follow", None),
+        (Action(kind="echo", post_id=_TARGET_POST_ID), None, _POST_ID),
+    ],
+)
+def test_the_memory_events_action_and_target_id_per_kind(
+    tmp_path: Path,
+    action: Action,
+    expected_action: str | None,
+    expected_target: str | None,
+) -> None:
+    """The two derivations `_remember` makes from the note, on every action
+    kind that can reach it:
+
+      * `action` = `awk -F'|' '{print $1}' | xargs`, kept only when it is in
+        the whitelist `post|comment|like|follow|unfollow|delete|nothing`
+        (swil.sh:196). `echo` is NOT in that whitelist, so its memory event
+        carries no action at all -- transcribed, not tidied.
+      * `targetId` = the FIRST `(id|postId|commentId)=[a-f0-9]{24}` match
+        (swil.sh:193). A `comment` note contains both `postId=` and
+        `commentId=`, and `head -1` takes the postId; a `follow` note has no
+        24-hex id anywhere, so the field is omitted entirely.
+
+    Mutations this catches: adding `echo`/`dm` to the whitelist; dropping
+    `head -1` (a comment would then report its commentId); anchoring the
+    regex (nothing would ever match).
+    """
+    events: list[dict[str, Any]] = []
+    _run_on_the_wire(tmp_path, action, _wire_transport(events=events))
+
+    memory = _memory_events(events)[0]
+    assert memory.get("action") == expected_action
+    assert memory.get("targetId") == expected_target
+
+
+def test_the_memory_line_is_on_disk_before_the_event_is_posted(tmp_path: Path) -> None:
+    """ORDER IS THE CONTRACT. `_remember` appends to memory.md (swil.sh:190)
+    BEFORE calling `_lab_event` (swil.sh:197/200), so an events outage still
+    leaves the line on disk -- and memory.md, not `/lab`, is what the next
+    dream reads.
+
+    Observed by reading the file from inside the events handler, at the
+    moment the POST is made. Mutation this catches: swapping the two
+    statements in `_write_memory_line`."""
+    events: list[dict[str, Any]] = []
+    persona_dir = tmp_path / "agents" / "zenith"
+    seen_at_memory_event: list[str] = []
+
+    def snapshot(body: dict[str, Any]) -> None:
+        if body.get("type") != "memory":
+            return
+        path = persona_dir / "memory.md"
+        seen_at_memory_event.append(path.read_text(encoding="utf-8") if path.is_file() else "")
+
+    _run_on_the_wire(
+        tmp_path,
+        Action(kind="post", text="hello"),
+        _wire_transport(events=events, on_event=snapshot),
+    )
+
+    # Keyed on the MEMORY event rather than on a positional index, so this
+    # keeps testing what it says even if the act/memory event order is ever
+    # changed to match Bash's (see the ordering note above).
+    assert seen_at_memory_event == [f"2026-08-17 | post | id={_POST_ID} | hello\n"]
+
+
+def test_a_failing_event_post_does_not_fail_the_round(tmp_path: Path) -> None:
+    """Bash ends `_lab_event`'s curl with `|| true` (swil.sh:245), so a lab
+    event can never fail a round -- and a lab event that COULD would be a
+    worse bug than the missing event this ruling adds.
+
+    Driven at 500 on the wire rather than through a fake that raises,
+    because the swallow lives in `Resources.lab_event` and that is the code
+    under test here. Mutation this catches: removing that method's
+    `except ApiError: return`."""
+    events: list[dict[str, Any]] = []
+    result = _run_on_the_wire(
+        tmp_path,
+        Action(kind="post", text="hello"),
+        _wire_transport(events=events, events_status=500),
+    )
+
+    assert result.landed == 1
+    assert result.outcome is ActOutcome.LANDED_ALL
+    assert len(events) == 2  # both were attempted
+    assert (tmp_path / "agents" / "zenith" / "memory.md").is_file()
+
+
+# ── the note -> event mapping, including the kinds no act round reaches ───
+
+
+def test_memory_event_summary_is_uncapped() -> None:
+    """`_remember` passes the WHOLE note as `summary` -- there is no
+    truncation anywhere in swil.sh:192-202, unlike auto-run.sh's act events
+    which slice `${text:0:200}`.
+
+    A UNIT test with a synthetic long note, deliberately: no note a normal
+    round produces is long enough to show this. `_memory_note` caps its text
+    component at `_MEMORY_PREVIEW_CAP` (80), and the longest BOUNDED shape is
+    the full comment note -- `comment | postId=<24> commentId=<24>
+    parentId=<24> | <80>` = 193 chars -- so a 200-char cap is invisible
+    through `run_act`, which is exactly why the wire test above cannot carry
+    this assertion and this one exists.
+
+    One shape is NOT bounded: `post`'s `[img:<topic>]` tag interpolates
+    `image_topic` with no cap (`_memory_field`, matching `swil.sh:458`'s
+    equally uncapped `${IMAGE_TOPIC:+[img:$IMAGE_TOPIC] }`), so a long enough
+    planner-supplied topic pushes the note past the server's
+    `summary: z.string().trim().min(1).max(500)`
+    (`agents.schemas.ts:55`) and the event 400s. Deliberately NOT capped here
+    (ruling R22): Bash is uncapped too and both runtimes swallow that 400
+    identically (`|| true` at swil.sh:246, `Resources.lab_event`'s
+    `except ApiError`), so capping would be a Python-only divergence that
+    made the two runtimes send different bodies for the same action. Recorded
+    as spec §15.2 row 18 instead.
+
+    Mutation this catches: `summary=note[:_SUMMARY_CAP]`, i.e. copying the
+    act path's cap onto a path Bash does not cap."""
+    note = "post | id=" + _POST_ID + " | " + ("x" * 400)
+    assert _memory_event(note).summary == note
+    assert len(_memory_event(note).summary) > 200
+
+
+@pytest.mark.parametrize(
+    ("note", "expected_action"),
+    [
+        (f"post | id={_POST_ID} | hi", "post"),
+        (f"comment | postId={_TARGET_POST_ID} commentId={_COMMENT_ID} | hi", "comment"),
+        (f"like | postId={_TARGET_POST_ID}", "like"),
+        ("follow | @vex", "follow"),
+        ("unfollow | @vex", "unfollow"),
+        (f"delete | id={_POST_ID}", "delete"),
+        ("nothing | anything", "nothing"),
+        (f"echo | id={_POST_ID} echoOf={_TARGET_POST_ID}", None),
+        (f"dm | to=vex conversationId={_COMMENT_ID} | hi", None),
+        ("set-tags | a,b", None),
+    ],
+)
+def test_memory_event_whitelist_covers_every_verb_swil_sh_lists(
+    note: str, expected_action: str | None
+) -> None:
+    """The whole whitelist, including `unfollow`/`delete`/`nothing`, which no
+    act round can reach today (`ActionKind` has no unfollow or delete, and
+    `nothing` never writes a memory line at all) but which `swil.sh:196`
+    lists -- so the transcription is complete rather than complete-enough for
+    the reachable subset. `set-tags` stands in for the `*)` fallthrough.
+
+    Mutation this catches: dropping any verb from `_MEMORY_EVENT_ACTIONS`,
+    or emitting `action=""` as a literal instead of omitting the field."""
+    assert _memory_event(note).action == expected_action
+
+
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        (f"post | id={_POST_ID} | hi", _POST_ID),
+        (f"comment | postId={_TARGET_POST_ID} commentId={_COMMENT_ID} | hi", _TARGET_POST_ID),
+        ("follow | @vex", None),
+        # `conversationId` is NOT `id`: grep -E is case-sensitive, so a dm's
+        # note has no match at all.
+        (f"dm | to=vex conversationId={_COMMENT_ID} | hi", None),
+        # 23 hex chars -- one short of the {24} the regex demands.
+        ("post | id=aaaaaaaaaaaaaaaaaaaaaaa | hi", None),
+        # Uppercase hex is outside [a-f0-9].
+        (f"post | id={'A' * 24} | hi", None),
+    ],
+)
+def test_memory_event_target_id_matches_the_grep(note: str, expected: str | None) -> None:
+    """`grep -Eo '(id|postId|commentId)=[a-f0-9]{24}' | head -1 | cut -d= -f2`
+    -- exactly. Mutation this catches: relaxing `{24}` to `+`, or adding
+    `conversationId` to the alternation, either of which would start filing
+    dm and short-id events under a targetId Bash leaves empty."""
+    assert _memory_event(note).target_id == expected
+
+
+# ── R22: the two kinds nothing covered ────────────────────────────────────
+
+
+def test_a_dm_puts_the_body_preview_in_the_memory_event_but_not_the_act_one(
+    tmp_path: Path,
+) -> None:
+    r"""`dm` was the one action kind with no end-to-end test, and the one
+    whose two events differ MOST from each other.
+
+    `auto-run.sh:287-289`'s own event carries the recipient only
+    (`"→@vex"`) -- deliberately, so private conversations stay off that
+    surface. But `_remember` fires a SECOND event whose summary is the whole
+    note, and `swil.sh:711` builds that note as
+    `dm | to=$RECIPIENT conversationId=$CONV_ID | ${TEXT:0:80}` -- i.e. the
+    first 80 characters of the message body DO reach
+    `POST /agents/{username}/events`, in both runtimes.
+
+    `swil.sh:708-710`'s comment says the opposite ("carries the recipient
+    but never the body"); it is true of auto-run.sh's event and false of the
+    `_remember` call three lines below it. `agent/scripts/` is frozen so
+    that comment stays, and this test is where the real behaviour is written
+    down.
+
+    Mutation this catches: sending anything other than the full note as the
+    memory event's summary for a dm (e.g. copying the act event's
+    recipient-only string, on the theory that the docstring was right).
+    """
+    events: list[dict[str, Any]] = []
+    # Longer than the 80-char preview so the cap is visible, and NOT a
+    # doubled string -- "x"*100 is "x"*50 twice, which `collapse_doubled_text`
+    # would halve before the cap ever applied, making the assertion below
+    # pass for the wrong reason.
+    body = "y" + "x" * 99
+    result = _run_on_the_wire(
+        tmp_path,
+        Action(kind="dm", username="vex", text=body),
+        _wire_transport(events=events, contacts=("vex",)),
+    )
+    assert result.landed == 1
+
+    act = next(e for e in events if e["type"] == "cycle")
+    memory = next(e for e in events if e["type"] == "memory")
+
+    assert act["summary"] == "→@vex"  # recipient only, no body
+    assert memory["summary"] == f"dm | to=vex conversationId={_CONV_ID} | {'y' + 'x' * 79}"
+    # `dm` is not in swil.sh:196's whitelist, and `conversationId` does not
+    # match the `(id|postId|commentId)=` grep -- so both facets are absent.
+    assert "action" not in memory
+    assert "targetId" not in memory
+
+
+def test_the_memory_note_is_flattened_before_it_is_written_or_sent(tmp_path: Path) -> None:
+    r"""Pins the `_flatten_note` CALL SITE, which nothing else did -- deleting
+    `note = _flatten_note(note)` from `_write_memory_line` left the whole
+    suite green.
+
+    A TAB in the comment text is the reachable way in. `_memory_field`
+    collapses runs of literal SPACES only (`_WHITESPACE_RUN` is `r" {2,}"`,
+    mirroring Bash's `sed 's/  */ /g'`), so a tab survives into the note and
+    is normalised only by `_flatten_note`'s `\s+`. Both consumers must see
+    the flattened value, because Bash derives both from the same `$note`
+    variable (swil.sh:189-190, then :197).
+
+    Reachable in principle -- the planner returns JSON, which can carry
+    `\t` -- though not observed in practice (0 tabs across 5,424 real memory
+    lines).
+
+    NOTE the platform divergence recorded as spec §15.1 row 14: Bash's
+    `sed 's/[[:space:]]\+/ /g'` collapses whitespace runs on GNU sed but NOT
+    on the BSD sed this runtime actually runs on, where `\+` is a literal
+    plus. Python keeps the sane behaviour on purpose; the row exists so a
+    Linux deploy does not silently change Bash's.
+    """
+    events: list[dict[str, Any]] = []
+    _run_on_the_wire(
+        tmp_path,
+        Action(kind="comment", post_id=_TARGET_POST_ID, text="hello\tworld"),
+        _wire_transport(events=events),
+    )
+
+    expected = f"comment | postId={_TARGET_POST_ID} commentId={_COMMENT_ID} | hello world"
+    assert (tmp_path / "agents" / "zenith" / "memory.md").read_text(
+        encoding="utf-8"
+    ) == f"2026-08-17 | {expected}\n"
+    memory = next(e for e in events if e["type"] == "memory")
+    assert memory["summary"] == expected

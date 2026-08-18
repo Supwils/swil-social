@@ -17,10 +17,13 @@ docstring.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from swil_agent.api.client import ApiClient, ApiError
 from swil_agent.api.dto import LabEvent
+
+logger = logging.getLogger(__name__)
 
 
 class WriteNotVerifiedError(RuntimeError):
@@ -187,6 +190,40 @@ class Resources:
     def user_posts(self, username: str, limit: int = 12) -> list[dict[str, Any]]:
         """GET /users/{username}/posts?limit=."""
         return _items(self._client.get(f"/users/{username}/posts", params={"limit": limit}))
+
+    def mark_notifications_read(self, ids: list[str] | None = None) -> None:
+        """POST /notifications/read — both of `swil.sh`'s two shapes.
+
+        `ids=None` sends `{"all": true}` (`swil.sh:657-658`,
+        `mark-notifications-read`); a list sends `{"ids": [...]}`
+        (`swil.sh:661-664`, `mark-notifications-read-ids`). The server's
+        `readBody` is a strict `z.union` of exactly those two objects
+        (`server/src/modules/notifications/notifications.routes.ts:20-28`),
+        so they must never be merged into one body carrying both keys.
+
+        An EMPTY list is not sent at all: the server's `ids` branch is
+        `.min(1)` and would 400, and `auto-run.sh:800` guards the call the
+        same way (`if [[ "$notif_ids_json" != "[]" ... ]]`). Returning early
+        keeps that guard from having to be repeated at every call site.
+
+        `noContent(res)` -> a bare 204 with an empty body
+        (`notifications.routes.ts:64`), which `ApiClient.post()` would raise
+        `ApiError` on while trying to `.json()`-parse — same shape as
+        `follow`/`like_post`, so this uses `raw_post` for the same reason.
+
+        Never raises: `auto-run.sh` ends both calls with `|| true` and
+        discards stderr, because marking a notification read is
+        housekeeping — a round that already landed its actions must not be
+        reported as failed because this call did not go through. Logged at
+        WARNING so the fire-and-forget is still visible to anyone looking.
+        """
+        if ids is not None and not ids:
+            return
+        body: dict[str, Any] = {"all": True} if ids is None else {"ids": ids}
+        try:
+            self._client.raw_post("/notifications/read", json=body)
+        except ApiError as exc:
+            logger.warning("mark-notifications-read failed (%s): ignored", exc)
 
     def update_profile(self, patch: dict[str, Any]) -> None:
         """PATCH /users/me with `patch` as the body — used for the
@@ -371,29 +408,49 @@ class Resources:
         `ApiClient._payload`), so this uses `raw_post` and verifies the
         status code directly instead.
 
-        "Already following" is a real, distinct server response, not an
-        artifact of the brief's guess: `follows.service.ts`'s `follow()`
-        does `if (!edge) throw AppError.conflict('Already following this
-        user')` on the no-op insert
+        "Already following" is a real, distinct server response:
+        `follows.service.ts`'s `follow()` does `if (!edge) throw
+        AppError.conflict('Already following this user')` on the no-op insert
         (server/src/modules/follows/follows.service.ts:28-34), which is a
         409 with body `{"error": {"code": "CONFLICT", ...}}`
         (`AppError.conflict` -> status 409 code 'CONFLICT',
         server/src/lib/errors.ts:32-34; serialized by
-        server/src/middlewares/errorHandler.ts:21-28). swil.sh's
-        `_curl -X POST ... | jq .` pipeline (agent/scripts/swil.sh:681)
-        never inspected `_curl`'s exit status either (same bug class as
-        `like`), so in practice a 409 there was already swallowed as
-        "success" by accident. Here it is swallowed on purpose: the end
-        state (the follow edge exists) is identical whether this call or an
-        earlier one created it, so treating CONFLICT as success matches the
-        Bash contract deliberately rather than by masked exit code.
+        server/src/middlewares/errorHandler.ts:21-28).
+
+        THAT 409 IS RAISED, NOT SWALLOWED (ruling R20). This method used to
+        `return` on `exc.code == "CONFLICT"`, on the reasoning that "the end
+        state is identical whether this call or an earlier one created the
+        edge, so treating CONFLICT as success matches the Bash contract".
+        Both halves of that were wrong, and the second one is what made the
+        defect look intentional for three review rounds:
+
+          * The claim that "swil.sh's `_curl … | jq .` pipeline never
+            inspected `_curl`'s exit status" is FALSE. `swil.sh` runs under
+            `set -euo pipefail` (swil.sh:29) and `_curl` returns 1 for any
+            status >= 400 (swil.sh:132-135), so the pipeline fails, the case
+            aborts, and `swil.sh follow` exits NON-ZERO on a 409. Verified by
+            repro, not by reading.
+          * So Bash does not treat "already following" as success anywhere
+            except the round TALLY. `auto-run.sh:243-252` takes its `else`
+            branch: `WARN <name> follow @<user> failed (likely already
+            following)` and a `warn` lab event -- then `return 0`, because
+            "already following" is not a failed ROUND. And one level down,
+            `_remember` is never reached, so no `memory.md` line is written.
+
+        Swallowing it here made all three of those wrong at once (a `DONE`
+        log line, a `success` lab event mislabelling the case in `/lab`, and
+        a memory line Bash never writes -- which is the dream's input and the
+        unit `DREAM_MIN_NEW_MEMORIES=8` counts). Raising is also the only
+        shape that cannot be ignored silently by a caller: a returned flag
+        can be dropped on the floor, which is exactly how this survived.
+
+        `act/executor.py`'s `_execute_follow` catches it with every other
+        write failure and routes it to Bash's `else` branch, keeping
+        `landed=True`. No caller needs to know it was a CONFLICT
+        specifically -- Bash does not distinguish either, which is why its
+        own message says "likely".
         """
-        try:
-            response = self._client.raw_post(f"/users/{username}/follow")
-        except ApiError as exc:
-            if exc.code == "CONFLICT":
-                return
-            raise
+        response = self._client.raw_post(f"/users/{username}/follow")
         if response.status_code != 204:
             raise WriteNotVerifiedError(
                 f"follow returned unexpected status {response.status_code} "

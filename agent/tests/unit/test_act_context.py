@@ -95,7 +95,7 @@ def test_feed_formatters_flatten_newlines_to_spaces() -> None:
     assert "a b" in format_global_feed([item])
 
 
-# ── notifications (contract 01 §2j, deliberate divergence — spec §7.7) ─────
+# ── notifications (contract 01 §2j) ───────────────────────────────────────
 
 NOTIFICATION = {
     "id": "notif0000000000000000000",
@@ -107,6 +107,9 @@ NOTIFICATION = {
 
 
 def test_notification_line_uses_the_post_id_not_the_notification_id() -> None:
+    """Matches `auto-run.sh:580`'s own `\(.post.id)` -- this is parity, not a
+    divergence. `NotificationDTO.id` and `.post.id` are different values
+    (`server/src/lib/dto.ts:316-320`) and Bash reads the second one too."""
     line = format_notifications([NOTIFICATION])
     assert "postId:post00000000000000000000" in line
     assert "notif0000000000000000000" not in line

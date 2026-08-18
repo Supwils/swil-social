@@ -47,6 +47,27 @@ class ActionResult(BaseModel):
     sentinel). It lets `act/round.py`'s memory-line writer record
     `conversationId=...` the way `swil.sh:711`'s `_remember` does, instead
     of the `messageId=` substitute this task shipped with initially.
+
+    `call_succeeded` (ruling R19) answers a DIFFERENT question from `landed`:
+    did the underlying `swil.sh` subcommand actually exit 0 -- i.e. did the
+    write go through -- rather than does this action count toward the round's
+    landed tally. For every action kind the two are equal, and
+    `act/executor.py`'s `_outcome` derives one from the other by default so
+    they cannot drift apart by accident. `follow` is the ONE kind where they
+    legitimately differ: `auto-run.sh:250-252` returns 0 whether the follow
+    landed or 409'd ("Deliberately 0 either way: 'already following' is the
+    common outcome and is not a failed round"), while `swil.sh`'s own `follow`
+    case never reaches `_remember` on that 409 -- `_curl` returns 1 for any
+    status >= 400 (swil.sh:132-135) and `set -euo pipefail` aborts the case at
+    the failing pipeline. So a 409 is a landed round AND an unwritten memory
+    line, which needs two fields to say.
+
+    Deliberately a typed field rather than a sentinel matched out of `detail`
+    (the `_PARENT_UNUSABLE_DETAIL` shape above): the follow-failure detail is
+    a COMPOSED string (`f"likely already following: {...}"`), so a reword
+    would silently restore the bug -- the same defect class as the
+    `DreamVerdict.reason` equality check that lost the embedder-unreachable
+    warning.
     """
 
     action: Action
@@ -54,6 +75,7 @@ class ActionResult(BaseModel):
     resource_id: str | None = None
     detail: str | None = None
     conversation_id: str | None = None
+    call_succeeded: bool = True
 
 
 class ActOutcome(StrEnum):
@@ -155,10 +177,49 @@ class AspectVectors(BaseModel):
 
 
 class DreamVerdict(BaseModel):
+    """The outcome of `dream.gate.evaluate_candidate` (task 11, `dream/gate.py`;
+    contract `03` §1.4, `04` §5).
+
+    `sims` and `scalar_sim` are independent, not a discriminated pair: `sims`
+    is populated only outside scalar `DRIFT_MODE` and only when the aspect
+    distill/embed pipeline succeeded; `scalar_sim` is populated whenever the
+    whole-doc scalar embed pair succeeded, which `evaluate_candidate` always
+    attempts regardless of `DRIFT_MODE` (it is the gate itself in scalar/
+    shadow modes, and the aspect-mode fallback). A dream can therefore carry
+    both, either, or neither.
+
+    `scalar_sim` (fix round 2, task 12) is `None` -- not `0.0` -- whenever
+    the scalar embed pair could not be computed (an unreachable embedder),
+    matching `dream/gate.py`'s own `_scalar_similarity`/`_scalar_decision`
+    fail-open distinction: "no value" and "value 0.0" are different states,
+    and a caller building a metrics payload from this field (`dream/round.py`
+    's `_drift_fail_metrics`) must be able to tell a REAL, if very low,
+    similarity apart from "the check never ran". Added specifically so
+    `dream/round.py` no longer needs to regex the number back out of
+    `reason`'s formatted text -- see that module's `_drift_fail_metrics`
+    docstring for the incident (a reworded reason string silently emptying a
+    lab event's metrics with no test failure) this field exists to close.
+
+    `embedder_unreachable` is that same lesson applied to the same `reason`
+    string one line further on. `True` means the SCALAR gate ran with nothing
+    measured and fail-opened -- i.e. this dream landed UNGATED
+    (`dream/gate.py`, `dream.sh:797-807`). It is deliberately not derivable
+    from `scalar_sim is None` alone: in `aspect` mode with usable aspect sims
+    the aspect gate decides and a `None` `scalar_sim` gated nothing, so only
+    the gate itself knows which branch actually made the call. It exists
+    because `reason` is COMPOSED (`f"{aspect_note}; {base_reason}"`), so a
+    caller comparing it for equality against the bare fail-open note stops
+    matching precisely when the aspect pipeline is degraded too -- losing the
+    one signal that says the constitution layer is off, at the moment it
+    matters most.
+    """
+
     accepted: bool
     reason: str
     breached: list[str] = Field(default_factory=list)
     sims: AspectSims | None = None
+    scalar_sim: float | None = None
+    embedder_unreachable: bool = False
     attempt: int = 1
 
 

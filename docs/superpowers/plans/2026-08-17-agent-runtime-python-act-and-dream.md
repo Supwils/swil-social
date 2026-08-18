@@ -1917,8 +1917,23 @@ This is the codex silent-fail root-cause fix. Bash would report DONE here.
 - [ ] **Step 6: Write the failing follow-is-always-landed test**
 
 Contract `02` §2.4: `follow` returns landed regardless of the HTTP outcome, because
-"already following" is the common case and is a benign no-op. Plan 1's
-`Resources.follow` already absorbs a 409 `CONFLICT`; this test covers the rest.
+"already following" is the common case and is a benign no-op *at the round level*
+(`auto-run.sh:250-252` returns 0 on both branches).
+
+> **RETRACTED — the sentence that stood here was wrong, and it cost three review
+> rounds.** It read: "Plan 1's `Resources.follow` already absorbs a 409 `CONFLICT`;
+> this test covers the rest." Both clauses are now false and the second was always
+> misleading. Ruling R20 removed that swallow: it sent the COMMON "already following"
+> outcome down the success branch — a `DONE` log line, a `success` lab event and a
+> `memory.md` line — where Bash emits `WARN`, a `warn` event and no memory line at
+> all, because `swil.sh` runs under `set -euo pipefail` and `_curl` returns 1 for any
+> status >= 400 (swil.sh:132-135). And "this test covers the rest" is exactly the
+> reasoning that left the common case uncovered: the test below passes a 400, so it
+> never exercised the 409 the sentence was excusing. Ruling R19's fix was then built
+> on top of the same assumption and was inert for a whole round. Kept in place, struck
+> through rather than deleted, because the failure mode is the lesson: a plan step
+> that says "already handled elsewhere" is a claim about another file, and nothing
+> checks it. See spec §15.1 row 5 for the full history.
 
 ```python
 def test_follow_counts_as_landed_even_when_the_request_fails() -> None:
@@ -1930,8 +1945,11 @@ def test_follow_counts_as_landed_even_when_the_request_fails() -> None:
 
 Leave a comment in the implementation recording the cost: this is the one action kind
 whose failure is invisible in the round tally, so a genuinely broken follow path would
-not show up in `landed/attempted`. Spec §15.1 row 5 already flags the adjacent risk
-(a server-side rename of the `CONFLICT` code).
+not show up in `landed/attempted`. (The log line, the lab event and the absent memory
+line are where it IS visible — which is why the swallow retracted above mattered.)
+Spec §15.1 row 5 carries the full history; the "server-side rename of the `CONFLICT`
+code" risk it originally flagged is gone with the swallow, since no code-string match
+remains.
 
 - [ ] **Step 7: Implement `execute_action`**
 

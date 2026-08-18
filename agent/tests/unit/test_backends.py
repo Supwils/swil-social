@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from swil_agent.config import Settings
+from swil_agent.dream.distill import distill_cards
 from swil_agent.llm.base import (
+    BackendBinaryMissingError,
     BackendUnavailableError,
     CompletionRequest,
     SubprocessRunner,
@@ -289,3 +291,58 @@ def test_subprocess_runner_env_normal_override_is_visible_to_child(
     )
     assert out.strip() == "override-value"
     assert "SWIL_TEST_OVERRIDE_ME" not in os.environ
+
+
+# ── the exception hierarchy is load-bearing — read before "tidying" it ────
+
+
+def test_backend_binary_missing_is_deliberately_not_a_subclass_of_backend_unavailable() -> None:
+    """DO NOT "tidy" `BackendBinaryMissingError` into a subclass of
+    `BackendUnavailableError`. This test exists solely to make that edit fail
+    loudly, at the file it would be made in, with the reason attached.
+
+    Both are `RuntimeError`s and they look like an obvious pair, which is why
+    the flat hierarchy needs defending. Every "the LLM produced nothing" call
+    site catches `BackendUnavailableError` and degrades quietly to `None`/`""`
+    -- `act/planner.py`'s `plan_round`, `dream/round.py`'s
+    `_generate_candidate` and `_diff_narrative`, `dream/distill.py`'s
+    `distill_cards` -- because that is what Bash does (`llm.sh`'s `_llm_raw`
+    ends in `|| true`, so a dead model yields empty output, not an error).
+
+    That degradation is correct for a model that answered with nothing and
+    WRONG for a binary that is not installed. As a subclass,
+    `BackendBinaryMissingError` would be swallowed by every one of those
+    handlers: `swil-agent dream <name>` on a machine with no `codex` would
+    report "LLM returned empty" and exit **0**, which is precisely the "a
+    whole round silently drops every account on one backend" failure this
+    project's history already records (CLAUDE.md: the missing
+    `~/.claude/.deepseek-key`, and the "no response from codex" incidents).
+
+    As a sibling it passes through all of them untouched and reaches
+    `cli.py`'s `_backend_setup_guard`, the only layer that knows the account
+    name and the remedy, which raises `AccountSetupError` and exits 75.
+    """
+    assert not issubclass(BackendBinaryMissingError, BackendUnavailableError)
+    assert issubclass(BackendBinaryMissingError, RuntimeError)
+    # ... and the degrade handlers really do let it through. `distill_cards`
+    # is the shortest of the four to drive: it retries 3x and returns None
+    # for a backend that produces nothing, so a subclass would return None
+    # here instead of raising.
+    with pytest.raises(BackendBinaryMissingError):
+        distill_cards(_MissingBinaryRunner(), "PERSONA", model="haiku")
+
+
+class _MissingBinaryRunner:
+    """A `Runner` that fails the way `SubprocessRunner` does when argv[0] is
+    absent from PATH (pinned against the real `subprocess` behaviour by
+    `test_subprocess_runner_reports_a_missing_binary_as_its_own_type` in
+    `test_cli.py`)."""
+
+    def run(
+        self,
+        argv: list[str],
+        stdin: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float = 300.0,
+    ) -> str:
+        raise BackendBinaryMissingError(f"executable not found on PATH: {argv[0]!r}")

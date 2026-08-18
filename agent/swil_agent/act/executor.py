@@ -24,19 +24,49 @@ Two Bash rules are preserved deliberately, not just left as historical
 trivia:
 
   * **`follow` always counts as landed**, regardless of the HTTP outcome
-    (contract `02` §2.4) — "already following" is the common case, and
-    `Resources.follow` already absorbs a 409 `CONFLICT` as a no-op success
-    (Task 1). This is the one action kind whose REAL failure is invisible in
-    a round's `landed/attempted` tally: a genuinely broken follow path would
-    look identical to a healthy one here. Spec §15.1 row 5 flags the
-    adjacent risk (a server-side rename of the `CONFLICT` code silently
-    turning every follow into a hard failure this module would then also
-    swallow as success).
-  * **A DM's lab event never carries the message body** (contract `02`
-    §2.6) — only `"→@{username}"` is sent, so private conversations stay out
-    of the observation layer. The local memory-line equivalent (a text
-    preview) is a Phase 2 concern (memory.md writing is not yet ported); the
-    asymmetry itself is intentional and pinned by a test here.
+    (contract `02` §2.4) — `auto-run.sh:250-252` returns 0 on both branches
+    ("Deliberately 0 either way: 'already following' is the common outcome
+    and is not a failed round"). This is the one action kind whose REAL
+    failure is invisible in a round's `landed/attempted` tally: a genuinely
+    broken follow path looks identical to a healthy one here.
+
+    An earlier version of this paragraph added that `Resources.follow`
+    "already absorbs a 409 `CONFLICT` as a no-op success". **That is no
+    longer true and its removal is the point** (ruling R20): the swallow was
+    itself the defect. It sent the common "already following" case down the
+    SUCCESS branch — a `DONE` log line, a `success` lab event, and a
+    `memory.md` line — where Bash emits `WARN`, a `warn` event, and no
+    memory line at all, because `swil.sh` runs under `set -euo pipefail` and
+    `_curl` returns 1 for any status >= 400 (swil.sh:132-135). Every non-2xx
+    now reaches the `except` branch below. Spelled out rather than deleted
+    because this sentence, left standing as context for three review rounds,
+    is what made the defect read as intentional.
+  * **This module's own DM lab event never carries the message body**
+    (contract `02` §2.6) — the `cycle/act/success` event it files sends only
+    `"→@{username}"`.
+
+    **That is NOT the same as "DM bodies stay out of the observation
+    layer", and an earlier version of this paragraph said exactly that.**
+    A second, independent event exists: `act/round.py`'s `_write_memory_line`
+    fires `memory/memory/success` for every memory line, porting
+    `swil.sh`'s `_remember` (swil.sh:184-203), and its `summary` is the
+    WHOLE note — which for a dm is `dm | to=<user> conversationId=<id> |
+    <first 80 chars of the body>` (swil.sh:711). So the first 80 characters
+    of a DM body DO reach `POST /agents/{username}/events`, in this runtime
+    and in Bash alike.
+
+    Bash carries the same wrong claim in its own comment at
+    `swil.sh:708-710` ("carries the recipient but never the body — private
+    conversations stay off the observation layer by design"). It is true of
+    `auto-run.sh`'s event and false of `_remember`'s, three lines below it.
+    `agent/scripts/` is frozen, so that comment stays as it is — noted here
+    so nobody "corrects" this Python comment back to match a Bash comment
+    that is itself wrong.
+
+    The behaviour is deliberate parity, not a leak introduced by the port:
+    both runtimes send the same two events with the same bodies. Whether the
+    80-char preview SHOULD be in the events table is a product question for
+    whoever owns `/lab`, not something this port may quietly change.
 
 `collapse_doubled_text` (contract `02`, "cross-cutting facts") applies to
 `post.text`, `comment.text`, `echo.text`, and `dm.text` — never to
@@ -45,6 +75,7 @@ trivia:
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Protocol
 
@@ -57,6 +88,8 @@ from swil_agent.api.images import ImageFetchError, fetch_unsplash_image
 from swil_agent.api.resources import Resources, WriteNotVerifiedError
 from swil_agent.llm.extract import collapse_doubled_text
 from swil_agent.models import Action, ActionResult
+
+logger = logging.getLogger(__name__)
 
 _SUMMARY_CAP = 200
 _LOG_PREVIEW_CAP = 60
@@ -164,13 +197,19 @@ def _outcome(
     lab_reason: str | None = None,
     lab_target_id: str | None = None,
     conversation_id: str | None = None,
+    call_succeeded: bool | None = None,
 ) -> ExecutionOutcome:
+    # `call_succeeded` DERIVES from `landed` unless a branch says otherwise,
+    # so the two cannot drift apart by accident: the only caller that passes
+    # it explicitly is `_execute_follow`'s failure branch, the single place
+    # Bash itself distinguishes them (ruling R19; see `ActionResult`).
     result = ActionResult(
         action=action,
         landed=landed,
         resource_id=resource_id,
         detail=detail,
         conversation_id=conversation_id,
+        call_succeeded=landed if call_succeeded is None else call_succeeded,
     )
     event = LabEvent(
         type=_LAB_TYPE,
@@ -385,18 +424,33 @@ def _execute_follow(resources: Resources, action: Action, *, agent_name: str) ->
     try:
         resources.follow(username)
     except _WriteFailure as exc:
-        # Deliberately STILL landed=True (contract 02 §2.4): "already
-        # following" is the common outcome, and Resources.follow already
-        # absorbs a 409 CONFLICT as a no-op success on its own (Task 1) --
-        # this branch only ever sees the rest of the failure space. Cost,
-        # recorded here rather than left implicit: this is the one action
-        # kind whose REAL failure never shows up in a round's
-        # landed/attempted tally. A genuinely broken follow path (e.g. the
-        # server renaming the CONFLICT error code -- spec §15.1 row 5) would
-        # look identical to a healthy one from the outside.
+        # Deliberately STILL landed=True (contract 02 §2.4): `auto-run.sh
+        # :250-252` returns 0 on both branches, because "already following"
+        # is the common outcome and is not a failed round.
+        #
+        # This branch sees the WHOLE failure space, including that common
+        # 409: `Resources.follow` no longer swallows CONFLICT (ruling R20 --
+        # while it did, the swallow sent the common case down the success
+        # path instead, with a DONE line, a `success` lab event and a
+        # memory.md line Bash never writes).
+        #
+        # Cost, recorded here rather than left implicit: this is the one
+        # action kind whose REAL failure never shows up in a round's
+        # landed/attempted tally, so a genuinely broken follow path looks
+        # identical to a healthy one from the outside. The log line, the lab
+        # event and the absent memory line are where it IS visible.
         return _outcome(
             action,
             landed=True,
+            # ... but the swil.sh call itself did NOT succeed, so no
+            # memory.md line (rulings R19 + R20). `swil.sh`'s `follow` case
+            # is `_curl … | jq .` followed by `_remember` (swil.sh:679-683),
+            # and the failing `_curl` aborts the case under `set -euo
+            # pipefail` before `_remember` ever runs. This is the ONLY thing
+            # that differs from the success branch besides the log line and
+            # the lab outcome -- `landed` is True either way (see the except
+            # clause above).
+            call_succeeded=False,
             resource_id=None,
             detail=f"likely already following: {_error_detail(exc)}",
             log_line=f"WARN {agent_name} follow @{username} failed (likely already following)",
@@ -578,5 +632,21 @@ def execute_action(
         # raises loudly here instead of falling through to unhandled state.
         raise AssertionError(f"unhandled action kind: {action.kind!r}")  # pragma: no cover
 
+    # `log_line` is the whole reason it is computed: it is `_log`'s exact
+    # text (`auto-run.sh`'s per-action DONE/WARN/SKIP lines), and until this
+    # call all 17 of them were built and dropped on the floor. `agent/logs/
+    # auto-run.log` is what straggler reconciliation and post-run QA grep
+    # after a round; a Python round that never wrote a line there is
+    # indistinguishable from a round that never happened.
+    #
+    # Level from the lab outcome rather than by re-parsing the line's own
+    # DONE/WARN/SKIP prefix -- same fact, already typed. The FILE handler
+    # renders `[ts] <message>` with no level (Bash's `_log` format exactly,
+    # see `cli.py`); the level only shapes the stderr stream.
+    logger.log(
+        logging.INFO if outcome.lab_event.outcome == "success" else logging.WARNING,
+        "%s",
+        outcome.log_line,
+    )
     resources.lab_event(username, outcome.lab_event)
     return outcome.result

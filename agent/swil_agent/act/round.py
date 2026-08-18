@@ -26,14 +26,17 @@ import logging
 import random
 import re
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Final
 
 from swil_agent.act.context import build_context
 from swil_agent.act.executor import execute_action
 from swil_agent.act.guardrails import apply_guardrails
 from swil_agent.act.planner import plan_round
 from swil_agent.api.client import ApiError
+from swil_agent.api.dto import LabEvent
 from swil_agent.api.resources import Resources
 from swil_agent.llm.base import Backend
 from swil_agent.llm.extract import collapse_doubled_text
@@ -114,19 +117,44 @@ def _memory_note(action: Action, result: ActionResult) -> str | None:
     (contract `02` §4.2), or `None` when no memory.md line should be
     written at all.
 
-    Gated on `result.landed` -- every one of `_remember`'s real call sites
-    only fires on a write that actually happened (contract `02` §4.1):
-    `post`/`comment`/`echo`/`dm` gated on a non-empty server-assigned id,
-    `like`/`follow` unconditionally *after* their curl call did not already
-    abort the case under `set -e`. `landed` is this module's equivalent of
-    "did not already abort" for every kind except `follow` -- see the
-    module docstring's DIVERGENCE note in `run_act` for the one case where
-    that equivalence is not exact.
+    Gated on `result.call_succeeded`, NOT on `result.landed` (ruling R19):
+    every one of `_remember`'s real call sites only fires on a write that
+    actually happened (contract `02` §4.1) -- `post`/`comment`/`echo`/`dm`
+    gated on a non-empty server-assigned id, `like`/`follow` unconditionally
+    *after* their curl call did not already abort the case under `set -e`.
+    "Did not already abort" is precisely what `call_succeeded` means, and for
+    every kind but one it equals `landed`.
+
+    `follow` is that one kind, and gating on `landed` got it wrong. Bash keeps
+    the two decisions on two different levels: `auto-run.sh:243-252` returns 0
+    on BOTH branches ("Deliberately 0 either way: 'already following' is the
+    common outcome and is not a failed round"), so a 409 still counts as
+    landed -- but one level down, `swil.sh`'s own `follow` case
+    (swil.sh:679-683) never reaches `_remember` on that 409, because `_curl`
+    returns 1 for any status >= 400 (swil.sh:132-135) and `set -euo pipefail`
+    aborts the case at the failing pipeline. So Bash writes
+    `follow | @<user>` only on a genuine NEW follow, and "already following"
+    -- the common outcome -- records nothing.
+
+    This is not cosmetic: `memory.md` is the dream's input AND the unit
+    `DREAM_MIN_NEW_MEMORIES=8` counts, so a spurious line per repeat-follow
+    both shifts what every later dream reads and makes dreams fire earlier
+    than Bash would.
+
+    The gate here is only half the fix, and on its own it was inert (ruling
+    R20). `call_succeeded` is `False` only on `_execute_follow`'s EXCEPT
+    branch, and `Resources.follow` used to swallow the 409 before it could
+    get there -- so the common "already following" outcome still took the
+    success path and still wrote its line. That swallow is gone; the 409 now
+    propagates like every other write failure, which is what makes this gate
+    reachable at all. Driven end-to-end over a real 409 in
+    `test_an_already_following_409_warns_and_writes_no_memory_line`, not
+    through a fake whose `follow()` re-raises whatever it is handed.
 
     `nothing` never gets a line (contract `02` §4.1: "auto-run.sh's
     `nothing` case never calls swil.sh").
     """
-    if not result.landed or action.kind == "nothing":
+    if not result.call_succeeded or action.kind == "nothing":
         return None
 
     if action.kind == "post":
@@ -183,26 +211,273 @@ def _memory_note(action: Action, result: ActionResult) -> str | None:
         )
 
 
+# `_remember`'s own whitelist (swil.sh:196). A note whose leading verb is not
+# one of these emits `action=""` -- which `LabEvent.to_wire` then OMITS from
+# the body entirely, so `/lab` records the event with no action facet rather
+# than with a made-up one. `echo` and `dm` are deliberately ABSENT: Bash's
+# whitelist does not contain them either, so their memory events carry no
+# action. Transcribed verbatim; do not "complete" it.
+_MEMORY_EVENT_ACTIONS: Final = frozenset(
+    {"post", "comment", "like", "follow", "unfollow", "delete", "nothing"}
+)
+
+# `grep -Eo '(id|postId|commentId)=[a-f0-9]{24}' | head -1 | cut -d= -f2`
+# (swil.sh:194). Case-sensitive and unanchored, exactly as `grep -E` is: the
+# `conversationId=` in a `dm` note does NOT match (`Id` != `id`), so a dm's
+# memory event carries no targetId -- checked against the real note shapes,
+# not assumed.
+_MEMORY_TARGET_RE: Final = re.compile(r"(?:id|postId|commentId)=([a-f0-9]{24})")
+
+
+def _flatten_note(note: str) -> str:
+    r"""`_remember`'s own normalisation of its argument (swil.sh:189-190):
+    `tr '\n' ' '` then `sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'`.
+
+    A RAW docstring on purpose: both of those are shell escapes, and in a
+    normal docstring `\n` becomes a real newline and `\+` raises a
+    SyntaxWarning -- i.e. the transcription stops being a transcription.
+
+    Applied ONCE, to the value that feeds both the memory.md line and the
+    lab event's `summary`, because Bash derives both from the same `$note`
+    variable. Every component `_memory_note` assembles is already cleaned by
+    `_memory_text`, so in practice this is a no-op today -- it exists so the
+    two consumers cannot drift apart if a future note shape is not.
+    """
+    return re.sub(r"\s+", " ", note.replace("\n", " ")).strip(" ")
+
+
+def _memory_event(note: str) -> LabEvent:
+    """The SECOND lab event `_remember` fires for every memory line
+    (swil.sh:192-202), independent of the `cycle/act/*` event
+    `act/executor.py` already emits per action.
+
+    So one successful `post` produces TWO POSTs to
+    `/agents/{username}/events` -- `cycle/act/success` from `auto-run.sh`'s
+    `emit_lab_event`, and `memory/memory/success` from `swil.sh`'s
+    `_remember`. Python emitted only the first, for every write action kind,
+    which halved what `/lab`'s memory surfaces saw. Captured in contract
+    `02` §372 and then lost between the contract and the plan: no task
+    covered it, no ruling decided it, no §15 row recorded it (ruling R21).
+
+    Field placement is `_lab_event`'s positional signature (swil.sh:206):
+    `type, phase, outcome, action, summary, reason, target_id, metrics`.
+    `_remember` passes `""` for `reason` and `"{}"` for `metrics`, and the
+    summary is the WHOLE flattened note -- uncapped, unlike the act events'
+    200-char cap.
+
+    (An earlier version of this docstring warned that `auto-run.sh`'s
+    `emit_lab_event` wrapper used a DIFFERENT positional order. It does not:
+    `swil.sh:667-676` forwards `TYPE PHASE OUTCOME ACTION SUMMARY REASON
+    TARGET_ID METRICS` straight through in that same order. The warning was
+    fictional and is removed rather than left as a trap for the next reader.)
+    """
+    verb = note.split("|", 1)[0].strip()
+    match = _MEMORY_TARGET_RE.search(note)
+    return LabEvent(
+        type="memory",
+        phase="memory",
+        outcome="success",
+        action=verb if verb in _MEMORY_EVENT_ACTIONS else None,
+        summary=note,
+        reason=None,
+        target_id=match.group(1) if match else None,
+    )
+
+
 def _write_memory_line(
-    directory: Path, action: Action, result: ActionResult, *, now: datetime
+    directory: Path,
+    action: Action,
+    result: ActionResult,
+    *,
+    now: datetime,
+    resources: Resources,
+    username: str,
 ) -> None:
-    """Append one line to `<directory>/memory.md`, matching `_remember()`'s
-    on-disk format byte for byte (contract `02` §4.2): `<YYYY-MM-DD> |
-    <note>`. `directory` is `persona.directory` -- the same folder
-    `resolve_agent_dir` returns and Bash calls `agent_dir` -- so this reads
-    and writes the identical file a live Bash round would.
+    """Append one line to `<directory>/memory.md` AND fire the
+    `memory/memory/success` lab event, matching `_remember()`
+    (swil.sh:184-203) in both halves and in that ORDER.
+
+    The on-disk line is byte-for-byte `_remember`'s (contract `02` §4.2):
+    `<YYYY-MM-DD> | <note>`. `directory` is `persona.directory` -- the same
+    folder `resolve_agent_dir` returns and Bash calls `agent_dir` -- so this
+    reads and writes the identical file a live Bash round would.
+
+    ORDER IS THE CONTRACT: the file append (swil.sh:190) happens BEFORE the
+    event (swil.sh:197/200), so an events outage still leaves the memory
+    line on disk -- and memory.md, not `/lab`, is what the next dream reads.
+    The event itself cannot fail the round in either runtime: Bash ends
+    `_lab_event`'s curl with `|| true` (swil.sh:246) and
+    `Resources.lab_event` documents the same guarantee ("this never
+    raises"). No extra try/except is added here on purpose -- one would
+    imply this module distrusts that contract, and would also hide a fake
+    that breaks it.
 
     Real file I/O, performed directly rather than behind an injected seam:
     `FileLock` (Task 2) already established this module family's precedent
     of touching the filesystem for Bash-compatible on-disk state, and
-    `memory.md` is exactly that.
+    `memory.md` is exactly that. `username` is the `Username` bullet (whom
+    the event is filed under), NOT the directory name -- the same
+    distinction `execute_action` already draws.
     """
     note = _memory_note(action, result)
     if note is None:
         return
+    note = _flatten_note(note)
     line = f"{now.strftime('%Y-%m-%d')} | {note}\n"
     with (directory / "memory.md").open("a", encoding="utf-8") as handle:
         handle.write(line)
+    resources.lab_event(username, _memory_event(note))
+
+
+_BACKEND_SYNC_ERROR_CAP: Final = 160
+
+
+def _agent_backend_value(persona: Persona) -> str:
+    """`"${ai_backend}${ai_model:+:$ai_model}"` (`auto-run.sh:492`) --
+    `<backend>` alone when the persona declares no `Model:` bullet,
+    `<backend>:<model>` when it does.
+
+    `${ai_model:+...}` expands only for a NON-EMPTY model, so an empty
+    string suffixes nothing and never produces a trailing colon; `Persona
+    .model` is `None` (not `""`) in that case, hence the truthiness test.
+    Bash also has an `ai_backend="${ai_backend:-claude}"` default;
+    `Persona.backend` already defaults to `"claude"` in `models.py`.
+    """
+    return f"{persona.backend}:{persona.model}" if persona.model else persona.backend
+
+
+def _sync_agent_backend(resources: Resources, persona: Persona, agent_name: str) -> None:
+    """PATCH the account profile with `{"agentBackend": ...}` every act round
+    (`auto-run.sh:473-494`).
+
+    `agentBackend` is the drift experiment's INDEPENDENT VARIABLE, so a
+    runtime that stops refreshing it lets the field go stale for the whole
+    roster mid-experiment. `Resources.update_profile` existed for exactly
+    this call and had no callers.
+
+    Non-fatal by design, and LOGGED rather than swallowed: Bash's own
+    comment records that a bare `|| true` with stderr to /dev/null is what
+    hid a 403 on every `humans/` round for months (2026-08-05). The WARN
+    line and its 160-char truncation are Bash's
+    (`WARN $agent_name — agentBackend sync failed: ${backend_sync_err:0:160}`).
+
+    Runs for `humans/` accounts too. `agentBackend` IS recorded for them --
+    it is only withheld from the PUBLIC DTOs, which is a server concern
+    (`publicAgentBackend` in `server/src/lib/dto.ts`); skipping the sync
+    here would silently drop 8 of 23 accounts from the experiment.
+    """
+    try:
+        resources.update_profile({"agentBackend": _agent_backend_value(persona)})
+    except ApiError as exc:
+        logger.warning(
+            "WARN %s — agentBackend sync failed: %s",
+            agent_name,
+            str(exc)[:_BACKEND_SYNC_ERROR_CAP],
+        )
+
+
+_MARK_READ_NOTIFICATION_LIMIT: Final = 20
+_RESPONSE_NOTIFICATION_TYPES: Final = frozenset({"mention", "comment", "reply"})
+
+
+def _comment_targets(actions: list[Action]) -> list[tuple[str, str]]:
+    """`auto-run.sh:782-783`'s `comment_targets` jq, as `(post_id, parent_id)`
+    pairs -- one per `comment` action in the (post-guardrail) plan, with
+    `.postId // ""` / `.parentId // ""` becoming `""` for an absent field.
+
+    Plan-aware on purpose: a round may contain several comments and Bash
+    collects every one of them, marking the whole set in a single call.
+    """
+    return [
+        ((action.post_id or ""), (action.parent_id or ""))
+        for action in actions
+        if action.kind == "comment"
+    ]
+
+
+def _responded_notification_ids(
+    notifications: list[dict[str, Any]], targets: list[tuple[str, str]]
+) -> list[str]:
+    """`auto-run.sh:785-798`'s selection jq, matched clause for clause.
+
+    A notification is selected when ANY target matches it:
+
+      * the target has a `parentId` (this comment was a REPLY) -- match only
+        the notification whose own `comment.id` IS that parent. Nothing else.
+      * the target has no `parentId` (a TOP-LEVEL comment) -- match
+        notifications on that `post.id` whose `type` is one of
+        mention/comment/reply.
+
+    The asymmetry is Bash's own, and the comment above it says why: matching
+    on any notification sharing a `postId` would clear "someone commented on
+    X" merely because the agent liked something else involving X, losing
+    that context for the NEXT round. `like`/`follow`/`echo`/`dm` contribute
+    no targets at all and so can never clear anything.
+
+    jq's `null.id` is `null` rather than an error, so a notification with no
+    `comment`/`post` object simply fails to match; the `isinstance` guards
+    here reproduce that rather than raising.
+    """
+    selected: list[str] = []
+    for item in notifications:
+        notif_id = item.get("id")
+        if not isinstance(notif_id, str) or not notif_id:
+            continue
+        comment = item.get("comment")
+        comment_id = comment.get("id") if isinstance(comment, dict) else None
+        post = item.get("post")
+        post_id = post.get("id") if isinstance(post, dict) else None
+        notif_type = item.get("type")
+        for target_post_id, target_parent_id in targets:
+            if target_parent_id:
+                matched = comment_id == target_parent_id
+            else:
+                matched = post_id == target_post_id and notif_type in _RESPONSE_NOTIFICATION_TYPES
+            if matched:
+                selected.append(notif_id)
+                break
+    return selected
+
+
+def _mark_notifications_read(resources: Resources, actions: list[Action]) -> None:
+    """Bash's "smart mark-read" block (`auto-run.sh:768-803`), ported whole.
+
+    Without it the same notifications come back unread every round and the
+    agent posts duplicate replies to the same comment -- user-visible on the
+    live site, which is why this is not deferrable observability polish.
+
+    Two mutually exclusive branches, in Bash's own order:
+
+      1. a plan that is ONLY `nothing` -> mark EVERYTHING read, so an idle
+         agent is not stuck rereading the same 8 items forever. Bash's test
+         is `[.[].action] | unique | join(",") == "nothing"`, i.e. EVERY
+         action is `nothing` -- not "exactly one action, and it is nothing".
+      2. otherwise, if the plan contains any `comment` -> re-read the 20 most
+         recent unread notifications and mark only those the agent
+         semantically responded to.
+
+    A plan with no comments and no `nothing` (e.g. a lone `like`) marks
+    NOTHING -- there is no third branch in Bash and there is none here.
+
+    Fire-and-forget in both directions, matching Bash's `2>/dev/null ||
+    echo '[]'` around the read and `|| true` around the write: a failed
+    notifications read degrades to "mark nothing this round", and the write
+    itself never raises (`Resources.mark_notifications_read`). This runs
+    after the actions have already landed; nothing it does may turn a
+    successful round into a failed one.
+    """
+    if actions and all(action.kind == "nothing" for action in actions):
+        resources.mark_notifications_read()
+        return
+
+    targets = _comment_targets(actions)
+    if not targets:
+        return
+    try:
+        notifications = resources.notifications(limit=_MARK_READ_NOTIFICATION_LIMIT)
+    except ApiError:
+        return
+    resources.mark_notifications_read(_responded_notification_ids(notifications, targets))
 
 
 def run_act(
@@ -345,7 +620,25 @@ def run_act(
         return ActResult(outcome=ActOutcome.OFFLINE)
 
     agent_name = persona.directory.name
-    with FileLock(act_lock_path(agent_root, agent_name)):
+    # F4: a dry run acquires NOTHING. `dry_run` executes no action, writes no
+    # memory line and PATCHes no profile, so it needs no mutual exclusion --
+    # and taking the lock made the documented "safe inspection command"
+    # actively unsafe: a dry run launched while a real Bash round held the
+    # lock cost that account its whole round (`auto-run.sh`'s own
+    # `acquire_lock` failure path returns 75 and the account is skipped).
+    # `nullcontext` rather than a second "shared" lock mode: there is no
+    # resource to share access TO.
+    lock: AbstractContextManager[object] = (
+        nullcontext() if dry_run else FileLock(act_lock_path(agent_root, agent_name))
+    )
+    with lock:
+        # F8: `agentBackend` profile sync -- `auto-run.sh:473-494`, in Bash's
+        # own position in the sequence (after login, before any context is
+        # built), not deferred to the end of the round. Skipped on `dry_run`
+        # for the same reason the lock is: this is a WRITE.
+        if not dry_run:
+            _sync_agent_backend(resources, persona, agent_name)
+
         ctx = build_context(
             resources,
             persona,
@@ -416,9 +709,25 @@ def run_act(
             results.append(result)
             if result.landed:
                 landed += 1
-            _write_memory_line(persona.directory, action, result, now=now)
+            _write_memory_line(
+                persona.directory,
+                action,
+                result,
+                now=now,
+                resources=resources,
+                username=persona.username,
+            )
 
         attempted = len(guarded.actions)
+        if landed > 0:
+            # F3: Bash's smart mark-read (`auto-run.sh:768-803`) sits AFTER
+            # the `landed == 0` early return (`auto-run.sh:762-765`), so a
+            # round where nothing landed marks nothing -- those
+            # notifications must survive to the next round. `landed > 0`
+            # reproduces that placement without an early return of our own,
+            # since this function still has an `ActOutcome` to decide.
+            _mark_notifications_read(resources, guarded.actions)
+
         if is_solo_nothing:
             outcome = ActOutcome.PLANNER_EMPTY
         elif landed == 0:

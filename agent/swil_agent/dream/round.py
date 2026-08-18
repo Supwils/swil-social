@@ -111,7 +111,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -167,26 +166,32 @@ _DIFF_NARRATIVE_SYSTEM_PROMPT: Final = (
 # part in any cache-key match (that match is entirely internal to
 # `dream/gate.py` and `dream/distill.py`), so a future bump only needs
 # updating in the two places that already duplicate it today.
-_ASPECT_PROMPT_VERSION: Final = "2"
-
-# `dream/gate.py`'s private `_EMBEDDER_UNREACHABLE_NOTE` -- the exact
-# `DreamVerdict.reason` text `_scalar_decision` returns when the embedder
-# could not be reached and the drift check fail-opened (dream.sh:798-802).
-# Duplicated as a literal for the same reason `_ASPECT_PROMPT_VERSION` is:
-# `test_gate.py`'s own precedent is to pin private constants as literals
-# rather than import them across modules.
-_EMBEDDER_UNREACHABLE_REASON: Final = "embedder unreachable, skipping drift check"
+#
+# An `int`, NOT the `str` `dream/gate.py`'s same-named constant is. The two
+# copies feed different consumers and the types are load-bearing on both
+# sides, which is why unifying them would be the wrong fix:
+#   * HERE the value crosses the wire into `aspectDrift.promptVersion`,
+#     which `server/src/modules/agents/agents.schemas.ts`'s
+#     `aspectDriftIngest` declares as `z.number().int().nonnegative()` with
+#     NO `.coerce`. A JSON string fails that validation and the server
+#     rejects the WHOLE snapshot ingest -- i.e. every accepted Python dream
+#     silently loses its personality snapshot, the exact failure mode
+#     already in this project's history ("create-api-key before the first
+#     dream or the personality snapshot silently never lands"). Bash sends
+#     a JSON number: `dream.sh:769` uses `jq -n --argjson pv`, not `--arg`.
+#   * In `dream/gate.py` the value is STRING-CONCATENATED into the anchor
+#     aspect cache key (`sha256(anchor):v{N}`, `dream.sh:318`). Changing its
+#     type there would be harmless in Python but is exactly the kind of edit
+#     that invites a format change, and a changed key invalidates all 23
+#     real warm `personality.anchor.aspects.json` files at once (~69 extra
+#     `claude` calls to rebuild). It stays a `str` for that reason.
+_ASPECT_PROMPT_VERSION: Final = 2
 
 # dream.sh:805's OWN lab-event summary for that same case -- a DIFFERENT,
 # past-tense string from its `_log` line one line above (dream.sh:804 uses
 # "skipping"; the event uses "skipped"). Both are transcribed verbatim from
 # the script, not assumed to be the same string.
 _EMBEDDER_UNREACHABLE_EVENT_SUMMARY: Final = "embedder unreachable, skipped drift check"
-
-# `dream/gate.py`'s `_scalar_decision` formats a REJECT reason as
-# `f"drift too large (sim={scalar_sim:.4f}, threshold={threshold:.2f})"` --
-# this regex is pinned to that exact format (see `_drift_fail_metrics`).
-_SCALAR_SIM_RE: Final = re.compile(r"sim=([\d.]+)")
 
 
 def _emit(resources: Resources, username: str, event: LabEvent) -> None:
@@ -217,16 +222,26 @@ def _drift_fail_metrics(verdict: DreamVerdict, settings: Settings) -> dict[str, 
     produced per-aspect similarities (Bash's own
     `if [[ -n "$aspect_drift_json" ]]` branch, which fires whenever the
     aspect computation succeeded, regardless of which mode ultimately
-    decided), else `{similarity, drift}` extracted from the scalar gate's
-    own reason string via `_SCALAR_SIM_RE`.
+    decided), else `{similarity, drift}` built from `verdict.scalar_sim` --
+    a TYPED field on `DreamVerdict` (fix round 2, task 12), not text pulled
+    back out of `reason` by pattern-matching. An earlier version of this
+    function regex-matched the number out of `dream/gate.py`'s
+    `_scalar_decision` reason string; that coupling meant a harmless-looking
+    reword of that message (e.g. `sim=` -> `similarity=`) would silently
+    empty this function's output with no test failure anywhere -- a lab
+    event missing its numbers looks identical to one that was never going
+    to have any. `scalar_sim` closes that gap: `gate.py` populates it
+    whenever the scalar embed pair succeeded, on BOTH the accept and reject
+    paths, and leaves it `None` -- not `0.0` -- when the embedder could not
+    be reached, so this function tells "no value" apart from "value 0.0" by
+    construction rather than by regex-match-or-not.
 
-    A STRUCTURAL failure's `reason` never contains `sim=`, and
-    `verdict.sims` is never populated for one either (`dream/gate.py`
-    returns immediately after `validate_candidate` fails, before ever
-    computing a similarity) -- so both branches fall through to `{}` for a
-    structural failure without this function needing to know which kind of
-    failure it is looking at, matching Bash's own "no metrics" behaviour
-    for those six checks.
+    A STRUCTURAL failure's `verdict.sims` AND `verdict.scalar_sim` are both
+    `None` (`dream/gate.py` returns immediately after `validate_candidate`
+    fails, before ever computing a similarity) -- so both branches fall
+    through to `{}` for a structural failure without this function needing
+    to know which kind of failure it is looking at, matching Bash's own "no
+    metrics" behaviour for those six checks.
     """
     if verdict.sims is not None:
         return {
@@ -238,11 +253,9 @@ def _drift_fail_metrics(verdict: DreamVerdict, settings: Settings) -> dict[str, 
             "breached": verdict.breached,
             "mode": settings.drift_mode,
         }
-    match = _SCALAR_SIM_RE.search(verdict.reason)
-    if match is None:
+    if verdict.scalar_sim is None:
         return {}
-    sim = float(match.group(1))
-    return {"similarity": sim, "drift": round(1 - sim, 4)}
+    return {"similarity": verdict.scalar_sim, "drift": round(1 - verdict.scalar_sim, 4)}
 
 
 def build_snapshot_payload(
@@ -490,7 +503,16 @@ def run_dream(
             runner=runner,
             settings=settings,
         )
-        if verdict.accepted and verdict.reason == _EMBEDDER_UNREACHABLE_REASON:
+        # `DreamVerdict.embedder_unreachable`, NOT a comparison against
+        # `verdict.reason`. `dream/gate.py` COMPOSES that string
+        # (`f"{aspect_note}; {base_reason}"`), and in the deployed
+        # `DRIFT_MODE=aspect` a non-empty `aspect_note` is routine -- so an
+        # `==` here silently stopped matching in exactly the case that
+        # matters most: the aspect pipeline degraded AND the embedder gone,
+        # i.e. the dream landing completely ungated with no WARN to say so.
+        # Bash fires this event on the condition itself (dream.sh:804-805),
+        # not on the text of its own log line.
+        if verdict.accepted and verdict.embedder_unreachable:
             _emit(
                 resources,
                 persona.username,

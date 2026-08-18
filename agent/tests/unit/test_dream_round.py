@@ -28,6 +28,7 @@ from swil_agent.api.resources import WriteNotVerifiedError
 from swil_agent.config import Settings
 from swil_agent.dream.candidate import clean_candidate
 from swil_agent.dream.distill import anchor_cache_key
+from swil_agent.dream.gate import _ASPECT_PROMPT_VERSION as _GATE_PROMPT_VERSION
 from swil_agent.dream.round import build_snapshot_payload, run_dream
 from swil_agent.llm.base import BackendUnavailableError
 from swil_agent.locks import LockBusy, dream_lock_path
@@ -62,6 +63,14 @@ ORIGINAL = """# 测试
 ## 发帖节律
 - 每次触发有 60% 概率选择 post
 """
+
+
+# What `dream/drift.py`'s `resolve_anchor_text` returns for an account whose
+# only personality file is `personality.md` (branch 3): `dream.sh` reads it
+# as `$(cat "$dir/personality.md")` and `$( )` strips the trailing newline,
+# so the anchor cache key is keyed on the STRIPPED text. Seeding a cache HIT
+# with the unstripped `ORIGINAL` silently produces a MISS instead.
+RESOLVED_ANCHOR = ORIGINAL.rstrip("\n")
 
 
 def _valid_candidate(bio: str = "改写过的一句话") -> str:
@@ -513,7 +522,7 @@ def test_aspect_drift_is_attached_to_the_snapshot_payload_in_aspect_mode(
     directory = _write_account(tmp_path)
     _write_anchor_cache(
         directory,
-        anchor_text=ORIGINAL,
+        anchor_text=RESOLVED_ANCHOR,
         vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
     )
     embedder = FakeEmbedder([[1.0], [1.0], [0.99], [0.99], [0.99]])
@@ -537,12 +546,37 @@ def test_aspect_drift_is_attached_to_the_snapshot_payload_in_aspect_mode(
     _, payload = resources.snapshots[0]
     assert payload["aspectDrift"] == {
         "mode": "aspect",
-        "promptVersion": "2",
+        "promptVersion": 2,
         "values": 0.99,
         "style": 0.99,
         "topic": 0.99,
         "breached": [],
     }
+    # `== 2` alone would also pass for `"2"` under a loose comparison and,
+    # worse, `True == 1` in Python -- so assert the wire TYPE explicitly.
+    # `agents.schemas.ts`'s `aspectDriftIngest` declares
+    # `promptVersion: z.number().int().nonnegative()` with no `.coerce`, so
+    # a JSON string fails validation and the server rejects the whole
+    # snapshot ingest: an accepted dream that silently records no snapshot.
+    assert type(payload["aspectDrift"]["promptVersion"]) is int
+    # ... and it must survive JSON encoding as a number, which is what
+    # actually reaches Zod (`jq -n --argjson pv`, dream.sh:769).
+    assert '"promptVersion": 2' in json.dumps(payload["aspectDrift"])
+
+
+def test_the_aspect_cache_key_is_not_affected_by_the_snapshot_prompt_version_type() -> None:
+    """`dream/round.py`'s `_ASPECT_PROMPT_VERSION` (an `int`, for the wire)
+    and `dream/gate.py`'s (a `str`, for the cache key) are separate
+    constants on purpose. This pins the key's bytes against the value a real
+    warm cache on disk carries -- `agent/agents/quant/personality.anchor.aspects.json`
+    reads `"key": "a72c...085c:v2"` -- so a future "simplification" that
+    unified the two constants on the int would be caught here rather than by
+    23 accounts silently re-distilling their anchors (~69 `claude` calls).
+    """
+    assert (
+        anchor_cache_key("x", prompt_version=_GATE_PROMPT_VERSION)
+        == f"{hashlib.sha256(b'x').hexdigest()}:v2"
+    )
 
 
 # ── Fix round 1, item 1: lab events (dream.sh's `_post_agent_event`) ────────
@@ -741,11 +775,105 @@ def test_embedder_unreachable_emits_a_warn_event_but_still_accepts(tmp_path: Pat
     assert warn_events[0].summary == "embedder unreachable, skipped drift check"
 
 
+def test_embedder_unreachable_still_warns_in_the_deployed_aspect_mode(tmp_path: Path) -> None:
+    """The same fail-open WARN as the test above, but in the mode that is
+    actually deployed (`DRIFT_MODE=aspect`, `agent/.env`) and with the
+    aspect pipeline degraded too -- so `dream/gate.py` prefixes an
+    `aspect_note` onto the reason and the composed string is
+    `"aspect distill/embed failed, falling back to scalar drift; embedder
+    unreachable, skipping drift check"`.
+
+    This is the case an equality test against the bare note text missed.
+    The mutation it catches: `if verdict.accepted and verdict.reason ==
+    _EMBEDDER_UNREACHABLE_REASON` -- under which the assertion below drops
+    from 1 warn event to 0. Losing it is worse than the outage it reports:
+    it is the ONLY signal that the constitution layer fail-opened and the
+    dream landed ungated, and its absence is indistinguishable from a
+    healthy round.
+
+    The test above deliberately stays on `drift_mode="scalar"` (`_run`'s own
+    default): the two together pin that BOTH gate branches emit the event,
+    which is what `dream.sh:797-807` does -- its `else` covers scalar mode,
+    shadow mode, and aspect-mode fallback alike.
+    """
+    directory = _write_account(tmp_path)
+    resources = FakeResources()
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        # Distiller is healthy; every EMBED fails -- so the aspect pipeline
+        # degrades (non-empty aspect_note) AND the scalar pair is unmeasured.
+        runner=RecordingRunner('{"values":"a","style":"b","topic":"c"}'),
+        embedder=FakeEmbedder(fail_always=True),
+        settings=Settings(drift_mode="aspect"),
+    )
+
+    assert result.accepted is True
+    assert result.verdict is not None
+    assert result.verdict.embedder_unreachable is True
+    # The composed reason is preserved verbatim -- operators read it and the
+    # drift docs quote its format; only the SIGNAL moved to a typed field.
+    assert result.verdict.reason == (
+        "aspect distill/embed failed, falling back to scalar drift; "
+        "embedder unreachable, skipping drift check"
+    )
+    warn_events = [e for e in resources.lab_events if e.outcome == "warn" and e.type == "dream"]
+    assert len(warn_events) == 1
+    assert warn_events[0].summary == "embedder unreachable, skipped drift check"
+
+
+def test_an_aspect_gated_dream_is_not_flagged_embedder_unreachable(tmp_path: Path) -> None:
+    """The other side of the flag: `scalar_sim is None` alone must NOT mean
+    "fail-opened". Here the aspect gate has usable sims and decides the
+    verdict, so a missing scalar similarity gated nothing and no WARN is
+    owed. Mutation this catches: setting `embedder_unreachable = scalar_sim
+    is None` unconditionally in `evaluate_candidate` instead of only on the
+    scalar branch."""
+    directory = _write_account(tmp_path)
+    _write_anchor_cache(
+        directory,
+        anchor_text=RESOLVED_ANCHOR,
+        vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
+    )
+    resources = FakeResources()
+    embedder = FakeEmbedder(
+        # calls: 1 scalar anchor (RAISES -> scalar_sim is None), 2 scalar
+        # candidate, then 3-5 the candidate's three aspect cards (the anchor
+        # side is served from the seeded cache, so it costs no embed).
+        [[1.0], [1.0], [1.0], [1.0], [1.0]],
+        fail_on_call=1,
+    )
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        runner=RecordingRunner('{"values":"a","style":"b","topic":"c"}'),
+        embedder=embedder,
+        settings=Settings(drift_mode="aspect"),
+    )
+
+    assert result.accepted is True
+    assert result.verdict is not None
+    # The precondition the test needs to be non-vacuous: the SCALAR pair
+    # really did fail to compute, and only the aspect gate had anything to
+    # go on.
+    assert result.verdict.scalar_sim is None
+    assert result.verdict.sims is not None
+    assert result.verdict.embedder_unreachable is False
+    warn_events = [e for e in resources.lab_events if e.outcome == "warn" and e.type == "dream"]
+    assert warn_events == []
+
+
 def test_an_aspect_mode_drift_rejection_emits_aspect_shaped_metrics(tmp_path: Path) -> None:
     directory = _write_account(tmp_path)
     _write_anchor_cache(
         directory,
-        anchor_text=ORIGINAL,
+        anchor_text=RESOLVED_ANCHOR,
         vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
     )
     resources = FakeResources()

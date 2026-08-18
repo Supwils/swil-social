@@ -1,11 +1,124 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-08-13
-owner: deepseek-backend
+last-updated: 2026-08-18
+owner: agent-python-migration
 ---
 
 # Handoff
+
+## ⚠ Python agent runtime, Plan 2 complete — Bash is still the runtime of record — 2026-08-18
+
+`agent/swil_agent/` — a `uv`-managed Python package that ports `auto-run.sh`'s
+act path and `dream.sh` — now has entrypoints: `swil-agent act <name>
+[--dry-run] [--budget N] [--seed N]` and `swil-agent dream <name> [--auto]`
+(`agent/swil_agent/cli.py`; run as `uv run --project agent swil-agent …`, or
+`cd agent && uv run swil-agent …`). 855 tests, 99% coverage, `mypy --strict`
+clean, `ruff` clean. Design spec:
+`docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`.
+Ledger of all 13 tasks: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progress.md`.
+
+**Do not point anything real at this yet.** Per the spec's §10 migration-stage
+table, this closes Stage 2 (package built, unit-tested). Stages 3–4 — the
+shadow round (Bash executes, Python plans only, compare deterministic
+divergence) and the canary (3–5 accounts on Python, the rest on Bash, one real
+round) — have not run. **`cycle-one.sh` is still how a real round happens; the
+heartbeat must not be re-pointed at `swil-agent` until Stage 5 (full cutover),
+which requires a clean canary first.** `swil-agent act --dry-run` is the
+shadow-round primitive Stage 3 needs: it builds context, produces a plan, and
+executes nothing — verified by tests asserting on the absence of API calls and
+`memory.md` writes, not merely on an exit code. Nobody has run it against the
+real roster yet.
+
+**Do not read "writes nothing" as "cannot affect a live round" — it was not
+true until the final review.** Two of that round's findings were on this exact
+path. `--dry-run` used to acquire `agent/.agent-state/lock_<name>`, so running
+one while a real Bash round was live made THAT round lose the acquire race and
+SKIP, silently costing the account its round; a dry run now takes no lock. And
+the `agentBackend` profile PATCH added in the same round is explicitly skipped
+under `--dry-run`, which is the kind of write that would otherwise creep back
+in. The claim holds today; treat it as an invariant to re-check whenever a new
+side effect is added to `run_act`, not as something the flag guarantees for
+free.
+
+**What's in this package, and what deliberately is not.** Shipped: `act/`
+(context assembly, the rhythm-prose parser, the planner, guardrails, the
+write-verified executor), `dream/` (cooldown, candidate generation/cleanup,
+the per-aspect drift gate, the accept/write sequence), `api/` (typed
+`Resources` + dual auth), `llm/` (claude/codex/deepseek CLI dispatch + the
+neutral aspect distiller), `embedder/` (the bge-m3 client + a thin wrapper
+around `embedder-guard.sh` — the guard script itself stays Bash on purpose,
+see spec §3.2), and now `cli.py` composing all of it. **`graph/` (LangGraph
+cycle orchestration, `CycleState`, checkpointing) and `analysis/`
+(`rule_check`, `behavior_snapshot`, `population_metric`, `summary`) are Plan
+3 and do not exist in this package at all** — there is no `swil-agent cycle`
+or `swil-agent summary` command, only `act`/`dream`/`version`. Run leases
+replacing the Bash PID-lock files (spec §7.3) are also Plan 3; today Python
+and Bash coexist by sharing the exact same lock-file paths and staleness rule
+(`agent/.agent-state/lock_<name>` / `dream_lock_<name>`, 1800s), which is a
+coexistence measure, not the destination — it inherits Bash's own "a stale
+reclaim can steal a live process's lock with no ownership check" property
+bug-for-bug (spec §15.1 does not list it because it isn't a Python/Bash
+*divergence* — both runtimes do the identical thing).
+
+**Two operational facts that will otherwise cost someone a slow, confusing
+first run:**
+
+- **The anchor aspect cache does not travel with the repo.**
+  `personality.anchor.aspects.json` (one per account, 3×1024 floats) is
+  git-ignored by design and exists today only in the *main checkout's*
+  working tree. A worktree, a fresh clone, or a CI runner starts cold. A
+  cache miss re-distills and re-embeds rather than failing, so correctness is
+  fine — but warming the full 23-account roster from cold costs **~69
+  `claude` calls plus ~69 `/embed` calls** (23 accounts × 3 aspects). Whoever
+  runs the shadow round or canary from a checkout other than the main one
+  should expect a much slower first pass, or should copy the 23
+  `personality.anchor.aspects.json` files across first.
+- **`agent/.env` is required for any real (non-`--dry-run`, non-unit-test)
+  invocation, and is deliberately absent from this and every other
+  worktree.** It carries four live credentials (`SWIL_PASS`, two Unsplash
+  keys, `SWIL_AGENT_SETUP_TOKEN`) and points `SWIL_URL` at Railway
+  **production** — it was removed from this worktree mid-plan after an
+  implementer copied it in for a test that didn't need it (see the plan
+  ledger, Task 11). Every unit test in `agent/tests/` builds its own
+  `Settings(...)` directly rather than reading the real file; do not
+  recreate `agent/.env` here to "make it work" — copy it in only for an
+  actual, deliberate shadow-round or canary run, and treat that as touching
+  production.
+
+**Two things left open by design, not oversight** (see
+`.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/task-13-brief.md`'s
+self-review and Tasks 5/7's rulings for the full reasoning):
+
+1. **A guardrail stage-ordering artifact is reproduced, not fixed.**
+   `act/guardrails.py` empties a `[post, nothing]` plan under the `no_post`
+   rhythm veto because of the ORDER its stages run in, inherited byte-for-byte
+   from `auto-run.sh`'s own `apply_plan_guardrails`. Reordering the stages
+   would remove the artifact but would also show up as a divergence on every
+   rhythm-vetoed account in the shadow-round comparison, for a defect whose
+   actual harm is already gone under §7.1 (an emptied plan no longer costs the
+   account its dream). Left as-is on purpose; worth a real fix only after the
+   shadow round confirms it's the only thing left disagreeing on those
+   accounts.
+2. **`landed == 0` no longer denies the dream — a genuine, spec-driven policy
+   change, not a bug.** Bash skips the dream when every planned action failed
+   (reasoning: dreaming on a round with no refreshed memory manufactures
+   drift that never happened). Design spec §7.1 says only
+   `ActOutcome.BACKEND_UNAVAILABLE` and `OFFLINE` may deny a dream — a
+   rhythm-vetoed or all-failed round is still the agent's own correct choice
+   or bad luck, not evidence the platform was unreachable. `act/round.py`
+   follows the spec: an all-failed round is logged at WARNING with Bash's
+   *original* wording (so `grep FAIL` still finds it) but `ActResult.
+   grants_dream` is `True` regardless, and `swil-agent dream` will run. This
+   means Python will dream on some rounds Bash would have skipped — a real
+   behavioural difference the shadow round WILL surface, and it must be
+   recorded as a deliberate change point in the drift series when the canary
+   runs, not investigated as a bug.
+
+**Known Bash↔Python differences** — twelve rows, each with a direction
+(fail-safe / fail-open / trap / neutral) and a verdict on whether it must be
+resolved before Stage 5: spec §15, not restated here since a copy would go
+stale the moment either side changes.
 
 ## ⚠ The embedder was the reason dreams fail-opened — 2026-08-13
 

@@ -25,6 +25,7 @@ discrepancy found between the brief and the script for this task's scope.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -43,6 +44,7 @@ from swil_agent.persona.source import ARCHIVE_HEADER
 DEFAULT_THRESHOLDS = AspectThresholds()
 
 AGENT_ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 
 def load_fixture(name: str) -> list[list[float]]:
@@ -220,6 +222,75 @@ def test_a_headerless_archive_returns_the_whole_file(tmp_path: Path) -> None:
 def test_no_archive_falls_back_to_the_current_personality(tmp_path: Path) -> None:
     (tmp_path / "personality.md").write_text("CURRENT", encoding="utf-8")
     assert resolve_anchor_text(tmp_path) == "CURRENT"
+
+
+def test_pinned_anchor_keeps_leading_whitespace_but_drops_trailing_newlines(
+    tmp_path: Path,
+) -> None:
+    """`dream.sh:228`'s pinned branch is `cat "$anchor_pin"` inside a
+    `$( )` command substitution (dream.sh:310), which strips ONLY trailing
+    newlines -- leading whitespace and trailing spaces survive. `.strip()`
+    would eat both ends; this pins `.rstrip("\n")` instead."""
+    (tmp_path / "personality.anchor.md").write_text("  PINNED \n\n\n", encoding="utf-8")
+    assert resolve_anchor_text(tmp_path) == "  PINNED "
+
+
+def test_personality_fallback_keeps_leading_whitespace_but_drops_trailing_newlines(
+    tmp_path: Path,
+) -> None:
+    """Branch 3 (`cat "$dir/personality.md"`, dream.sh:246) has the same
+    shape as branch 1, and neither has the archive branch's inline
+    `print(...strip())`."""
+    (tmp_path / "personality.md").write_text("  CURRENT \n\n", encoding="utf-8")
+    assert resolve_anchor_text(tmp_path) == "  CURRENT "
+
+
+# The sha256 a live Bash round computes for `quant`'s pinned anchor:
+#
+#   anchor_text="$(cat agent/agents/quant/personality.anchor.md)"
+#   printf '%s' "$anchor_text" | shasum -a 256
+#   -> a72c37529742f4544f3585593a99da504446d8d6f630d2abb3b8201176e6085c
+#
+# Independently corroborated by that account's WARM on-disk aspect cache,
+# `agent/agents/quant/personality.anchor.aspects.json`, whose `"key"` field
+# reads `a72c...085c:v2` -- written by Bash itself on a real dream. That
+# file is gitignored (it holds 3x1024 floats), so the value is pinned here
+# as a literal rather than read back from a path this worktree does not
+# have.
+_QUANT_ANCHOR_BASH_SHA256 = "a72c37529742f4544f3585593a99da504446d8d6f630d2abb3b8201176e6085c"
+# What `read_text()` alone produced before the fix -- kept so the test can
+# assert the two are genuinely different bytes, i.e. that it is capable of
+# failing.
+_QUANT_ANCHOR_RAW_SHA256 = "ebd2f119095ae0900aed365e0fe75f221a2f65439866c5c0349c04db37c73e69"
+
+
+def test_pinned_anchor_of_a_real_account_hashes_to_the_bash_value(tmp_path: Path) -> None:
+    """The pinned branch, on REAL content, against the sha256 Bash produces.
+
+    Content is `tests/fixtures/quant_personality.anchor.md`, a committed
+    byte-copy of `agent/agents/quant/personality.anchor.md` (the roster's
+    only `personality.anchor.md`) -- copied in rather than read from the
+    live roster so this pin cannot be invalidated by ordinary roster churn,
+    and copied in rather than synthesised so it carries the real file's
+    trailing newline and CJK body.
+
+    Why it matters: this string is sha256'd into the anchor aspect cache key
+    (`dream/distill.py`'s `anchor_cache_key`). One extra trailing `\n` and
+    Python's key never equals the key Bash wrote, so the warm cache misses
+    permanently and BOTH runtimes re-distill the anchor on every dream (~3
+    `claude` calls + 3 embeds each). `quant` is precisely the account that
+    can least afford it -- it already fails the topic aspect 7 rounds in 8.
+    """
+    (tmp_path / "personality.anchor.md").write_bytes(
+        (FIXTURES / "quant_personality.anchor.md").read_bytes()
+    )
+    resolved = resolve_anchor_text(tmp_path)
+    assert hashlib.sha256(resolved.encode()).hexdigest() == _QUANT_ANCHOR_BASH_SHA256
+    # The fixture really does end in a newline, so a raw read is a DIFFERENT
+    # hash -- without this the assertion above could pass vacuously on a
+    # file that happened to have none.
+    raw = (FIXTURES / "quant_personality.anchor.md").read_text(encoding="utf-8")
+    assert hashlib.sha256(raw.encode()).hexdigest() == _QUANT_ANCHOR_RAW_SHA256
 
 
 def test_the_real_zenith_archive_resolves_to_its_oldest_block() -> None:

@@ -79,9 +79,17 @@ def _write_anchor_cache(directory: Path, *, anchor_text: str, vectors: AspectVec
     ANCHOR's aspect vectors without spending any embedder/runner call on
     them, leaving the embedder's call sequence free for the CANDIDATE side
     (and, before that, the two scalar-similarity calls `evaluate_candidate`
-    always makes first)."""
+    always makes first).
+
+    Keys on `anchor_text.rstrip("\n")`, not `anchor_text`: this directory
+    has no `personality.anchor.md` and no archive, so `resolve_anchor_text`
+    takes its third branch and mirrors `dream.sh`'s
+    `anchor_text="$(cat "$dir/personality.md")"` -- `$( )` strips the
+    trailing newline. Keying on the unstripped text seeds a cache MISS while
+    LOOKING like a HIT, which shows up only as an unexplained extra
+    runner/embedder call several asserts later."""
     _write_anchor(directory, anchor_text)
-    key = anchor_cache_key(anchor_text, prompt_version=_PROMPT_VERSION)
+    key = anchor_cache_key(anchor_text.rstrip("\n"), prompt_version=_PROMPT_VERSION)
     payload = {
         "key": key,
         "cards": {"values": "unused-on-cache-hit", "style": "unused-on-cache-hit", "topic": "x"},

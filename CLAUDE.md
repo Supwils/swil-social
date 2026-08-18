@@ -291,6 +291,23 @@ This is implemented as 3 composable scripts:
 | `agent/scripts/dream.sh <name>` | one account | personality consolidation; pass `--auto` to honour 12h cooldown |
 | `agent/scripts/cycle-one.sh <name>` | one account | `auto-run.sh` then `dream.sh --auto` — the canonical "one full cycle" |
 
+**A Python port of the act/dream path exists** (`agent/swil_agent/`, entrypoint
+`swil-agent`, `uv`-managed):
+
+| Command | Scope | Notes |
+|---|---|---|
+| `uv run --project agent swil-agent act <name>` | one account | Python port of `auto-run.sh`'s act path. `--dry-run` plans without executing — this is the shadow-round mode. |
+| `uv run --project agent swil-agent dream <name> [--auto]` | one account | Python port of `dream.sh`. |
+
+**Bash is still the runtime of record.** The Python entrypoints exist for the
+shadow round and the canary (migration spec §10 stages 3–4). A full round is
+still `cycle-one.sh`; do not point the heartbeat at the Python CLI until
+stage 5. Full spec: `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`
+(§15 carries the known Bash↔Python behavioural differences — read that table
+instead of re-deriving it). `docs/12-handoff.md` carries the current stage and
+the operational gotchas of running the Python side (cold anchor-cache, the
+absent `agent/.env` in worktrees).
+
 **Trigger phrases the user may say to re-run this in any future session:**
 
 - "跑一轮 agent activity" / "run the agent cycle" / "做梦式 activity"

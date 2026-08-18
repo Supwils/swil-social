@@ -74,6 +74,15 @@ logger = logging.getLogger(__name__)
 # (`dream/distill.py`'s `anchor_cache_key`) must match Bash's exactly -- a
 # mismatch here would invalidate all 23 real on-disk anchor caches at once,
 # the same hazard `distill.py`'s own module docstring warns about.
+#
+# A `str` on purpose: it is STRING-CONCATENATED into the cache key
+# (`anchor_cache_key` -> `sha256(anchor):v2`, `dream.sh:318`), and a real
+# warm cache on disk carries exactly those bytes
+# (`agent/agents/quant/personality.anchor.aspects.json`'s
+# `"key": "a72c...085c:v2"`). `dream/round.py`'s same-named constant is an
+# `int` because its consumer is the snapshot payload's numeric
+# `aspectDrift.promptVersion` field; see the comment there for why the two
+# copies deliberately do not share a type.
 _ASPECT_PROMPT_VERSION: Final = "2"
 
 _ASPECT_FALLBACK_NOTE: Final = "aspect distill/embed failed, falling back to scalar drift"
@@ -90,7 +99,15 @@ def evaluate_candidate(
     settings: Settings,
 ) -> DreamVerdict:
     """Structural validators, then the drift gate. See the module docstring
-    for the ordering contract and the fail-open paths this implements."""
+    for the ordering contract and the fail-open paths this implements.
+
+    The returned `DreamVerdict.scalar_sim` (fix round 2, task 12) is
+    whatever `_scalar_similarity` produced above -- `None` only when the
+    scalar embed pair itself could not be computed, `float` otherwise,
+    regardless of which mode ultimately decided accept/reject. A structural
+    failure returns before `_scalar_similarity` is ever called, so it always
+    carries `scalar_sim=None` via the field's own default.
+    """
     failure = validate_candidate(original, candidate)
     if failure is not None:
         logger.warning("structural validation failed for %s: %s", directory, failure.detail)
@@ -135,6 +152,7 @@ def evaluate_candidate(
                     breached,
                 )
 
+    embedder_unreachable = False
     if settings.drift_mode == "aspect" and sims is not None:
         accepted = not breached
         base_reason = _aspect_reason(sims, breached, accepted=accepted)
@@ -142,9 +160,27 @@ def evaluate_candidate(
         # Scalar mode, shadow mode, or aspect mode with a failed aspect
         # computation (dream.sh:796-807) -- the scalar gate decides.
         accepted, base_reason = _scalar_decision(scalar_sim, settings.drift_threshold, directory)
+        # dream.sh:797-807: the WARN log and the `warn` lab event fire on
+        # exactly this condition -- the scalar branch was taken AND
+        # `scalar_sim` is empty, i.e. the gate fail-opened with nothing
+        # measured. Carried as a typed flag rather than left for a caller to
+        # infer from `reason`, because `reason` is a COMPOSED string here
+        # (`f"{aspect_note}; {base_reason}"`) and in the deployed
+        # `DRIFT_MODE=aspect` a non-empty `aspect_note` is the common case:
+        # any `reason == <note>` test in a caller silently stops matching
+        # exactly when the aspect pipeline is also degraded, which is when
+        # an operator most needs to be told the constitution layer is off.
+        embedder_unreachable = scalar_sim is None
 
     reason = f"{aspect_note}; {base_reason}" if aspect_note else base_reason
-    return DreamVerdict(accepted=accepted, reason=reason, breached=breached, sims=sims)
+    return DreamVerdict(
+        accepted=accepted,
+        reason=reason,
+        breached=breached,
+        sims=sims,
+        scalar_sim=scalar_sim,
+        embedder_unreachable=embedder_unreachable,
+    )
 
 
 def _scalar_similarity(embedder: Embedder, anchor_text: str, candidate_text: str) -> float | None:

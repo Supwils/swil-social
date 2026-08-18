@@ -321,7 +321,12 @@ class FakeResources:
       - `post_raises` / `like_raises` / `dm_raises`: if set, the
         corresponding method raises this exact exception on every call.
       - `follow_raises`: if set, `.follow()` raises this exact exception
-        instead of recording a follow.
+        instead of recording a follow. Since ruling R20 this faithfully
+        models a 409 too: `Resources.follow` no longer swallows CONFLICT, so
+        every non-2xx reaches the caller as an `ApiError` exactly as this
+        fake delivers it. Before R20 it did NOT -- the real method returned
+        on CONFLICT, so any test passing a 409 here was driving a state
+        production could not reach.
       - `post_id`: if set, `create_post` always returns this exact string
         instead of the auto-incrementing `f"post-{n}"` — added for
         `act/round.py`'s memory-line tests, which pin an exact resource id
@@ -366,6 +371,7 @@ class FakeResources:
         like_raises: ApiError | WriteNotVerifiedError | None = None,
         dm_raises: ApiError | WriteNotVerifiedError | None = None,
         follow_raises: ApiError | WriteNotVerifiedError | None = None,
+        update_profile_raises: ApiError | None = None,
         post_id: str | None = None,
         snapshot_raises: ApiError | WriteNotVerifiedError | None = None,
         lab_event_raises: Exception | None = None,
@@ -380,6 +386,7 @@ class FakeResources:
         self._like_raises = like_raises
         self._dm_raises = dm_raises
         self._follow_raises = follow_raises
+        self._update_profile_raises = update_profile_raises
         self._post_id_override = post_id
         self._comment_call_count = 0
 
@@ -408,6 +415,15 @@ class FakeResources:
         # slug -> id, mirroring Resources.get_boards()'s real shape.
         self.board_lookup: dict[str, str] = {}
         self.get_boards_calls = 0
+
+        # agentBackend sync + smart mark-read (task 13 fix wave, F8/F3).
+        # Recorded in their OWN lists, not in `self.calls`: that list is
+        # scoped to the writes `execute_action` attempts (see the class
+        # docstring), and several tests assert it is exactly empty to prove
+        # a plan never reached the executor. Neither of these two calls
+        # comes from the executor.
+        self.profile_patches: list[dict[str, Any]] = []
+        self.marked_read: list[list[str] | None] = []
 
     def fail(self, name: str) -> None:
         """Make the named read call raise `ApiError`. `name` is one of
@@ -513,6 +529,31 @@ class FakeResources:
         self.dms.append(RecordedDM(username=username, text=text))
         n = len(self.dms)
         return f"conv-{n}", f"dm-{n}"
+
+    def update_profile(self, patch: dict[str, Any]) -> None:
+        """`act/round.py`'s `agentBackend` sync (task 13 fix wave, F8).
+        `update_profile_raises`, if set, is raised on every call -- used to
+        pin that a failed sync is a WARN, not a failed round."""
+        if self._update_profile_raises is not None:
+            raise self._update_profile_raises
+        self.profile_patches.append(patch)
+
+    def mark_notifications_read(self, ids: list[str] | None = None) -> None:
+        """`act/round.py`'s smart mark-read (task 13 fix wave, F3). Records
+        `None` for the `{"all": true}` shape and the id list otherwise, so a
+        test can tell the two branches apart -- they are different server
+        endpoints' bodies, not two spellings of one.
+
+        MIRRORS the real method's empty-list guard (ruling R20's fake-fidelity
+        audit): `Resources.mark_notifications_read([])` returns without any
+        HTTP call, because the server's `ids` branch is `.min(1)` and would
+        400. `act/round.py` DOES reach that call with `[]` -- a plan with a
+        comment whose notifications none of match -- so a fake that recorded
+        it would show a wire call production never makes, and a test asserting
+        on `marked_read` would be describing the fake rather than the code."""
+        if ids is not None and not ids:
+            return
+        self.marked_read.append(list(ids) if ids is not None else None)
 
     def lab_event(self, username: str, event: LabEvent) -> None:
         if self._lab_event_raises is not None:

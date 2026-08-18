@@ -132,10 +132,36 @@ def resolve_anchor_text(directory: Path) -> str:
 
     `ARCHIVE_HEADER_RE` must stay in lockstep with `ARCHIVE_HEADER` in
     `persona/source.py`: that module writes what this reads.
+
+    TRAILING-WHITESPACE HANDLING IS PER-BRANCH, and it is not cosmetic: this
+    string is sha256'd into the anchor aspect cache key
+    (`dream/distill.py`'s `anchor_cache_key`), so one stray byte makes the
+    warm cache miss forever and the two runtimes thrash it -- ~3 `claude`
+    calls plus 3 embeds re-spent on every dream. `dream.sh` always calls
+    `_anchor_text_for` as `anchor_text="$(_anchor_text_for "$dir")"`
+    (dream.sh:310, :739), and `$( )` strips **all trailing newlines** from
+    whatever the function emitted. So, matching dream.sh:224-247 branch by
+    branch:
+
+      1. pinned -- `cat "$anchor_pin"`, so only trailing newlines go.
+         `.rstrip("\\n")`, NOT `.strip()`: `cat` preserves leading
+         whitespace and `$( )` never touches it, and it does not touch
+         trailing spaces/tabs either.
+      2. archive -- the inline `python3` block does `print(text[...].strip())`,
+         so Python's own `.strip()` (both ends, all whitespace) has already
+         run before `print` adds the newline `$( )` then removes.
+         `.strip()` is the exact match here.
+      3. personality.md -- `cat "$dir/personality.md"`, same shape as
+         branch 1: `.rstrip("\\n")`.
+
+    Pinned on real content in
+    `test_pinned_anchor_of_a_real_account_hashes_to_the_bash_value`, against
+    the sha256 a live `$(cat ...)` produces -- the value already baked into
+    `quant`'s on-disk `personality.anchor.aspects.json` key.
     """
     pinned = directory / "personality.anchor.md"
     if pinned.exists():
-        return pinned.read_text(encoding="utf-8")
+        return pinned.read_text(encoding="utf-8").rstrip("\n")
 
     archive = directory / "personality.archive.md"
     if archive.exists():
@@ -143,4 +169,4 @@ def resolve_anchor_text(directory: Path) -> str:
         matches = list(ARCHIVE_HEADER_RE.finditer(text))
         return text[matches[-1].end() :].strip() if matches else text.strip()
 
-    return (directory / "personality.md").read_text(encoding="utf-8")
+    return (directory / "personality.md").read_text(encoding="utf-8").rstrip("\n")

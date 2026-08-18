@@ -75,6 +75,22 @@ allowed to escape this module -- both attempts are made inside the same
 `with httpx.Client(...)` block and any `httpx.HTTPError` from either one is
 caught alongside `ImageFetchError`, so `ImageFetchError` is the one type a
 caller ever needs to catch.
+
+`httpx.InvalidURL` is caught EXPLICITLY alongside them, and is not
+redundant: it is NOT an `httpx.HTTPError` subclass
+(`issubclass(httpx.InvalidURL, httpx.HTTPError)` is `False`), so it used to
+escape this module entirely. Reachable, and the consequence was a dead
+round rather than a text-only post: `_picsum_seed` replaces literal SPACES
+only -- faithfully, since Bash's is `tr ' ' '-'` -- so a TAB in a
+planner-supplied `imageTopic` survives into the picsum URL, httpx rejects
+it as a non-printable ASCII character, and the exception propagated out of
+`execute_action`, out of `run_act`, and into `cli.py`'s guard as
+`SKIP <name> -- UNEXPECTED InvalidURL`, exit 75, with every remaining
+action of that round unexecuted. Bash degrades instead (curl fails, so
+`fetched=0` and the post goes out text-only), so catching it here is
+parity, not a new policy. Found while writing a test for something else
+(ruling R22); pinned by
+`test_a_control_character_in_the_topic_degrades_instead_of_escaping`.
 """
 
 from __future__ import annotations
@@ -135,12 +151,12 @@ def fetch_unsplash_image(
         unsplash_error: BaseException | None = None
         try:
             return _fetch_unsplash(client, topic, access_key)
-        except (ImageFetchError, httpx.HTTPError) as exc:
+        except (ImageFetchError, httpx.HTTPError, httpx.InvalidURL) as exc:
             unsplash_error = exc
 
         try:
             return _fetch_picsum(client, topic)
-        except (ImageFetchError, httpx.HTTPError) as exc:
+        except (ImageFetchError, httpx.HTTPError, httpx.InvalidURL) as exc:
             raise ImageFetchError(
                 f"unsplash failed ({unsplash_error}); picsum fallback also failed ({exc})"
             ) from exc

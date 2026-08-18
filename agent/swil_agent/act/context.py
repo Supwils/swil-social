@@ -115,18 +115,24 @@ def format_timeline_feed(items: list[dict[str, Any]]) -> str:
     )
 
 
-# ── notifications (contract 01 §2j, deliberate divergence — spec §7.7) ─────
+# ── notifications (contract 01 §2j) ────────────────────────────────────────
 
 
 def format_notifications(items: list[dict[str, Any]]) -> str:
-    """Render the unread-notifications block.
+    """Render the unread-notifications block -- byte-for-byte
+    `auto-run.sh:576-582`'s jq.
 
-    DELIBERATE DIVERGENCE from auto-run.sh:580, per design spec §7.7: Bash
-    labels the NOTIFICATION's own id as `postId:`, so every post id the model
-    reads out of this block names no post. NotificationDTO.id is doc.id and the
-    post id is post.id -- different values (server/src/lib/dto.ts:317-320).
-    Python emits post.id. The shadow round will show this block differing from
-    Bash; that difference is the fix.
+    There is NO divergence here. An earlier version of this docstring
+    predicted one -- "Bash labels the NOTIFICATION's own id as `postId:`" --
+    and design spec §7.7 has since RETRACTED exactly that claim: the jq at
+    auto-run.sh:580 interpolates `.post.id` after its `postId:` label, the
+    POST's id, which is what this function emits. `NotificationDTO.id` and
+    `NotificationDTO.post.id` are indeed different values
+    (`server/src/lib/dto.ts:316-320`), but Bash never reads the first one
+    here. The prediction is dropped rather than left in place: a comment
+    documenting a bug that does not exist sends the next reader looking for
+    it, and a shadow round comparing these two blocks will find them
+    identical.
     """
     lines: list[str] = []
     for item in items:
