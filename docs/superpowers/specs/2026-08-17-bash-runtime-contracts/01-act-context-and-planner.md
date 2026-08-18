@@ -321,22 +321,20 @@ notification_context="$(bash "$SCRIPT_DIR/swil.sh" notifications 8 2>/dev/null |
   jq -r '
     .data.items[0:8][] |
     "- [\(.type)] @\(.actor.username)（\(.actor.displayName)）" +
-    if .post then "：postId:\(.id) 帖子「\(.post.textPreview[0:50])」" else "" end +
+    if .post then "：postId:\(.post.id) 帖子「\(.post.textPreview[0:50])」" else "" end +
     if .comment then " / 评论ID:\(.comment.id)（属于上面那个 postId）内容：「\(.comment.textPreview[0:50])」" else "" end
   ' 2>/dev/null || echo '（暂无新互动）')"
 ```
 (576-582) `swil.sh notifications 8` → `GET $BASE_URL/notifications?limit=8&unreadOnly=true` (swil.sh:652-655).
 Fallback on failure: `（暂无新互动）`.
 
-**Potential bug worth flagging:** in the `.post then …` branch, the literal displayed as `postId:\(.id)` uses
-`.id` — the **notification's own id**, not `.post.id`. Read literally, this jq program prints the
-notification's `id` field labelled as `postId:`, not the actual post's id. `.comment.id` in the second branch
-is correctly namespaced (`.comment.id`, not the top-level `.id`), which makes the first branch's bare `.id`
-look like a copy-paste slip rather than intentional. If so, every "postId" the LLM sees in the notifications
-block is actually a notification ID, which would silently break any `comment`/`like` action the model tries
-to build off that value (unless the two ids coincidentally match, or unless the API's notification
-serializer aliases `.id` to the post id for post-type notifications — not verified here, out of scope for
-this file set).
+**RETRACTED — there is no defect here.** This paragraph originally flagged the `.post then`
+branch as printing the notification's own `.id` under a `postId:` label, and asked for
+verification against a live payload. The flag was based on a transcription error a few lines
+above, since corrected: the script reads `\(.post.id)`. Verified across the worktree, the
+main checkout and the committed tree. The `.id` uses in §2g and §2h are also correct — those
+render feed items, where the item *is* the post. See the README's retraction for why the
+server-DTO reasoning that seemed to confirm this was the wrong evidence.
 
 ### k) `contacts_list` / `dm_context` — DM eligibility + recent conversations
 ```bash
@@ -350,8 +348,23 @@ dm_context="$(bash "$SCRIPT_DIR/swil.sh" dms 6 2>/dev/null || echo '')"
   `GET $BASE_URL/conversations?limit=50` (participants), excludes self, dedupes+sorts. No truncation. Exits 1
   loudly if self-resolution fails, but auto-run.sh's `2>/dev/null || echo ''` swallows that into an empty
   string.
-- `swil.sh dms 6` (swil.sh:715-722): `GET $BASE_URL/conversations?limit=6`, jq formats each as
-  `[id] @user1,user2 ●未读 最近：<lastMessage.text, 0:60 chars>`.
+- `swil.sh dms 6` (swil.sh:715-722): `GET $BASE_URL/conversations?limit=6`, jq formats each
+  row with this program **verbatim** (swil.sh:717-721) — the prose paraphrase that used to
+  stand here lost two details that matter, so read the program, not a summary of it:
+
+  ```jq
+  .data.items[]? |
+  "[\(.id)] @\(.participants | map(.username) | join(\",\"))" +
+  (if .unread then " ●未读" else "" end) +
+  "  最近：\((.lastMessage.text // "（空）") | gsub("\n";" ") | .[0:60])"
+  ```
+
+  The two details: the gap before `最近：` is **two spaces, unconditionally** — it is fixed
+  template text, not something the `●未读` marker contributes — and `// "（空）"` is a real
+  placeholder for a conversation whose last message is null. Note `//` is jq's
+  alternative operator, which falls back only on `null`/`false`; a literal empty-string
+  `lastMessage.text` renders as `最近：` with no placeholder, so a port using Python's
+  falsy `or` here would diverge.
 - Neither is truncated further by auto-run.sh itself. Both conditionally interpolated (§4).
 
 ### No separate "boards" block
@@ -423,7 +436,7 @@ Guidance text templates (verbatim, heredocs):
 ```
 
 Injection into the prompt: `## 本轮节律约束\n$rhythm_guidance` (632-633), and reiterated later as a hard-rule
-reminder line, `上面的"本轮节律约束"是硬规则，不要违背。` (657). `RHYTHM_POLICY` itself is **not** used inside
+reminder line, `上面的“本轮节律约束”是硬规则，不要违背。` (657). `RHYTHM_POLICY` itself is **not** used inside
 the prompt text at all — it is only consumed downstream by `apply_plan_guardrails` (line 714, out of scope)
 to programmatically strip `post` actions from the plan when policy is `no_post`. `RHYTHM_PREFER_NON_POST` is
 likewise only ever surfaced as prose inside `RHYTHM_GUIDANCE`; nothing downstream in this file reads the
@@ -494,7 +507,7 @@ $dm_context}
 ---
 请根据你的性格、行为规则和「发帖节律」，决定这一轮要做什么。
 
-上面的"本轮节律约束"是硬规则，不要违背。
+上面的“本轮节律约束”是硬规则，不要违背。
 ${backend_action_constraint}
 
 你这一轮有 ${ACTION_BUDGET:-5} 个动作的预算。按你的性格决定这一轮做哪些事——
@@ -641,10 +654,9 @@ excluded function and is noted here only as the boundary marker.
 1. **`today_post_count` is not an API value.** It's `grep -c` over local `memory.md` for today's `| post |`
    lines — a Python port must read the same local memory log, not call an endpoint, or the rhythm gate will
    silently diverge from the bash version.
-2. **Likely bug in the notifications jq**: the post-type branch prints `postId:\(.id)` using the
-   notification's own `.id`, not `.post.id` (auto-run.sh:580). `.comment.id` right next to it is correctly
-   namespaced, making this look like an unintentional slip rather than a deliberate choice — worth confirming
-   against the live API response shape before porting it faithfully or fixing it.
+2. **RETRACTED (was: "likely bug in the notifications jq").** The script reads
+   `\(.post.id)`; the `\(.id)` in the summary above was a transcription error in this
+   document, since corrected. Nothing to verify against production.
 3. **Asymmetric fallback behaviour** between blocks that "always render with a placeholder" (`context_now`,
    `global_feed`, `notification_context`, `recent_memory`) vs. blocks that "silently vanish from the prompt on
    failure" (`timeline_feed`, `thread_context`, `feed_context`, `contacts_list`, `dm_context`) — a naive port

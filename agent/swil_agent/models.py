@@ -126,3 +126,38 @@ class ActContext(BaseModel):
     backend_action_constraint: str = ""
 
     contacts: list[str] = Field(default_factory=list)
+
+
+class ActResult(BaseModel):
+    """The outcome of one `run_act` round (`act/round.py`, task 7).
+
+    `plan` and `context` are included even though task-7-brief.md's own
+    step-1 code sketch omitted them from this class body -- the SAME
+    brief's "Produces" line, one paragraph above that sketch, lists them
+    explicitly as part of what `run_act` produces, and without a `plan`
+    field `dry_run` mode (design spec §9.4) would have nothing to return:
+    the whole point of a shadow round is inspecting what plan and veto list
+    guardrails WOULD have produced, without executing anything. Treating
+    the interface summary as authoritative and the code sketch as an
+    incomplete transcription of it -- recorded in task-7-report.md.
+    """
+
+    outcome: ActOutcome
+    results: list[ActionResult] = Field(default_factory=list)
+    vetoed: list[VetoedAction] = Field(default_factory=list)
+    plan: Plan | None = None
+    context: ActContext | None = None
+    rhythm: RhythmDecision | None = None
+    attempted: int = 0
+    landed: int = 0
+
+    @property
+    def grants_dream(self) -> bool:
+        """Whether this round's outcome permits a dream afterwards.
+
+        Design spec §7.1: only a dead backend or an unreachable platform denies
+        the account its dream. A rhythm-vetoed or deliberately-empty plan is the
+        agent correctly choosing not to act, and Bash's rc=75 conflated all four
+        -- which is how an empty plan came to cost a personality evolution.
+        """
+        return self.outcome not in (ActOutcome.BACKEND_UNAVAILABLE, ActOutcome.OFFLINE)

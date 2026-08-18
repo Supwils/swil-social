@@ -607,6 +607,30 @@ run_agent() {
 **本轮后端限制（硬规则）：** 你只能选择 post 或 nothing。不要选择 comment / like / echo / follow。'
   fi
 
+  # The reply-shape example below lives in a variable, not inline in the prompt.
+  #
+  # bash 3.2 (the only bash on macOS, and what this runtime actually runs on)
+  # ends a ${var:+word} expansion at the first literal `}` rather than tracking
+  # brace pairs in the literal text. The `${thread_context:+...}` block embeds a
+  # JSON example, so on 3.2 that block came out corrupted in BOTH states: with
+  # threads present the example rendered as {action:comment,postId:...} — every
+  # quote stripped, the closing brace eaten — plus a stray `}` after the thread
+  # text; with no threads the block did not vanish at all and instead injected
+  # the orphan tail of this instruction plus a stray `}`. Since that example is
+  # the only text telling the model how to aim a reply with parentId, the thread
+  # feature was degraded from the day it shipped.
+  #
+  # Holding the braces behind a variable sidesteps the parser bug: the word
+  # `${comment_reply_example}` contains no literal brace for 3.2 to trip over,
+  # and a NESTED ${...} is the one brace form its scanner does track. Do not
+  # inline the JSON back.
+  #
+  # Use the braced form specifically. The bare `$comment_reply_example。` does
+  # NOT work here: on 3.2 the following multibyte `。` corrupts the unbraced
+  # reference and the example renders as mojibake. Both forms were checked
+  # against the real 3.2.57 in both states before this landed.
+  local comment_reply_example='{"action":"comment","postId":"该帖ID","parentId":"该评论ID","text":"..."}'
+
   local user_prompt
   user_prompt="$(cat <<PROMPT
 ## 当前上下文
@@ -640,7 +664,7 @@ $timeline_feed}
 ${thread_context:+
 ## 正在进行的讨论（几条热帖的完整评论区）
 下面每条评论前面的 [24位ID] 就是它的 commentId。想接着某条评论往下说，
-就用 {"action":"comment","postId":"该帖ID","parentId":"该评论ID","text":"..."}。
+就用 ${comment_reply_example}。
 不感兴趣就跳过——不必为了用上这块内容而硬接话。
 
 $thread_context}

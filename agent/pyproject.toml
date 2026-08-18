@@ -41,6 +41,16 @@ select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 # design, to match the Bash source and the real personality.md files.
 ignore = ["RUF001"]
 
+[tool.ruff.lint.per-file-ignores]
+# test_planner.py pins two full prompts (`_EXPECTED_EMPTY` / `_EXPECTED_POPULATED`)
+# as triple-quoted string constants whose physical lines are the literal, real
+# newline-delimited lines of auto-run.sh's own rendered output (contract 01 §4)
+# -- several of those source lines already exceed 100 columns. Wrapping them
+# would insert a newline that is not in the real prompt, silently turning the
+# byte-for-byte pin into a paraphrase of its own expected value. Every other
+# line in this file is subject to the normal E501 limit.
+"tests/unit/test_planner.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.13"
 strict = true

@@ -1,0 +1,270 @@
+[
+  {
+    "name": "codex_allow_list_drops_comment",
+    "plan": [
+      {"kind": "post", "text": "hello world"},
+      {"kind": "comment", "post_id": "p1", "text": "nice"},
+      {"kind": "like", "post_id": "p2"},
+      {"kind": "follow", "username": "dave"},
+      {"kind": "dm", "username": "carol", "text": "hi"},
+      {"kind": "echo", "post_id": "p3"}
+    ],
+    "policy": "free",
+    "budget": 10,
+    "contacts": ["carol"],
+    "allowed": ["post", "nothing"],
+    "expected_actions": [
+      {"kind": "post", "text": "hello world"}
+    ],
+    "expected_vetoed": [
+      ["comment", "backend allow-list (post,nothing)"],
+      ["like", "backend allow-list (post,nothing)"],
+      ["follow", "backend allow-list (post,nothing)"],
+      ["dm", "backend allow-list (post,nothing)"],
+      ["echo", "backend allow-list (post,nothing)"]
+    ]
+  },
+  {
+    "name": "empty_allow_list_is_a_noop",
+    "plan": [
+      {"kind": "post", "text": "hello world"},
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "follow", "username": "dave"}
+    ],
+    "policy": "free",
+    "budget": 10,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "post", "text": "hello world"},
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "follow", "username": "dave"}
+    ],
+    "expected_vetoed": []
+  },
+  {
+    "name": "mixed_in_nothing_is_dropped",
+    "plan": [
+      {"kind": "post", "text": "hello world"},
+      {"kind": "nothing"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "post", "text": "hello world"}
+    ],
+    "expected_vetoed": [
+      ["nothing", "nothing mixed into a multi-action plan"]
+    ]
+  },
+  {
+    "name": "lone_nothing_survives",
+    "plan": [
+      {"kind": "nothing"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "nothing"}
+    ],
+    "expected_vetoed": []
+  },
+  {
+    "name": "no_post_policy_drops_posts",
+    "plan": [
+      {"kind": "post", "text": "hello world"},
+      {"kind": "like", "post_id": "p1"}
+    ],
+    "policy": "no_post",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "like", "post_id": "p1"}
+    ],
+    "expected_vetoed": [
+      ["post", "rhythm policy no_post"]
+    ]
+  },
+  {
+    "name": "no_post_after_nothing_strip_yields_empty",
+    "plan": [
+      {"kind": "post", "text": "hello world"},
+      {"kind": "nothing"}
+    ],
+    "policy": "no_post",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [],
+    "expected_vetoed": [
+      ["nothing", "nothing mixed into a multi-action plan"],
+      ["post", "rhythm policy no_post"]
+    ]
+  },
+  {
+    "name": "dm_to_a_stranger_is_dropped",
+    "plan": [
+      {"kind": "dm", "username": "mallory", "text": "hey"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": ["carol"],
+    "allowed": [],
+    "expected_actions": [],
+    "expected_vetoed": [
+      ["dm", "dm recipient not in contacts"]
+    ]
+  },
+  {
+    "name": "dm_to_a_contact_survives",
+    "plan": [
+      {"kind": "dm", "username": "carol", "text": "hey"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": ["carol"],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "dm", "username": "carol", "text": "hey"}
+    ],
+    "expected_vetoed": []
+  },
+  {
+    "name": "dm_with_empty_contacts_is_dropped",
+    "plan": [
+      {"kind": "dm", "username": "carol", "text": "hey"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [],
+    "expected_vetoed": [
+      ["dm", "dm recipient not in contacts"]
+    ]
+  },
+  {
+    "name": "second_post_is_dropped",
+    "plan": [
+      {"kind": "post", "text": "first"},
+      {"kind": "post", "text": "second"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "post", "text": "first"}
+    ],
+    "expected_vetoed": [
+      ["post", "only one post per round"]
+    ]
+  },
+  {
+    "name": "second_echo_is_dropped",
+    "plan": [
+      {"kind": "echo", "post_id": "e1"},
+      {"kind": "echo", "post_id": "e2"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "echo", "post_id": "e1"}
+    ],
+    "expected_vetoed": [
+      ["echo", "only one echo per round"]
+    ]
+  },
+  {
+    "name": "two_likes_on_one_post_collapse",
+    "plan": [
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "like", "post_id": "p1"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "like", "post_id": "p1"}
+    ],
+    "expected_vetoed": [
+      ["like", "duplicate like on p1"]
+    ]
+  },
+  {
+    "name": "like_and_comment_on_one_post_both_survive",
+    "plan": [
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "comment", "post_id": "p1", "text": "nice"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "comment", "post_id": "p1", "text": "nice"}
+    ],
+    "expected_vetoed": []
+  },
+  {
+    "name": "two_comments_on_one_post_collapse_even_with_different_parents",
+    "plan": [
+      {"kind": "comment", "post_id": "p1", "parent_id": "c1", "text": "reply1"},
+      {"kind": "comment", "post_id": "p1", "parent_id": "c2", "text": "reply2"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "comment", "post_id": "p1", "parent_id": "c1", "text": "reply1"}
+    ],
+    "expected_vetoed": [
+      ["comment", "duplicate comment on p1"]
+    ]
+  },
+  {
+    "name": "follow_actions_are_never_deduped",
+    "plan": [
+      {"kind": "follow", "username": "dave"},
+      {"kind": "follow", "username": "dave"}
+    ],
+    "policy": "free",
+    "budget": 5,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "follow", "username": "dave"},
+      {"kind": "follow", "username": "dave"}
+    ],
+    "expected_vetoed": []
+  },
+  {
+    "name": "budget_truncates_to_the_first_n",
+    "plan": [
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "like", "post_id": "p2"},
+      {"kind": "like", "post_id": "p3"}
+    ],
+    "policy": "free",
+    "budget": 2,
+    "contacts": [],
+    "allowed": [],
+    "expected_actions": [
+      {"kind": "like", "post_id": "p1"},
+      {"kind": "like", "post_id": "p2"}
+    ],
+    "expected_vetoed": [
+      ["like", "over the 2-action budget"]
+    ]
+  }
+]

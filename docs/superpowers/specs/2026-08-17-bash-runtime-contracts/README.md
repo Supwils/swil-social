@@ -21,6 +21,17 @@ port deliberately diverges, the divergence belongs in the design spec's §7, not
 
 ---
 
+## Precedence: where these documents disagree with the scripts, the SCRIPTS win
+
+These documents *describe* `agent/scripts/`. They are a convenience, not a second source of
+truth. When a port is being written and the doc and the script disagree, read the script and
+implement that — then correct the doc, as was done for §2k below.
+
+This is not hypothetical. Two of the four documents have already been found wrong in ways a
+port would have inherited: one reconstructed a JSON file's shape from write code while 23
+real copies of it sat on disk, and one paraphrased a jq program in prose and lost two
+behaviours from it. Both were caught by an implementer reading the script anyway.
+
 ## Corrections applied after capture
 
 Two claims in the captured documents were checked against the repo and the server
@@ -56,18 +67,31 @@ re-distill (3 `claude` calls + 3 `/embed` calls per account) on the next round.
 Also live: `agent/agents/quant/personality.anchor.md` — the one pinned anchor on the
 roster, which takes priority over the archive.
 
-### 2. The notifications `postId` defect is CONFIRMED, not suspected
+### 2. RETRACTED — the notifications `postId` defect does not exist; the CONTRACT is what was wrong
 
-`01-act-context-and-planner.md` §2j flags `auto-run.sh:580`'s `postId:\(.id)` as a
-probable copy-paste slip and asks for verification against the live payload. Verified
-against the server:
+`01-act-context-and-planner.md` §2j transcribed `auto-run.sh:580` as rendering
+`postId:\(.id)` and flagged it as a probable copy-paste slip worth verifying. This README
+previously escalated that to "confirmed" on the strength of the *server* DTO — which does
+say `NotificationDTO.id` is the notification's id and the post id lives at `post.id`
+(`server/src/lib/dto.ts:317-320`). That was the wrong evidence for the claim: it settles
+what the fields mean, not what the script types.
 
-- `server/src/lib/dto.ts:317-320` — `NotificationDTO.id` is the notification's own id;
-  the post's id is `post.id`.
-- `server/src/modules/notifications/notifications.service.ts:241-244` — `id: doc.id`,
-  `post: { id: doc.postId, … }`. They are different values.
+The script reads `.post.id` and always has. Verified across three copies — this worktree,
+the main checkout, and the committed tree. So §2j's transcription is the defect, not the
+script. The transcription has been corrected.
 
-So every `postId:` the LLM reads out of the notifications block is a **notification
-id**, and any `comment` or `like` the model builds from that block targets an id that
-does not name a post. This is a live defect in the Bash runtime, not a porting
-question. See the design spec §7 for how the Python port handles it.
+This is the sharpest illustration of the precedence rule above, and it cuts both ways:
+a captured document can invent a bug as easily as it can miss one, and neither is caught
+by reasoning about adjacent systems. Only re-reading the script settles it.
+
+### 3. Contract 01 §2k's `dms` rendering was a lossy paraphrase — now quoted verbatim
+
+The original text summarised `swil.sh dms`'s jq as
+`[id] @user1,user2 ●未读 最近：<text>`. Two behaviours were lost: the gap before `最近：` is
+two spaces and is unconditional template text (not contributed by the `●未读` marker), and
+`(.lastMessage.text // "（空）")` supplies a placeholder for a null last message. Because `//`
+falls back only on `null`/`false`, a port using Python's falsy `or` renders an empty-string
+message as `最近：（空）` where Bash renders `最近：`.
+
+Found during the Python port by an implementer who read `swil.sh:717-721` instead of
+trusting the summary. §2k now carries the program verbatim.

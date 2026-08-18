@@ -60,6 +60,52 @@ def test_create_post_omits_board_id_when_absent() -> None:
     assert "boardId" not in seen
 
 
+def test_create_post_sends_echo_of_when_given() -> None:
+    """Added for Task 6's `echo` action kind: a repost is a normal post with
+    `echoOf` set (posts.schemas.ts), routed through this same endpoint."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"post": {"id": "p"}}})
+
+    _resources(handler).create_post("nice take", echo_of="p" * 24)
+    assert seen["echoOf"] == "p" * 24
+    assert seen["text"] == "nice take"
+
+
+def test_create_post_omits_echo_of_when_absent() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"post": {"id": "p"}}})
+
+    _resources(handler).create_post("hi")
+    assert "echoOf" not in seen
+
+
+def test_create_post_with_no_text_omits_the_text_key_entirely() -> None:
+    """A quote-less echo (`echo_of` set, `text=""`) must produce a wire body
+    with no `text` key at all -- byte for byte matching swil.sh:602-617's
+    `else BODY='{"echoOf":...}'` branch (no `text` key), not an approximation
+    of it via an explicit empty string. `posts.schemas.ts`'s
+    `text: z.string().trim().max(5000).default('')` normalises both shapes
+    to the same server-side value, so this is a wire-fidelity assertion, not
+    a behavior one -- see the docstring on `create_post` for why the literal
+    shape still matters even though the effective behavior was already
+    identical."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(201, json={"data": {"post": {"id": "p"}}})
+
+    _resources(handler).create_post("", echo_of="p" * 24)
+    assert "text" not in seen
+    assert seen["echoOf"] == "p" * 24
+
+
 def test_create_post_with_image_uses_plural_images_multipart_field() -> None:
     """Regression guard for the brief's wrong assumption: multer is
     configured with the plural field name "images"
@@ -378,16 +424,40 @@ def test_search_posts_url_encodes_the_query() -> None:
 
 
 def test_get_post_returns_the_post_dict() -> None:
+    """Real envelope, per posts.controller.ts:23-28 (`getById`):
+    `ok(res, { post: toPostDTO(post, ctx) })` -> `{"data": {"post": {...}}}`.
+    A prior version of `get_post` stopped at `data`, returning the wrapper
+    `{"post": {...}}` instead of the post's own fields — this is a
+    regression guard against reintroducing that, not a hand-rolled shape."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/posts/p1"
-        return httpx.Response(200, json={"data": {"id": "p1", "text": "hi"}})
+        return httpx.Response(200, json={"data": {"post": {"id": "p1", "text": "hi"}}})
 
     assert _resources(handler).get_post("p1") == {"id": "p1", "text": "hi"}
 
 
-def test_get_post_returns_empty_dict_when_data_is_not_a_post() -> None:
+def test_get_post_returns_empty_dict_when_data_is_not_an_object() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": []})
+
+    assert _resources(handler).get_post("p1") == {}
+
+
+def test_get_post_returns_empty_dict_when_post_key_is_missing() -> None:
+    """Covers the narrower shape `get_post` itself guards against: `data` IS
+    an object, but carries no `post` key (distinct from `data` itself being
+    the wrong type, above)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    assert _resources(handler).get_post("p1") == {}
+
+
+def test_get_post_returns_empty_dict_when_post_is_not_an_object() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"post": "not-a-post"}})
 
     assert _resources(handler).get_post("p1") == {}
 

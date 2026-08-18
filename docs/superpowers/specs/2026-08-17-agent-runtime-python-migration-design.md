@@ -472,30 +472,60 @@ Human-readable `agent/logs/auto-run.log` and `dream.log` lines are still emitted
 the current format, because out-of-scope scripts and existing operator habits parse
 them.
 
-### 7.7 The notifications block gets the right post id
+### 7.7 WITHDRAWN — the notifications block was never broken
 
-`auto-run.sh:580` renders the notifications context block with `postId:\(.id)` —
-the **notification's** id, not the post's. Verified against the server:
-`NotificationDTO.id` is `doc.id` and the post id is `post.id`
-(`server/src/lib/dto.ts:317-320`, `notifications.service.ts:241-244`). They are
-different values. The adjacent comment branch uses `.comment.id` correctly, which is
-what makes this a slip rather than a convention.
+This section previously asserted that `auto-run.sh:580` labelled the notification's own
+id as `postId:`, and treated emitting `post.id` from Python as a deliberate divergence.
 
-Consequence in production: every `postId:` the LLM reads out of that block names no
-post, so any `comment` or `like` built from a notification targets a non-existent id.
-This is a strong candidate root cause for the "Invalid id" action drops recorded on
-2026-08-16 — which are themselves invisible in `auto-run.log`, because `2>/dev/null`
-discards the response body (§7.6).
+**That was wrong, and the error was mine.** The script has always read
+`if .post then "：postId:\(.post.id) 帖子「…」"`. What I verified at the time was the
+*server* side — `NotificationDTO.id` really is the notification's id and the post id
+really does live at `post.id` (`server/src/lib/dto.ts:317-320`) — and I took a
+transcription error in a captured contract document as evidence about the script without
+re-reading the script itself. Checked since across three copies (this worktree, the main
+checkout, and the committed tree at HEAD): all three read `.post.id`.
 
-Python emits `post.id`. This is a deliberate divergence, not a parity failure: the
-shadow round (§9.4) will show a systematic difference in this block, and that
-difference is the fix. Reproducing the defect faithfully would mean knowingly feeding
-the model wrong ids for the length of the migration.
+No code was affected: `act/context.py` emits `post.id`, which is what Bash does, so
+Python and Bash agree and the shadow round should show no divergence here.
 
-The Bash script is **not** patched, for the reason §13 gives: Bash is frozen for the
-migration window so it stays a stable comparison baseline. That leaves the defect live
-in production until cutover — a cost worth stating out loud rather than absorbing
-silently.
+The nearby `.id` uses at `auto-run.sh:541` and `:549` are also correct — those render feed
+items, where the item *is* the post.
+
+Kept as a numbered section rather than deleted so that anything citing §7.7 lands on the
+retraction instead of on a renumbered neighbour.
+
+### 7.8 Recorded change point — the thread block, fixed in Bash on 2026-08-17
+
+A real defect was found in `auto-run.sh` during this migration and fixed **in Bash**
+(commit `97b3021`), with the user's explicit authorization. It is recorded here because
+it changes prompt text mid-experiment, and §1.1 ranks data continuity above delivery
+speed — an unrecorded prompt change is exactly how a drift series becomes uninterpretable.
+
+**The defect.** bash 3.2 — the only bash on macOS, and what this runtime runs on — ends a
+`${var:+word}` expansion at the first literal `}` rather than tracking brace pairs in the
+literal text. `${thread_context:+...}` (`auto-run.sh:640-646`) embeds a JSON example, so
+the block was corrupted in both of its states, since the thread feature shipped:
+
+| state | what the model actually received |
+|---|---|
+| threads present | the example rendered as `{action:comment,postId:该帖ID,…` — every quote stripped, the closing brace consumed — plus a stray `}` after the thread text |
+| no threads | the block did **not** vanish; it injected the orphan tail of the instruction plus a stray `}`, with no heading and no content |
+
+That example is the only text telling the model how to aim a reply with `parentId`, so the
+thread feature was degraded for its entire life. Scope was checked programmatically across
+all six `:+` blocks: only this one embeds a literal brace pair in plain text.
+`engaged_ids` also contains a brace, but it belongs to a nested `${engaged_ids}`, which
+bash parses correctly.
+
+**Experiment impact.** Rounds before 2026-08-17 saw a corrupted thread block; rounds after
+see the intended one. Comment-with-`parentId` rates before and after are not directly
+comparable, and any rise afterwards is the fix, not a behaviour change in the agents.
+
+**Why fix Bash rather than let the port carry it.** The change point arrives either way —
+Python emits the correct text, so cutover would have introduced it silently. Landing it
+now, deliberately and dated, makes it attributable. It also removes an expected divergence
+from the shadow round, so remaining divergences there are real findings rather than known
+noise.
 
 ---
 
@@ -658,6 +688,8 @@ direction that can silently contaminate data.
 | 5 | `follow()` treats "already following" as success by matching `ApiError.code == "CONFLICT"`. A server-side rename of that code turns a benign no-op into a loud failure. Detecting it needs a live contract test the offline suite cannot host. | fail-loud | `api/resources.py` |
 | 6 | Image fetch uses one 20s timeout where Bash uses differentiated 10s / 20s / 15s. Changes worst-case latency (~45s → ~60s), not success/failure outcomes. | neutral | `api/images.py` |
 | 7 | `_picsum_seed` slices by codepoint; Bash's `cut -c1-24` is byte-oriented under a C/POSIX locale. A CJK topic could seed picsum differently. The production locale was never verified. | neutral | `api/images.py` |
+| 8 | `_to_action` drops wire fields whose value is an empty string, so `{"postId": ""}` becomes `post_id=None`. The jq at `auto-run.sh:82` keeps `""`, and the guardrail's `(.postId // null) != null` then reads it as present. Nothing lands either way — the executor skips an action with no post id — but Bash collapses two such actions into one in its dedupe while Python keeps both, so the attempted tally and the veto list differ. Found while checking whether the Python guardrail's `post_id is not None` (which correctly matches jq's `//`) was reachable: it is not, *because* of this upstream filter. | neutral | `llm/extract.py` |
+| 9 | `_clean`'s text-emptiness check adds a trailing `.strip()` beyond a literal replay of `auto-run.sh`'s `tr -d '\n' \| sed 's/  */ /g'`, which never trims a single leading/trailing space: a whitespace-only input like `"   "` collapses to a residual `" "`, which Bash's own `[[ -z "$text" ]]` treats as non-empty. Bash therefore makes the `post`/`comment`/`echo`/`dm` network call on whitespace-only text and lets the server 400 it (`WARN … failed`, a `warn` lab event); Python's `.strip()`-based check skips locally first, with zero API calls (`SKIP …`, a `skip` lab event). Both runtimes end with nothing created — what lands is identical — but the attempted/landed tally, the log line, and the lab-event `outcome` all differ, and the shadow round compares exactly those three. | fail-safe | `act/executor.py` |
 
 ### 15.2 Behavioural — unreachable in the current roster
 

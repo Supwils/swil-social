@@ -8,13 +8,21 @@ Ports three routines:
 
 The first two were embedded Python heredocs inside llm.sh and could not be
 unit-tested; the echo-variance defect survived for months for exactly that
-reason. `normalize_plan` reproduces the multi-action plan pipeline described
-by the task brief for this port — that pipeline is NOT present in the
-committed agent/scripts/auto-run.sh in this worktree (no `normalize_plan`
-function, no `"plan"` key anywhere in agent/scripts/); it exists as
-uncommitted work in a different checkout. Its behaviour here is specified by
-the task brief and the tests in this module, not by a line citation into
-auto-run.sh.
+reason.
+
+`normalize_plan` ports the jq pipeline at auto-run.sh:82. (An earlier version
+of this docstring said that function did not exist in the committed tree —
+true when written, since the multi-action pipeline was then uncommitted work
+in the main checkout, and false since it landed in 9b9d3a7. Corrected rather
+than deleted so the claim is not simply retracted without its history.)
+
+One deliberate difference from the jq, recorded in the design spec's
+known-differences section: `_to_action` drops wire fields whose value is an
+empty string, so `{"postId": ""}` yields `post_id=None`. The jq keeps `""`,
+which the guardrail's `(.postId // null) != null` then treats as present.
+Nothing lands either way — the executor skips an action with no post id — but
+Bash collapses two such actions to one in its dedupe and Python does not, so
+the attempted tally and the veto list differ.
 """
 
 from __future__ import annotations

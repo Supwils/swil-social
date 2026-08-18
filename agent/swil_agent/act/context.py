@@ -10,6 +10,7 @@ vanish) this module must preserve.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 from datetime import datetime
 from typing import Any
@@ -162,20 +163,44 @@ def select_thread_targets(items: list[dict[str, Any]], *, engaged: str) -> list[
     return [str(item["id"]) for item in busy[:_THREAD_TARGETS] if item.get("id")]
 
 
+def _post_json(post: dict[str, Any]) -> str:
+    """Pretty-print the post exactly as `swil.sh thread`'s jq does
+    (agent/scripts/swil.sh:558): `jq '.data.post | {id, author:
+    .author.username, text, likeCount, commentCount, echoCount,
+    createdAt}'`. Verified against a real `jq` invocation:
+    `json.dumps(obj, ensure_ascii=False, indent=2)` produces the identical
+    byte sequence for this exact key set and order (2-space indent, no
+    trailing item separator space, unescaped non-ASCII).
+
+    Every value is `.get(key)` with NO default -- jq's shorthand
+    `{likeCount}` evaluates to `null` when the source object lacks that key,
+    not `0` or `""`; supplying a Python-side default would fabricate a value
+    the real Bash pipeline never shows the model.
+    """
+    obj = {
+        "id": post.get("id"),
+        "author": _author(post).get("username"),
+        "text": post.get("text"),
+        "likeCount": post.get("likeCount"),
+        "commentCount": post.get("commentCount"),
+        "echoCount": post.get("echoCount"),
+        "createdAt": post.get("createdAt"),
+    }
+    return json.dumps(obj, ensure_ascii=False, indent=2)
+
+
 def format_thread(post: dict[str, Any], comments: list[dict[str, Any]]) -> str:
     """One thread block: the post header plus up to 6 comments.
 
-    Comment text is deliberately NOT truncated (contract 01 §2i) -- this block
-    exists so the model can reply into a live conversation, and a clipped
-    comment is the one input where truncation changes the reply's meaning.
+    The post itself is rendered as `swil.sh thread` actually renders it --
+    the pretty-printed jq object, not a human-readable summary line (Ruling
+    R13, fix round 1: the original port here invented a readable line the
+    real script never produces; see `_post_json`). Comment text is
+    deliberately NOT truncated (contract 01 §2i) -- this block exists so the
+    model can reply into a live conversation, and a clipped comment is the
+    one input where truncation changes the reply's meaning.
     """
-    author = _author(post)
-    head = (
-        f"=== POST {post.get('id', '')} ===\n"
-        f"@{author.get('username', '')}（{_day(post)}）"
-        f"♥{post.get('likeCount', 0)} 💬{post.get('commentCount', 0)}\n"
-        f"{_flat(post.get('text'), 10_000)}"
-    )
+    head = f"=== POST {post.get('id', '')} ===\n{_post_json(post)}"
     rows: list[str] = []
     for comment in comments[:_THREAD_COMMENT_LIMIT]:
         commenter = _author(comment)
@@ -216,7 +241,9 @@ def format_conversations(items: list[dict[str, Any]]) -> str:
         unread = " ●未读" if item.get("unread") else ""
         last_message = item.get("lastMessage")
         text = last_message.get("text") if isinstance(last_message, dict) else None
-        preview = _flat(text or _NO_LAST_MESSAGE, _DM_PREVIEW_CAP)
+        # jq's `//` only substitutes on null/false, never on "" -- an `or`
+        # here would wrongly swallow a real empty-string message.
+        preview = _flat(text if text is not None else _NO_LAST_MESSAGE, _DM_PREVIEW_CAP)
         lines.append(f"[{item.get('id', '')}] @{names}{unread}  最近：{preview}")
     return "\n".join(lines)
 

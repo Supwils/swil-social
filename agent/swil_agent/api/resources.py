@@ -140,11 +140,24 @@ class Resources:
         return _items(payload)
 
     def get_post(self, post_id: str) -> dict[str, Any]:
-        """GET /posts/{id} — single post, used by the thread-context block
-        (contract `01` §2i, `swil.sh thread`'s first of two calls).
+        """GET /posts/{id} -> {"data": {"post": {...}}} — single post, used by
+        the thread-context block (contract `01` §2i, `swil.sh thread`'s first
+        of two calls, `swil.sh:558`: `jq '.data.post | {...}'`).
+
+        `getById` returns `ok(res, { post: toPostDTO(post, ctx) })`
+        (server/src/modules/posts/posts.controller.ts:23-28) — the post is
+        nested one level deeper than `create_post`'s sibling shape might
+        suggest. A prior version of this method stopped at `data`, returning
+        `{"post": {...}}` instead of the post's own fields: every thread
+        block rendered `=== POST  ===` with an empty author and zero counts,
+        because every `.get(...)` downstream missed on a key that lived one
+        level too deep. Caught in review, not by any test — see
+        `test_get_post_returns_the_post_dict`'s real-envelope regression
+        guard.
         """
         payload = self._client.get(f"/posts/{post_id}")
-        post = payload.get("data")
+        data = payload.get("data")
+        post = data.get("post") if isinstance(data, dict) else None
         return post if isinstance(post, dict) else {}
 
     def get_comments(self, post_id: str, limit: int = 6) -> list[dict[str, Any]]:
@@ -230,6 +243,7 @@ class Resources:
         text: str,
         board_id: str | None = None,
         image: tuple[str, bytes] | None = None,
+        echo_of: str | None = None,
     ) -> str:
         """POST /posts -> {"data": {"post": {"id": ...}}}, status 201.
 
@@ -245,10 +259,52 @@ class Resources:
         A caller sending the brief's singular "image" field would 201 with
         a text-only post and no error — a second silent-failure shape this
         task exists to close off.
+
+        `echo_of` added in Task 6 (act/executor.py): the brief for that task
+        called `create_post(text, echo_of=post_id)` for the `echo` kind, but
+        this method had no such parameter at the time — Task 1's brief never
+        mentioned echo at all. A repost is, server-side, just a normal post
+        with `echoOf` set (`posts.schemas.ts`'s `createPostSchema.echoOf`,
+        a 24-hex-char id, optional), routed through the exact same
+        `POST /posts` handler and the exact same `{"data": {"post": {...}}}`
+        response shape — so this is a same-endpoint extension, not a new
+        method. One behavior worth flagging for whoever calls this next:
+        `posts.write.ts:27` (`if (input.echoOf && !input.text.trim()) throw
+        AppError.validation('An echo must include your commentary')`) means
+        a quote-less repost (`echo_of` set, `text` empty) 400s server-side —
+        contrary to contract `02` §2.5's claim that bash's quote-less echo
+        (`{"echoOf": "$ECHO_ID"}`, no `text` key) degrades to a plain
+        repost. It doesn't: swil.sh sends the same wire shape this method
+        does (see the `if text:` guard below — a quote-less call omits the
+        `text` key entirely, byte for byte matching swil.sh:602-617's
+        `else BODY='{"echoOf":...}'` branch, not merely an
+        empty-string-that-normalises-the-same approximation of it) and
+        would hit the same validation error. That mismatch predates this
+        migration (the check has been in `posts.write.ts` since 2026-04-26,
+        commit `c7ab7e3`) and reproducing swil.sh's literal request shape
+        here is the correct port regardless — a caller that wants a real
+        quote-less repost to land needs a non-empty `text`, which is a
+        product-level gap in swil.sh itself, not something to paper over
+        silently in this client. Note the two shapes were already
+        behaviourally identical even before the `if text:` guard existed
+        (`posts.schemas.ts:6`'s `text: z.string().trim().max(5000).default
+        ('')` normalises an absent key and an explicit `""` to the exact
+        same server-side value), so this is a wire-shape fidelity fix, not
+        a behavior fix — the 400 fired either way.
         """
-        body: dict[str, str] = {"text": text}
+        # `if text:` (not an unconditional `{"text": text}`) so a quote-less
+        # echo omits the `text` key entirely, matching swil.sh:602-617's
+        # `if [[ -n "$QUOTE" ]] ... else BODY='{"echoOf":...}'` literally --
+        # not just behaviourally. A normal `post` action never calls this
+        # with empty text (executor.py's `_execute_post` skips locally
+        # first), so this is a no-op for that caller either way.
+        body: dict[str, str] = {}
+        if text:
+            body["text"] = text
         if board_id:
             body["boardId"] = board_id
+        if echo_of:
+            body["echoOf"] = echo_of
         if image is None:
             payload = self._client.post("/posts", json=body)
         else:
