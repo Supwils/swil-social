@@ -272,7 +272,9 @@ TOPICS = 它谈论的主题领域。
     # same model regardless of the agent's own backend, or per-aspect drift
     # numbers stop being comparable across the roster. A deepseek account must
     # not be measured by deepseek.
-    out="$(printf '%s' "$usr" | claude --model "$ASPECT_DISTILL_MODEL" -p --system-prompt "$sys" --output-format text 2>/dev/null || true)"
+    # --tools "": the neutral ruler must not be able to touch what it measures.
+    # See llm.sh's note -- this call bypasses llm_text, so it needs its own.
+    out="$(printf '%s' "$usr" | claude --model "$ASPECT_DISTILL_MODEL" -p --tools "" --system-prompt "$sys" --output-format text 2>/dev/null || true)"
     # Parse via argv (NOT a pipe — `data | python3 - <<HEREDOC` collides the piped
     # data with the heredoc program). The parser always exits 0 and prints "" on
     # any failure, so it's safe under `set -e`.

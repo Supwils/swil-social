@@ -48,11 +48,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 from swil_agent.config import Settings
 from swil_agent.dream.distill import Embedder, anchor_aspects, distill_cards
-from swil_agent.dream.drift import aspect_breaches, cosine_sim, resolve_anchor_text
+from swil_agent.dream.drift import (
+    aspect_breaches,
+    canonical_document_text,
+    cosine_sim,
+    resolve_anchor_text,
+)
 from swil_agent.embedder.client import EmbedderUnavailable
 from swil_agent.llm.base import Runner
 from swil_agent.models import (
@@ -61,6 +66,7 @@ from swil_agent.models import (
     AspectThresholds,
     AspectVectors,
     DreamVerdict,
+    DriftMeasurement,
 )
 from swil_agent.persona.validators import validate_candidate
 
@@ -89,6 +95,74 @@ _ASPECT_FALLBACK_NOTE: Final = "aspect distill/embed failed, falling back to sca
 _EMBEDDER_UNREACHABLE_NOTE: Final = "embedder unreachable, skipping drift check"
 
 
+class GateOutcome(NamedTuple):
+    """What the gate DECIDED and what it MEASURED, as two independent
+    values (Phase B task 1).
+
+    They are deliberately not folded into one another. `DreamVerdict` is the
+    gate's working state -- the fields it needs to explain and act on its
+    own decision -- and it is shaped by which mode was in force.
+    `DriftMeasurement` is the RECORD, identical in shape on every path,
+    including the structural-failure path where no similarity exists at all.
+    Attaching the record to the verdict would tie "was this recorded" to
+    "was there a verdict to attach it to", which is exactly the coupling
+    that produced the censored series in the first place.
+
+    `measurement.anchor_sim` and `verdict.scalar_sim` are the SAME quantity,
+    computed once and carried in both places. That is not a redundancy to
+    tidy up later: `scalar_sim`'s consumer is `dream/round.py`'s
+    `_drift_fail_metrics`, which must keep emitting the shape it emits
+    today, while `anchor_sim`'s consumer is the calibration series, which
+    must keep its shape stable across whatever the gate does next.
+
+    The SAME type is returned by `evaluate_candidate` and by `dream/round.py`
+    's `gate_step`, rather than each layer declaring its own identically
+    shaped pair -- two copies of a shape are two things that can drift.
+    """
+
+    verdict: DreamVerdict
+    measurement: DriftMeasurement
+
+
+class _DocumentVectors:
+    """One embed per DISTINCT document text, for the life of one gate call.
+
+    The gate embeds three documents -- anchor, current `personality.md`, and
+    candidate -- and two of them are frequently the SAME document: on an
+    account's first-ever dream `resolve_anchor_text` falls through to the
+    current `personality.md` (see its docstring's branch 3), so the anchor
+    IS the current document. Asking the daemon to embed identical bytes
+    twice is waste in the deployed case and, on a cold laptop, a second
+    chance to fail.
+
+    A FAILED embed is cached as a failure, not retried. Once the daemon has
+    refused this exact text, asking again inside the same gate call cannot
+    produce a different answer, and retrying would make the number of
+    attempts depend on how many of the three documents happen to coincide.
+
+    Keyed on the exact string, so the CALLER decides what "the same
+    document" means. Both documents read off disk reach here through
+    `canonical_document_text` (`dream/drift.py`), which is what makes the
+    first-dream coincidence an actual key match rather than two strings
+    differing by a trailing newline. The CANDIDATE is passed as given: it
+    arrives from `dream/candidate.py`'s `clean_candidate`, whose closing
+    `.rstrip("\\n")` has already applied the same rule, and re-cleaning a
+    caller's input here would couple this module to how that one happens
+    to finish today.
+    """
+
+    def __init__(self, embedder: Embedder) -> None:
+        self._embedder = embedder
+        self._cache: dict[str, list[float] | None] = {}
+
+    def get(self, text: str) -> list[float] | None:
+        if text in self._cache:
+            return self._cache[text]
+        vector = _try_embed(self._embedder, text)
+        self._cache[text] = vector
+        return vector
+
+
 def evaluate_candidate(
     original: str,
     candidate: str,
@@ -97,28 +171,60 @@ def evaluate_candidate(
     embedder: Embedder,
     runner: Runner,
     settings: Settings,
-) -> DreamVerdict:
+) -> GateOutcome:
     """Structural validators, then the drift gate. See the module docstring
     for the ordering contract and the fail-open paths this implements.
 
+    Returns the verdict AND the measurement, on EVERY path (Phase B task 1,
+    spec §8.1). The structural-failure path returns before a single embed
+    is attempted, so its measurement carries `None` for all three
+    similarities -- a recorded "not computed", not a zero, and not an
+    absent row. See `GateOutcome` for why the two are separate values and
+    `models.DriftMeasurement` for what each field means.
+
     The returned `DreamVerdict.scalar_sim` (fix round 2, task 12) is
-    whatever `_scalar_similarity` produced above -- `None` only when the
-    scalar embed pair itself could not be computed, `float` otherwise,
-    regardless of which mode ultimately decided accept/reject. A structural
-    failure returns before `_scalar_similarity` is ever called, so it always
-    carries `scalar_sim=None` via the field's own default.
+    whatever the anchor similarity came out as -- `None` only when that
+    embed pair itself could not be computed, `float` otherwise, regardless
+    of which mode ultimately decided accept/reject. A structural failure
+    returns before any similarity is computed, so it always carries
+    `scalar_sim=None` via the field's own default.
+
+    NOTHING BELOW CHANGES WHAT IS DECIDED. `step_sim` is measured and
+    recorded here and gates nothing; the accept/reject branches are the
+    ones this function already had. Turning the step size into a decision
+    is a later task, deliberately after the measurement has run long enough
+    to calibrate a threshold against real rounds rather than against a
+    guess (the `ECHO_VARIANCE_THRESHOLD=0.04`-against-a-measured-0.001
+    lesson, CLAUDE.md).
     """
     failure = validate_candidate(original, candidate)
     if failure is not None:
         logger.warning("structural validation failed for %s: %s", directory, failure.detail)
-        return DreamVerdict(accepted=False, reason=failure.detail)
+        return GateOutcome(
+            verdict=DreamVerdict(accepted=False, reason=failure.detail),
+            # Not `None`, and not an early return that skips the record: the
+            # censored-series defect this task fixes is precisely that the
+            # dreams which never reached the drift check left no data point,
+            # so the recorded distribution described the survivors.
+            measurement=DriftMeasurement(mode=settings.drift_mode),
+        )
 
     anchor_text = resolve_anchor_text(directory)
+    # The CURRENT document is `original` -- the text the dream prompt was
+    # built from -- never a fresh read of `personality.md`, for the same
+    # reason `dream/round.py`'s `gate_step` passes `persona.raw` in the
+    # first place: a concurrent Bash round may already have swapped the file
+    # on disk, and the step size has to be measured against the document
+    # this candidate was actually written from.
+    current_text = canonical_document_text(original)
 
-    # (1) Whole-doc scalar similarity -- always attempted, independent of
-    # DRIFT_MODE: it is the gate itself in scalar/shadow modes, and the
-    # aspect-mode fallback (contract 04 §5; dream.sh:742-749).
-    scalar_sim = _scalar_similarity(embedder, anchor_text, candidate)
+    # (1) Whole-doc similarities -- always attempted, independent of
+    # DRIFT_MODE: the anchor one is the gate itself in scalar/shadow modes
+    # and the aspect-mode fallback (contract 04 §5; dream.sh:742-749); the
+    # step one gates nothing yet and is measured for the record.
+    scalar_sim, step_sim, embedder_ok = _whole_document_similarities(
+        embedder, anchor_text=anchor_text, current_text=current_text, candidate_text=candidate
+    )
 
     # (2) Per-aspect similarities -- only outside scalar mode (dream.sh:752).
     sims: AspectSims | None = None
@@ -173,28 +279,68 @@ def evaluate_candidate(
         embedder_unreachable = scalar_sim is None
 
     reason = f"{aspect_note}; {base_reason}" if aspect_note else base_reason
-    return DreamVerdict(
-        accepted=accepted,
-        reason=reason,
-        breached=breached,
-        sims=sims,
-        scalar_sim=scalar_sim,
-        embedder_unreachable=embedder_unreachable,
+    return GateOutcome(
+        verdict=DreamVerdict(
+            accepted=accepted,
+            reason=reason,
+            breached=breached,
+            sims=sims,
+            scalar_sim=scalar_sim,
+            embedder_unreachable=embedder_unreachable,
+        ),
+        measurement=DriftMeasurement(
+            mode=settings.drift_mode,
+            anchor_sim=scalar_sim,
+            step_sim=step_sim,
+            aspects=sims,
+            embedder_ok=embedder_ok,
+        ),
     )
 
 
-def _scalar_similarity(embedder: Embedder, anchor_text: str, candidate_text: str) -> float | None:
-    """Both embeds are always attempted, mirroring `dream.sh:744-745`'s two
-    unconditional `_embed_text` calls -- a failure on the first does not skip
-    the second. `None` means "the drift check cannot run", not "identical";
-    `cosine_sim` itself would fail-open to `1.0` on an empty vector, which is
-    exactly the silent-pass this module exists not to have (module
-    docstring, and `dream/drift.py`'s `cosine_sim` docstring)."""
-    anchor_vec = _try_embed(embedder, anchor_text)
-    candidate_vec = _try_embed(embedder, candidate_text)
-    if anchor_vec is None or candidate_vec is None:
-        return None
-    return cosine_sim(anchor_vec, candidate_vec)
+def _whole_document_similarities(
+    embedder: Embedder, *, anchor_text: str, current_text: str, candidate_text: str
+) -> tuple[float | None, float | None, bool]:
+    """`(anchor_sim, step_sim, embedder_ok)` -- POSITION and STEP SIZE, from
+    the same candidate vector so the two can be read against each other.
+
+    Every embed is attempted, mirroring `dream.sh:744-745`'s two
+    unconditional `_embed_text` calls -- a failure on one does not skip the
+    others -- and identical texts cost one call between them
+    (`_DocumentVectors`).
+
+    THE TWO SIMILARITIES FAIL INDEPENDENTLY, and that is load-bearing:
+    `anchor_sim` is what the scalar gate decides on, so it must go `None`
+    on exactly the condition it went `None` on before this function existed
+    (its own two embeds failed) and on no other. Folding the third embed
+    into one all-or-nothing check would let a failure to embed the CURRENT
+    document -- a document the gate did not read at all until Phase B --
+    silently fail-open the gate. That would be a change in what is decided,
+    made by a task whose whole contract is that it changes only what is
+    recorded.
+
+    `None` means "could not be computed", never "identical": `cosine_sim`
+    fails open to `1.0` on an empty vector, which is the silent pass this
+    module exists not to have (module docstring, and `dream/drift.py`'s
+    `cosine_sim` docstring).
+    """
+    vectors = _DocumentVectors(embedder)
+    anchor_vec = vectors.get(anchor_text)
+    candidate_vec = vectors.get(candidate_text)
+    current_vec = vectors.get(current_text)
+
+    anchor_sim = (
+        None
+        if anchor_vec is None or candidate_vec is None
+        else cosine_sim(anchor_vec, candidate_vec)
+    )
+    step_sim = (
+        None
+        if current_vec is None or candidate_vec is None
+        else cosine_sim(current_vec, candidate_vec)
+    )
+    embedder_ok = anchor_vec is not None and candidate_vec is not None and current_vec is not None
+    return anchor_sim, step_sim, embedder_ok
 
 
 def _try_embed(embedder: Embedder, text: str) -> list[float] | None:

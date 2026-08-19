@@ -67,6 +67,10 @@ def distill_neutral(req: CompletionRequest, runner: Runner, model: str) -> str:
     argv = [
         "claude",
         "-p",
+        # No tools: the ruler must not be able to touch the thing it measures.
+        # See `llm/base.py`'s `--tools ""` comment for the incident.
+        "--tools",
+        "",
         "--model",
         model,
         "--system-prompt",

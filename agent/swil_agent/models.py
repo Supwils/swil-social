@@ -125,6 +125,63 @@ class AspectSims(BaseModel):
     topic: float
 
 
+class DriftMeasurement(BaseModel):
+    """Everything one dream measured about its own drift, recorded whatever
+    the gate then decided with it (Phase B task 1; spec §8.1).
+
+    This type exists because the `/lab` drift series was CENSORED: the
+    numbers were computed only as an input to an accept/reject decision, and
+    only an ACCEPTED dream left a `personalitysnapshots` row behind. The
+    recorded distribution was therefore "drift among the versions the gate
+    allowed", not drift -- and a threshold calibrated on it is calibrated on
+    its own survivors. Every path through `dream.gate.evaluate_candidate`
+    now produces one of these, INCLUDING the structural-failure path that
+    returns before a single embed is attempted.
+
+    `None` is a first-class value here and is NOT interchangeable with
+    `0.0`: it means "this quantity was not computed", which is a different
+    fact from "this quantity was measured and came out at zero". A
+    structural rejection or an embedder outage records `None`; recording
+    `0.0` would put a fake "maximally drifted" point into the calibration
+    sample, which is the mirror image of the censoring this type exists to
+    end.
+
+    The three quantities, and why there are three:
+
+      * `anchor_sim` -- cosine(anchor, candidate). POSITION: how far the
+        candidate sits from the account's origin. This is the same number as
+        `DreamVerdict.scalar_sim` and the same number today's scalar gate
+        decides on; carried here as well because the verdict is the gate's
+        working state while this is the record.
+      * `step_sim` -- cosine(current personality.md, candidate). STEP SIZE:
+        how far THIS dream moves the account, independent of where it
+        already stood. A position gate cannot see a series of small steps
+        walking an account away from its anchor and cannot tell a large
+        single jump from a small one that happens to land far out.
+      * `aspects` -- the per-aspect (values/style/topic) similarities, when
+        the aspect pipeline produced them; `None` when it did not (scalar
+        mode, a dead distiller, or a failed card embed).
+
+    `embedder_ok` is FALSE only when an embed attempted FOR THIS
+    MEASUREMENT raised `EmbedderUnavailable` -- i.e. the whole-doc embeds
+    behind `anchor_sim`/`step_sim`. A path that attempted none (the
+    structural rejection, which returns before any embedding) records
+    `True`: it observed no outage, and its `None` sims already say the
+    measurement did not happen. Counting `embedder_ok is False` therefore
+    counts embedder outages, not "rounds with no numbers".
+
+    `mode` is the `DRIFT_MODE` the round ran under, recorded alongside the
+    numbers so a later analyst reading a window of rows does not have to
+    infer which regime produced them from the deploy history.
+    """
+
+    mode: str
+    anchor_sim: float | None = None
+    step_sim: float | None = None
+    aspects: AspectSims | None = None
+    embedder_ok: bool = True
+
+
 class AspectThresholds(BaseModel):
     """Per-aspect drift gate lower bounds -- a candidate whose similarity to
     the anchor falls STRICTLY BELOW its own threshold breaches that aspect.
@@ -255,13 +312,18 @@ class DreamResult(BaseModel):
     `accepted` is the single flag that answers "did personality.md actually
     change": true only once the full archive/write/marker/memory sequence
     has run. A structural or drift rejection is `proceeded=True,
-    accepted=False`, with `reason` and (for a drift-side rejection)
-    `verdict` explaining why -- `verdict` stays `None` on a structural
-    failure, since `evaluate_candidate` is never reached in that case
-    (`evaluate_candidate` itself returns a `DreamVerdict` for both a
-    structural AND a drift rejection, but a structural one is caught
-    earlier by `run_dream`, before `evaluate_candidate` is even called --
-    see that module's ordering note).
+    accepted=False`, with `reason` and `verdict` explaining why.
+
+    `verdict` is populated for a STRUCTURAL rejection too, not only a
+    drift-side one. (This paragraph used to say the opposite -- that
+    `verdict` stays `None` on a structural failure because
+    `evaluate_candidate` is "caught earlier by `run_dream`, before
+    `evaluate_candidate` is even called". Read the code: `run_dream` has no
+    structural check of its own, it calls `gate_step` unconditionally, and
+    `evaluate_candidate` returns a verdict for the structural path as well.
+    Corrected 2026-08-19 while making that same path also return a
+    measurement.) `verdict` stays `None` only where no gate ran at all: a
+    cooldown SKIP, and a round whose backend returned nothing.
 
     `recorded_memlines` is the exact value written to
     `last_dream_memlines_<name>` -- populated only when `accepted=True`,

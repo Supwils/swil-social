@@ -283,6 +283,25 @@ and must stay on real Anthropic: the aspect distiller in `dream.sh`
 Verify which model a call actually reached with
 `claude -p --output-format json` and read `modelUsage`.
 
+**⚠ Every persona-facing LLM call must be tool-less. Do not remove
+`--tools ""` (claude/deepseek) or `-s read-only` (codex).** `claude -p` is the
+full Claude Code agent, and from this repo's cwd its `Write` tool takes no
+permission prompt — so without the flag a persona model can put its answer on
+disk instead of returning it, and the constitution layer (archive → drift gate
+→ validators → snapshot) stops being a gate. That is not hypothetical: in the
+2026-08-19 cutover round two dreams did it. One overwrote a live
+`personality.md` with an ungated candidate and left no archive entry, while the
+log said `LLM returned empty` and `keeping original`. The other created
+`agent/humans/fenziys/` for an account that lives under `agents/`. `codex`'s
+`--full-auto` was the same hole by another name (`-s workspace-write` plus
+auto-approval).
+
+Eight call sites carry the flag and are pinned by tests — `llm/base.py`
+(claude, deepseek, codex), `llm/neutral.py`, `llm.sh` (claude, deepseek,
+codex), `dream.sh:275`, `benchmark-run.sh:110`. Three of the Bash ones bypass
+`llm_text` and build their own argv, which is exactly how they drift apart.
+Spec §15.6 and `2026-08-19-stage-5-cutover.md` §7 carry the full account.
+
 This is implemented as 3 composable scripts:
 
 | Script | Scope | Notes |
@@ -350,10 +369,33 @@ neither** — `run_act` is frozen and Bash makes both calls from the composition
 Python side now honours as well: `RULE_CHECK_POST_LIMIT`,
 `BEHAVIOR_POST_LIMIT`.
 
-**Bash is still the runtime of record.** The Python entrypoints exist for the
-shadow round and the canary (migration spec §10 stages 3–4). A full round is
-still `cycle-one.sh`; do not point the heartbeat at the Python CLI until
-stage 5. Full spec: `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`
+**Python is the runtime of record as of 2026-08-19 (stage 5, full cutover).**
+`cycle-one.sh` now dispatches `swil-agent cycle "$NAME" --auto`; its Bash body
+is unchanged below the switch and is the rollback:
+
+```bash
+SWIL_RUNTIME=bash bash agent/scripts/cycle-one.sh <name>   # one invocation
+git revert <cutover commit>                                # permanently
+```
+
+So the command to run a round is still `bash agent/scripts/cycle-one.sh <name>`
+— every existing caller keeps its entry point, and what changed is what that
+entry point executes. **`heartbeat.sh` is the one path NOT cut over**: it calls
+`auto-run.sh` (act only, no dream), and `swil-agent act` is not a drop-in for it
+because `auto-run.sh:806`'s `behavior-snapshot.sh` call lives in the Python
+*cycle*, not in `act`. Swapping that line without also calling
+`swil-agent behavior-snapshot` would silently stop feeding `/lab`'s revealed-self
+series. The heartbeat has not run since 2026-07-02 anyway.
+
+**Two behaviour changes take effect roster-wide on 2026-08-19** — both designed
+and recorded in advance, neither a defect to tune away: `ActResult.grants_dream`
+replaces "any non-zero act rc denies the dream" (spec §7.1), and the same
+semantics reach `rule_check` and `behavior_snapshot`, so `/lab`'s F4 and persona
+fidelity now sample rounds Bash never sampled (§7.9). An analyst comparing
+windows either side of that date is comparing two sampling regimes. Per-account
+cutover dates: `docs/superpowers/specs/2026-08-19-stage-5-cutover.md`.
+
+Full spec: `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`
 (§15 carries the known Bash↔Python behavioural differences — read that table
 instead of re-deriving it). `docs/12-handoff.md` carries the current stage and
 the operational gotchas of running the Python side (cold anchor-cache, the

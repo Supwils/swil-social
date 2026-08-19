@@ -7,7 +7,7 @@ owner: agent-python-migration
 
 # Handoff
 
-## ⚠ Python agent runtime, Phase 1 scope COMPLETE — Bash is still the runtime of record — 2026-08-19
+## ⚠ Python agent runtime IS the runtime of record — stages 3/4/5 all landed — 2026-08-19
 
 `agent/swil_agent/` — a `uv`-managed Python package that ports `auto-run.sh`'s
 act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
@@ -33,19 +33,26 @@ Ledgers: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progres
 `.superpowers/sdd/2026-08-19-agent-runtime-python-analysis/progress.md`
 (Plan 4, 5 tasks).
 
-**Spec §3.1's Phase-1 scope is now fully delivered** — the core cycle AND the
-analysis/QA group. What that does NOT mean: Bash is still the runtime of
-record, and `cycle-one.sh` is still how a real round happens (see the stage
-note below).
+**Spec §3.1's Phase-1 scope is fully delivered** — the core cycle AND the
+analysis/QA group — and **spec §10's five migration stages are all done.**
+Stage 3 (shadow round) and Stage 4 (canary) have their own reports at
+`docs/superpowers/specs/2026-08-19-stage-3-shadow-round-report.md` and
+`-stage-4-canary-report.md`. Stage 5 cut over on 2026-08-19:
+`docs/superpowers/specs/2026-08-19-stage-5-cutover.md`.
 
-> **⚠ Stage 5 must invoke the cycle as `swil-agent cycle <name> --auto`.**
+**How a round happens now:** `bash agent/scripts/cycle-one.sh <name>`, exactly
+as before — the script now dispatches `uv run --project agent swil-agent cycle
+"$NAME" --auto` and keeps its Bash body below the switch as the rollback
+(`SWIL_RUNTIME=bash`, or `git revert` the one-file cutover commit).
+
+> **⚠ The cutover passes `--auto`, and that is not decoration.**
 > `cycle-one.sh` calls `dream.sh --auto` unless `FORCE_DREAM=1`, but
 > `--auto` on the Python side defaults to **OFF** (spelled and defaulted like
-> `swil-agent dream`'s, so the CLI has one meaning for the flag). A cutover
-> that omits it makes every account dream every round regardless of the 12h
-> cooldown — roughly a 2× rise in LLM spend and, worse, a drift series whose
-> sampling rate changed at the cutover for a reason unrelated to the agents.
-> Whatever replaces `cycle-one.sh` in the heartbeat must pass it.
+> `swil-agent dream`'s, so the CLI has one meaning for the flag). Dropping it
+> would make every account dream every round regardless of the 12h cooldown —
+> roughly a 2× rise in LLM spend and, worse, a drift series whose sampling
+> rate changed at the cutover for a reason unrelated to the agents. Anything
+> that ever re-points the heartbeat must pass it too.
 
 **Two `/lab` series change sampling rate at cutover, by design** — spec §7.9.
 `grants_dream` (§7.1) now also governs F4 rule adherence and persona fidelity,
@@ -74,18 +81,21 @@ cutover are not directly comparable; record the per-account cutover dates.
   clock). It requires a previous non-dry cycle and is refused with a remedy
   otherwise.
 
-**Do not point anything real at this yet.** Per the spec's §10 migration-stage
-table, this closes Stage 2 (package built, unit-tested — now including the
-graph, leases and checkpointing, and Plan 4's analysis/QA group). Stages 3–4 — the
-shadow round (Bash executes, Python plans only, compare deterministic
-divergence) and the canary (3–5 accounts on Python, the rest on Bash, one real
-round) — have not run. **`cycle-one.sh` is still how a real round happens; the
-heartbeat must not be re-pointed at `swil-agent` until Stage 5 (full cutover),
-which requires a clean canary first.** `swil-agent act --dry-run` is the
-shadow-round primitive Stage 3 needs: it builds context, produces a plan, and
-executes nothing — verified by tests asserting on the absence of API calls and
-`memory.md` writes, not merely on an exit code. Nobody has run it against the
-real roster yet.
+**`heartbeat.sh` is the one path deliberately NOT cut over.** It calls
+`auto-run.sh` (act only, no dream), and `swil-agent act` is not a drop-in:
+`auto-run.sh:806`'s `behavior-snapshot.sh` call lives in the Python *cycle*,
+not in `act`, so swapping that one line would silently stop feeding `/lab`'s
+revealed-self series on heartbeat rounds. A correct heartbeat cutover is
+`swil-agent act` **plus** `swil-agent behavior-snapshot` — a second decision
+with its own failure mode. The heartbeat has not run since 2026-07-02 anyway
+(`launchctl list | grep swil` is empty), so nothing executes on the Bash act
+path today. Stage 5's Revert column names exactly one thing, `cycle-one.sh`,
+and that is what the cutover touched.
+
+`swil-agent act --dry-run` remains the shadow-round primitive: it builds
+context, produces a plan, and executes nothing — verified by tests asserting
+on the absence of API calls and `memory.md` writes, not merely on an exit
+code.
 
 **Do not read "writes nothing" as "cannot affect a live round" — it was not
 true until the final review.** Two of that round's findings were on this exact
@@ -170,8 +180,9 @@ directions; spec §15.5 records it in full.
 A lease is BOTH halves, deliberately: the Bash-visible lock file
 (`agent/.agent-state/lock_<name>` / `dream_lock_<name>`, same 1800s staleness
 rule) *and* a SQLite row carrying the holder's `run_id` and pid. The file half
-is what makes exclusion cross-runtime during stages 3–4 and is dropped only at
-Stage 5; the row is what makes a lease *expire* and what kills the orphan-lock
+is what made exclusion cross-runtime during stages 3–4; it is still held after
+the Stage 5 cutover, because dropping it would strand the `SWIL_RUNTIME=bash`
+rollback path with no exclusion against a concurrent Python round; the row is what makes a lease *expire* and what kills the orphan-lock
 class outright, since a lease whose pid is gone is reclaimable immediately
 rather than after 30 minutes. Two consequences are recorded as spec §15.1
 rows 17 and 18: a cycle holds BOTH locks for its whole duration (where
@@ -227,10 +238,11 @@ self-review and Tasks 5/7's rulings for the full reasoning):
    follows the spec: an all-failed round is logged at WARNING with Bash's
    *original* wording (so `grep FAIL` still finds it) but `ActResult.
    grants_dream` is `True` regardless, and `swil-agent dream` will run. This
-   means Python will dream on some rounds Bash would have skipped — a real
-   behavioural difference the shadow round WILL surface, and it must be
-   recorded as a deliberate change point in the drift series when the canary
-   runs, not investigated as a bug.
+   means Python dreams on some rounds Bash would have skipped. **Recorded as a
+   change point on 2026-08-19** (§7.1, and §7.9 for the two further `/lab`
+   series it reaches through `rule_check` and `behavior_snapshot`); per-account
+   dates in `docs/superpowers/specs/2026-08-19-stage-5-cutover.md`. Not a bug
+   to investigate, and not a threshold to tune away.
 
 **Known Bash↔Python differences** — twelve rows, each with a direction
 (fail-safe / fail-open / trap / neutral) and a verdict on whether it must be

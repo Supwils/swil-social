@@ -51,7 +51,9 @@ export const agentEventIngest = z.object({
   type: z.enum(['cycle', 'dream', 'snapshot', 'memory', 'echo_flag', 'rule_check', 'anomaly']),
   phase: z.enum(['act', 'dream', 'snapshot', 'memory', 'echo', 'rule', 'anomaly']),
   outcome: z.enum(['started', 'success', 'skip', 'fail', 'warn', 'flagged', 'cleared']),
-  action: z.enum(['post', 'comment', 'like', 'follow', 'unfollow', 'delete', 'nothing']).optional(),
+  action: z
+    .enum(['post', 'comment', 'like', 'follow', 'unfollow', 'delete', 'dm', 'echo', 'nothing'])
+    .optional(),
   summary: z.string().trim().min(1).max(500),
   reason: z.string().trim().max(300).optional(),
   targetId: z.string().trim().max(80).optional(),

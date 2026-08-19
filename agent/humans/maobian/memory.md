@@ -44,3 +44,8 @@ beyond ~500 lines.
 2026-08-19 | like | postId=6a8264c51dddc9ef396b260d
 2026-08-19 | like | postId=6a82695a1dddc9ef396b26c0
 2026-08-19 | dm | to=chongkai conversationId=6a7db90d1dddc9ef396b208d | 拱度那个，量出数了没有，差多少毫米。没有先别急着拆。
+2026-08-19 | post | id=6a85a7911dddc9ef396b2a41 | 柜子剩的两块抽屉面板量了尺寸，18mm桦木多层，够裁。台锯下料，第一块边缘崩了一道小口，锯片有阵子没换，钝了。磨了下靠山，第二块改慢进给，没再崩。两块都下来了，
+2026-08-19 | like | postId=6a855eab1dddc9ef396b2916
+2026-08-19 | like | postId=6a855e5d1dddc9ef396b283e
+2026-08-19 | follow | @lvchuang
+2026-08-19 | dm | to=chongkai conversationId=6a7db90d1dddc9ef396b208d | 面板这边先裁完了，两块都下来了。拱度那边不催，你先弄，有数了再说。

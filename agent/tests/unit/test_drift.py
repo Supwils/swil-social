@@ -34,6 +34,7 @@ import pytest
 from swil_agent.dream.drift import (
     ARCHIVE_HEADER_RE,
     aspect_breaches,
+    canonical_document_text,
     cosine_sim,
     pairwise_variance,
     resolve_anchor_text,
@@ -313,3 +314,38 @@ def test_the_real_zenith_archive_resolves_to_its_oldest_block() -> None:
 def test_archive_header_re_matches_what_source_py_writes() -> None:
     written = ARCHIVE_HEADER.format(stamp="2026-08-17 12:00:00")
     assert ARCHIVE_HEADER_RE.match(written) is not None
+
+
+# ── canonical_document_text ─────────────────────────────────────────────
+
+
+def test_canonical_document_text_strips_only_trailing_newlines() -> None:
+    """It is `$( )`'s rule, and the ONE normalisation every personality
+    document goes through before it is embedded (`dream/gate.py` compares
+    the anchor, the current document and the candidate, and two of the
+    three routinely ARE the same document).
+
+    Each of the four assertions below kills a different plausible
+    substitution: `.strip()` (would eat the leading newline and the
+    trailing space), `.rstrip()` (would eat the trailing space), `.strip("\n")`
+    (would eat the leading newline), and doing nothing at all.
+    """
+    assert canonical_document_text("# doc\n\n\n") == "# doc"
+    assert canonical_document_text("\n# doc") == "\n# doc"
+    assert canonical_document_text("# doc  ") == "# doc  "
+    assert canonical_document_text("# doc") == "# doc"
+
+
+def test_a_pinned_anchor_is_canonicalised_the_same_way(tmp_path: Path) -> None:
+    """`resolve_anchor_text` and the gate's current-document read must apply
+    the SAME rule, or a first-ever dream's two identical documents hash to
+    two different cache keys and the account pays for an extra embed --
+    and, worse, `anchor_sim` and `step_sim` stop being comparable to each
+    other for a reason that has nothing to do with the account.
+
+    Mutation this kills: `resolve_anchor_text`'s pinned branch reverting to
+    a bare `.read_text()` or to `.strip()`.
+    """
+    (tmp_path / "personality.anchor.md").write_text("# pinned\n\n", encoding="utf-8")
+    assert resolve_anchor_text(tmp_path) == canonical_document_text("# pinned\n\n")
+    assert resolve_anchor_text(tmp_path) == "# pinned"

@@ -112,6 +112,35 @@ def pairwise_variance(vectors: Sequence[Sequence[float]]) -> float:
     return sum((s - mean) ** 2 for s in sims) / len(sims)
 
 
+def canonical_document_text(text: str) -> str:
+    """The one normalisation applied to a personality DOCUMENT before it is
+    embedded: strip trailing newlines, nothing else.
+
+    It is `$( )`'s own behaviour, and it is already applied in three places
+    this module and its callers depend on -- `resolve_anchor_text`'s pinned
+    and current-personality branches (both `cat`-shaped, see that
+    function's docstring) and `dream/candidate.py`'s `clean_candidate`,
+    whose closing `.rstrip("\\n")` carries the same comment for the same
+    reason. Naming it once means the three cannot drift apart silently, and
+    means a mutation of the rule is catchable in one place.
+
+    Why NOT `.strip()`: `cat` preserves leading whitespace and a trailing
+    space that the model actually wrote is content, not formatting
+    (`clean_candidate`'s own comment says so). Only the trailing newlines
+    are an artefact of how the text was read.
+
+    Why it matters that ALL THREE documents a drift measurement compares
+    are normalised the same way: `anchor_sim` and `step_sim` are meant to
+    be comparable to each other -- Phase B's step gate reads one against
+    the other -- and a stray trailing byte in one of the two inputs is a
+    difference in the embedding that has nothing to do with the account.
+    It also makes "the same document" a single cache key, which is what
+    lets `dream/gate.py` embed a first-ever dream's anchor and current
+    document (which ARE the same document) exactly once.
+    """
+    return text.rstrip("\n")
+
+
 def resolve_anchor_text(directory: Path) -> str:
     """The text this account's drift is measured against (contract 04 §2).
 
@@ -161,7 +190,7 @@ def resolve_anchor_text(directory: Path) -> str:
     """
     pinned = directory / "personality.anchor.md"
     if pinned.exists():
-        return pinned.read_text(encoding="utf-8").rstrip("\n")
+        return canonical_document_text(pinned.read_text(encoding="utf-8"))
 
     archive = directory / "personality.archive.md"
     if archive.exists():
@@ -169,4 +198,4 @@ def resolve_anchor_text(directory: Path) -> str:
         matches = list(ARCHIVE_HEADER_RE.finditer(text))
         return text[matches[-1].end() :].strip() if matches else text.strip()
 
-    return (directory / "personality.md").read_text(encoding="utf-8").rstrip("\n")
+    return canonical_document_text((directory / "personality.md").read_text(encoding="utf-8"))

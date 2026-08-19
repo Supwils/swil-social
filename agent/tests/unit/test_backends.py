@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -67,7 +68,7 @@ def test_codex_uses_exec_and_reads_an_output_file(tmp_path: Path) -> None:
     argv = runner.calls[0].argv
     assert isinstance(argv, list)
     assert argv[:2] == ["codex", "exec"]
-    for flag in ("--ephemeral", "--skip-git-repo-check", "--full-auto", "--color", "-o"):
+    for flag in ("--ephemeral", "--skip-git-repo-check", "--color", "-o"):
         assert flag in argv
     prompt = argv[-1]
     assert prompt.startswith("System:\nSYS")
@@ -346,3 +347,125 @@ class _MissingBinaryRunner:
         timeout: float = 300.0,
     ) -> str:
         raise BackendBinaryMissingError(f"executable not found on PATH: {argv[0]!r}")
+
+
+# ── the persona model must have no channel to disk but its return value ──────
+#
+# Found by the 2026-08-19 cutover round, not by review. `claude -p` without
+# `--tools ""` runs the full Claude Code agent, and from this repo's working
+# directory its Write tool needs no permission prompt. Two of that round's
+# dreams used it: one overwrote a live `personality.md` with a candidate that
+# had passed NO gate -- no archive, no drift check, no structural validators,
+# no `/lab` snapshot -- while the runtime logged `LLM returned empty` (empty
+# because the model spent its turn on the tool call) and `keeping original`,
+# over an original that no longer existed. The other invented
+# `agent/humans/fenziys/` for an account that lives under `agents/`.
+#
+# The constitution layer is a gate only while the model's single output channel
+# is the string it returns. These tests are that invariant, per backend.
+
+
+def test_claude_runs_with_no_tools() -> None:
+    runner = RecordingRunner("hello")
+    build_backend("claude", runner, _settings()).complete(
+        CompletionRequest(system="S", user="U", model="haiku")
+    )
+    argv = runner.calls[0].argv
+    assert isinstance(argv, list)
+    # Asserted as an adjacent pair, not as `"--tools" in argv`: the flag takes
+    # a value, and a `--tools` whose neighbour drifted to anything but the
+    # empty string re-enables the tool set while still containing the flag.
+    assert argv[argv.index("--tools") : argv.index("--tools") + 2] == ["--tools", ""]
+
+
+def test_deepseek_runs_with_no_tools() -> None:
+    """Same CLI, same exposure — and the deepseek branch builds its argv
+    separately in Bash, so it has historically drifted from the claude one."""
+    runner = RecordingRunner("hello")
+    build_backend("deepseek", runner, _settings(), deepseek_api_key="k").complete(
+        CompletionRequest(system="S", user="U", model=None)
+    )
+    argv = runner.calls[0].argv
+    assert isinstance(argv, list)
+    assert argv[argv.index("--tools") : argv.index("--tools") + 2] == ["--tools", ""]
+
+
+def test_codex_runs_read_only_and_never_full_auto() -> None:
+    """`--full-auto` is `-s workspace-write` plus auto-approval: a persona
+    model that can edit this repo. `-o` is written by the CLI rather than by
+    the model, so read-only still returns output (verified against the real
+    binary on 2026-08-19)."""
+
+    class CodexRunner(RecordingRunner):
+        def run(
+            self,
+            argv: list[str],
+            stdin: str | None = None,
+            env: dict[str, str] | None = None,
+            timeout: float = 300.0,
+        ) -> str:
+            super().run(argv, stdin, env, timeout)
+            Path(argv[argv.index("-o") + 1]).write_text("out", encoding="utf-8")
+            return ""
+
+    runner = CodexRunner()
+    build_backend("codex", runner, _settings()).complete(
+        CompletionRequest(system="S", user="U", model=None)
+    )
+    argv = runner.calls[0].argv
+    assert isinstance(argv, list)
+    assert "--full-auto" not in argv
+    assert argv[argv.index("-s") : argv.index("-s") + 2] == ["-s", "read-only"]
+
+
+# ── the Bash rollback path carries the same invariant ────────────────────────
+#
+# `SWIL_RUNTIME=bash` is the Stage 5 rollback, so Bash is not dead code: if it
+# is ever exercised, it must be as safe as the Python path. All five of its
+# LLM call sites had the identical exposure, and three of them build their
+# argv independently of `llm_text` (the aspect distiller in `dream.sh`, the
+# judge in `benchmark-run.sh`, the deepseek branch of `llm.sh`) — which is how
+# a fix applied to one of them drifts away from the others.
+
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+
+
+def _live_logical_lines(script: str) -> list[str]:
+    """A script's executable text, comments removed and continuations joined.
+
+    Both steps are load-bearing, and the first version of these tests shipped
+    without either — so a mutation that deleted the real flag left the tests
+    green, because the FIX'S OWN COMMENT still contained the string they
+    searched for. A guard that a comment can satisfy guards nothing.
+
+    Continuations must be joined because `llm.sh` spreads one invocation over
+    six backslash-terminated lines; matching per physical line would look for
+    the flag on the line that merely says `claude -p \\`.
+    """
+    text = (_SCRIPTS / script).read_text(encoding="utf-8")
+    text = re.sub(r"\\\n\s*", " ", text)  # join backslash continuations
+    return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+
+
+_CLAUDE_CALL = re.compile(r"\bclaude\b[^\n#]*\s-p\b")
+
+
+@pytest.mark.parametrize("script", ["llm.sh", "dream.sh", "benchmark-run.sh"])
+def test_every_bash_claude_invocation_disables_tools(script: str) -> None:
+    # `-p` does not always follow `claude` directly: `dream.sh` writes
+    # `claude --model "$X" -p`, which a literal "claude -p" search misses
+    # entirely — and a search that misses a call site reports PASS for the one
+    # invocation nobody fixed.
+    calls = [line for line in _live_logical_lines(script) if _CLAUDE_CALL.search(line)]
+    assert calls, f"{script} no longer invokes the claude CLI — retarget this test"
+    for line in calls:
+        assert '--tools ""' in line, (
+            f'{script}: claude CLI invoked without `--tools ""`: {line.strip()}'
+        )
+
+
+def test_bash_codex_invocation_is_not_full_auto() -> None:
+    body = "\n".join(_live_logical_lines("llm.sh"))
+    assert "codex exec" in body, "llm.sh no longer invokes codex — retarget this test"
+    assert "--full-auto" not in body
+    assert "-s read-only" in body

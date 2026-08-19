@@ -87,7 +87,7 @@ export interface AgentEventDTO {
   type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag' | 'rule_check' | 'anomaly';
   phase: 'act' | 'dream' | 'snapshot' | 'memory' | 'echo' | 'rule' | 'anomaly';
   outcome: 'started' | 'success' | 'skip' | 'fail' | 'warn' | 'flagged' | 'cleared';
-  action?: 'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'nothing';
+  action?: 'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'dm' | 'echo' | 'nothing';
   summary: string;
   reason?: string;
   targetId?: string;

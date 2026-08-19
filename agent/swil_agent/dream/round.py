@@ -134,7 +134,7 @@ from swil_agent.dream.candidate import (
     render_dream_prompt,
 )
 from swil_agent.dream.distill import Embedder
-from swil_agent.dream.gate import evaluate_candidate
+from swil_agent.dream.gate import GateOutcome, evaluate_candidate
 from swil_agent.embedder.client import EmbedderUnavailable
 from swil_agent.llm.base import (
     Backend,
@@ -144,7 +144,7 @@ from swil_agent.llm.base import (
     complete_text,
 )
 from swil_agent.locks import FileLock, dream_lock_path
-from swil_agent.models import DreamResult, DreamVerdict, Persona
+from swil_agent.models import DreamResult, DreamVerdict, DriftMeasurement, Persona
 from swil_agent.persona.source import PersonaSource
 
 logger = logging.getLogger(__name__)
@@ -204,6 +204,13 @@ _EMBEDDER_UNREACHABLE_EVENT_SUMMARY: Final = "embedder unreachable, skipped drif
 # so a caller never has to re-spell it.
 _LLM_EMPTY_REASON: Final = "LLM returned empty"
 
+# The calibration series' own event summary (Phase B task 1). Has no Bash
+# counterpart -- `dream.sh` never recorded a measurement it did not gate on,
+# which is the defect. Consumers should key on the presence of the metrics
+# KEYS (`_drift_metrics`'s typed fields), not on this text: reason-string
+# matching is the coupling `DreamVerdict.scalar_sim` was added to remove.
+_DRIFT_MEASURED_SUMMARY: Final = "drift measured"
+
 
 def _emit(resources: Resources, username: str, event: LabEvent) -> None:
     """Best-effort observability write -- mirrors `Resources.lab_event`'s
@@ -225,6 +232,41 @@ def _emit(resources: Resources, username: str, event: LabEvent) -> None:
             event.phase,
             event.outcome,
         )
+
+
+def _drift_metrics(measurement: DriftMeasurement) -> dict[str, Any]:
+    """The calibration series' wire payload: the measurement, FLATTENED.
+
+    `agentEventIngest` declares `metrics` as
+    `z.record(z.union([z.string(), z.number(), z.boolean(), z.null()]))`
+    (`server/src/modules/agents/agents.schemas.ts:59`) -- checked against
+    the schema by running it, not read off a description of it. A nested
+    object or an array fails that union and zod rejects the WHOLE event, so
+    the three aspect similarities are three top-level keys here rather than
+    one `aspects` object. (`_drift_fail_metrics` below sends exactly the
+    nested shape the schema refuses; see its own docstring for why that is
+    left alone here.)
+
+    `None` survives to the wire as JSON `null` and is the point: it records
+    "not computed" as a distinguishable value. A `0.0` here would be a
+    fabricated "maximally drifted" sample.
+
+    `driftMode` is one key more than the plan's own list. It is cheap and
+    it is the difference between a row that can be interpreted years later
+    and one that needs the deploy history to read -- `aspectValues` is
+    `None` both when the mode never asks for aspects and when the aspect
+    pipeline failed, and only the mode separates the two.
+    """
+    aspects = measurement.aspects
+    return {
+        "anchorSim": measurement.anchor_sim,
+        "stepSim": measurement.step_sim,
+        "aspectValues": None if aspects is None else aspects.values,
+        "aspectStyle": None if aspects is None else aspects.style,
+        "aspectTopic": None if aspects is None else aspects.topic,
+        "embedderOk": measurement.embedder_ok,
+        "driftMode": measurement.mode,
+    }
 
 
 def _drift_fail_metrics(verdict: DreamVerdict, settings: Settings) -> dict[str, Any]:
@@ -571,25 +613,47 @@ def gate_step(
     embedder: Embedder,
     runner: Runner,
     settings: Settings,
-) -> DreamVerdict:
+) -> GateOutcome:
     """Step 3 of the dream path: the constitution layer -- six structural
-    validators, then the drift gate (`dream.sh:668-826`) -- plus the two
-    lab events that are the only external record of what it decided.
+    validators, then the drift gate (`dream.sh:668-826`) -- plus the lab
+    events that are the only external record of what it measured and what
+    it decided: ONE always, and at most TWO in any single call.
 
     PURE with respect to the account's files: nothing here writes anything
     (the candidate lives in memory, not in a temp file as under Bash), which
     is what makes it safe for a Task 7 node to run before any write node
     exists.
 
-    Both events belong to this step because both describe the GATE, not the
+    Three events are DEFINED here and at most two FIRE: the measurement is
+    unconditional, and `warn` requires `accepted` while `fail` requires the
+    negation, so they are mutually exclusive by construction. All of them
+    belong to this step because all of them describe the GATE, not the
     round:
 
+      * `success` + `summary="drift measured"` -- ALWAYS, whatever the
+        verdict, including a structural rejection that never reached an
+        embed. This is the calibration series (Phase B task 1, spec §8.1):
+        before it, a dream contributed a data point only by being
+        ACCEPTED, so the recorded distribution described the gate's own
+        survivors. Emitted from HERE, not from `run_dream`, because
+        `run_dream` is not the only caller -- `graph/nodes.py`'s gate node
+        calls this function directly and is the deployed runtime since the
+        Stage-5 cutover, so a measurement posted by the composition would
+        be missing from every real round.
       * `warn` -- accepted, but `embedder_unreachable`: the drift check
         could not run at all and the dream landed UNGATED. Losing this
         event is worse than the outage it reports, since a fail-open is
         otherwise indistinguishable from a healthy accept.
       * `fail` + `_drift_fail_metrics` -- rejected. `run_dream` no longer
         needs to know how to spell either.
+
+    The measurement event is posted FIRST, before the verdict's own event,
+    so a timeline read top-down shows the numbers and then what was decided
+    with them. It is a separate event rather than extra keys on the
+    verdict's event for two reasons: a structural rejection and an accepted
+    dream have no event in common to hang it on, and `agentEventIngest`
+    caps `metrics` at flat scalars (see `_drift_metrics`), which the
+    existing rejection payload already violates.
 
     The reason a caller must NOT re-derive the accept decision from
     `verdict.reason`: `dream/gate.py` COMPOSES that string, and in the
@@ -602,13 +666,25 @@ def gate_step(
     would compare the candidate against whatever is on disk NOW, which for a
     concurrent Bash round is a different document.
     """
-    verdict = evaluate_candidate(
+    outcome = evaluate_candidate(
         persona.raw,
         candidate_text,
         directory=persona.directory,
         embedder=embedder,
         runner=runner,
         settings=settings,
+    )
+    verdict = outcome.verdict
+    _emit(
+        resources,
+        persona.username,
+        LabEvent(
+            type="dream",
+            phase="dream",
+            outcome="success",
+            summary=_DRIFT_MEASURED_SUMMARY,
+            metrics=_drift_metrics(outcome.measurement),
+        ),
     )
     # `DreamVerdict.embedder_unreachable`, NOT a comparison against
     # `verdict.reason` -- see this function's docstring, and
@@ -641,7 +717,7 @@ def gate_step(
                 metrics=_drift_fail_metrics(verdict, settings),
             ),
         )
-    return verdict
+    return outcome
 
 
 class WriteStep(NamedTuple):
@@ -852,7 +928,10 @@ def run_dream(
       3. `dream_step` -- the `started` event, the four prompt blocks, the
          rewrite call. A `failure_reason` (only ever "LLM returned empty")
          returns `proceeded=True, accepted=False`.
-      4. `gate_step` -- validators + drift, and the gate's own two events.
+      4. `gate_step` -- validators + drift, the calibration measurement
+         it records on every path, and the gate's own events: the
+         `drift measured` one ALWAYS, plus at most one of `warn`
+         (accepted but ungated) / `fail` (rejected).
       5. `write_step` -- steps 1-6 of the write contract, gated on
          `verdict.accepted` INSIDE the step.
       6. `snapshot_step` -- step 7, gated on `written` INSIDE the step.
@@ -917,7 +996,7 @@ def run_dream(
             return DreamResult(proceeded=True, reason=dreamt.failure_reason)
         candidate_text = dreamt.candidate
 
-        verdict = gate_step(
+        gate = gate_step(
             persona=persona,
             candidate_text=candidate_text,
             resources=resources,
@@ -925,6 +1004,7 @@ def run_dream(
             runner=runner,
             settings=settings,
         )
+        verdict = gate.verdict
         # ── Accept sequence -- write ordering is the contract (module docstring) ──
         # `verdict` is THREADED into the step that writes rather than
         # short-circuited above it: the reject branch below reads

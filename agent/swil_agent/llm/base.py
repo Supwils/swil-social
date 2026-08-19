@@ -149,7 +149,25 @@ class _ClaudeStyleBackend:
 
     def complete(self, req: CompletionRequest) -> str:
         model = req.model or self._default_model
-        argv = ["claude", "-p"]
+        # `--tools ""` disables the CLI's built-in tool set for this call.
+        #
+        # NOT cosmetic. Without it `claude -p` runs the full Claude Code agent
+        # with Write/Edit/Bash available and, from this repo's working
+        # directory, no permission prompt -- so a persona LLM can put its
+        # answer on disk instead of returning it. Two dreams did exactly that
+        # in the 2026-08-19 cutover round: maobian's `personality.md` was
+        # overwritten with an UNGATED candidate (no archive, no drift gate, no
+        # structural validation, no snapshot) while the gate logged
+        # "LLM returned empty" -- empty because the turn was spent writing the
+        # file -- and "keeping original", over an original that was already
+        # gone. The other invented `agent/humans/fenziys/` for an `agents/`
+        # account. Transcript evidence: two `Write` tool_use records under
+        # ~/.claude/projects/<repo>/, timestamps matching both files.
+        #
+        # Every call through here is text-in/text-out. The constitution layer
+        # (archive -> drift gate -> validators -> snapshot) is only a gate if
+        # the model's ONLY channel to disk is its return value.
+        argv = ["claude", "-p", "--tools", ""]
         if model:
             argv += ["--model", model]
         argv += ["--system-prompt", req.system, "--output-format", "text"]
@@ -217,7 +235,14 @@ class CodexCLIBackend:
                     "exec",
                     "--ephemeral",
                     "--skip-git-repo-check",
-                    "--full-auto",
+                    # `--full-auto` is `-s workspace-write` plus auto-approval:
+                    # it let a persona model edit this repo. Same exposure the
+                    # claude path had, and the same reason it is wrong -- see
+                    # the `--tools ""` comment above. `-o` is written by the
+                    # CLI itself, not by the model, so it still works
+                    # read-only (verified against the real binary 2026-08-19).
+                    "-s",
+                    "read-only",
                     "--color",
                     "never",
                     "-o",

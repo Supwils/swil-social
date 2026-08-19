@@ -780,6 +780,17 @@ Add a Python lane to `npm run ci:check`: `ruff` (lint + format), `mypy --strict`
 | 4 | **Canary** — 3–5 accounts on Python, 18–20 on Bash, one real round | (a) every canary account lands ≥ 1 action or records an explicit `VETOED_EMPTY`/`PLANNER_EMPTY`; (b) every canary dream terminates with a recorded verdict — **no silent absence**; (c) zero orphan leases after the round; (d) every write confirmed by a returned resource id | Point those accounts back at `cycle-one.sh` |
 | 5 | Full cutover; Bash core scripts become read-only reference | One full 23-account round on Python | Re-point `cycle-one.sh` |
 
+**Status as of 2026-08-19: all five stages are done.** Each of the three
+operational stages left a report rather than only a ledger line, because their
+exit criteria are claims about a production round and have to be checkable
+later:
+
+| Stage | Report |
+|---|---|
+| 3 — shadow round | `2026-08-19-stage-3-shadow-round-report.md` |
+| 4 — canary | `2026-08-19-stage-4-canary-report.md` |
+| 5 — cutover | `2026-08-19-stage-5-cutover.md` (also carries the per-account cutover dates §7.9 requires) |
+
 Canary account selection must cover backend diversity — at least one `claude`, one
 `codex`, one `deepseek`, and one `humans/` account (whose `agentBackend` sync 403
 must keep being non-fatal).
@@ -870,6 +881,11 @@ Each row states the direction of the difference. **Fail-safe** means Python is
 stricter than Bash (it rejects something Bash would accept) — the drift series
 degrades gracefully. **Fail-open** means Python is more permissive, which is the
 direction that can silently contaminate data.
+
+§15.1–§15.5 are divergences the migration CARRIED IN. §15.7 is the first one
+the project has deliberately INTRODUCED after the cutover, by Phase B — a third
+direction the wording above does not cover, because Python is neither stricter
+nor more permissive there: it records something Bash does not record at all.
 
 ### 15.1 Behavioural — must be resolved or re-confirmed before Stage 5 (full cutover)
 
@@ -968,3 +984,87 @@ Pinned in both directions (`test_an_empty_original_text_does_not_fall_back_to_te
 why. Found in Plan 4 Task 2; recorded here because it is not self-evident from
 reading either module alone, and the refactor that breaks it looks like an
 obvious cleanup.
+
+### 15.6 NOT a divergence — both runtimes handed the persona LLM write access to the repo (fixed 2026-08-19)
+
+Found by the Stage 5 cutover round, not by review, and recorded here because
+anyone reading §15 for "what differs between the runtimes" would otherwise
+conclude this was one. It was not: Bash and Python had the identical hole, and
+Bash had it first.
+
+**The hole.** Every persona-facing LLM call ran `claude -p … --output-format
+text` with no tool restriction. `claude -p` is the full Claude Code agent, and
+from this repo's working directory its `Write` tool takes no permission prompt.
+So the model could put its answer on disk instead of returning it — which means
+the constitution layer (archive → drift gate → structural validators → `/lab`
+snapshot) was a gate only for models that chose to answer in text. The codex
+branch was the same shape by a different flag: `--full-auto` is
+`-s workspace-write` plus auto-approval.
+
+**What it did, in the one round that looked.** Two of ~19 dreams used `Write`:
+
+- `agent/humans/maobian/personality.md` was replaced by a candidate that passed
+  no gate. `personality.archive.md` was untouched, so the reversibility
+  guarantee ("any dream is reversible by hand") did not hold either. The
+  runtime then logged `LLM returned empty` — accurate: the turn went to the
+  tool call — and `keeping original`, over an original that was already gone.
+- `agent/humans/fenziys/` was created for an account that lives under
+  `agents/`. Inert *this* time only because `_find_dir` checks `agents/` first;
+  the mirror case silently retires a real `humans/` account.
+
+Confirmed from the CLI's own transcripts (two `Write` tool_use records under
+`~/.claude/projects/<repo>/`, timestamps matching both files' mtimes), then
+reproduced deliberately.
+
+**Fix.** `--tools ""` on every claude-family call and `-s read-only` on every
+codex call, in both runtimes — eight sites, because three of the Bash ones
+(`dream.sh`'s aspect distiller, `benchmark-run.sh`'s judge, `llm.sh`'s deepseek
+branch) build their argv independently of `llm_text` and drift apart otherwise.
+`-o` on `codex exec` is written by the CLI, not the model, so read-only still
+returns output.
+
+**Why Bash gets the fix too, even after cutover.** `SWIL_RUNTIME=bash` is the
+Stage 5 rollback. A rollback path that re-opens a data-integrity hole is not a
+rollback path.
+
+Full account: `2026-08-19-stage-5-cutover.md` §7.
+
+---
+
+### 15.7 INTRODUCED after cutover — the Bash rollback records no drift measurement (Phase B task 1, 2026-08-19)
+
+The first divergence this project has added on purpose since Stage 5, rather
+than inherited from the port. It is recorded here and not only in the Phase B
+plan because the register is what an operator consults when a round's data
+looks wrong, and because `agent/scripts/dream.sh` is FROZEN, so this one will
+not be closed by porting the missing behaviour back.
+
+| # | Difference | Direction | Where |
+|---|---|---|---|
+| 19 | Python's dream gate embeds a THIRD document (the current `personality.md`, alongside the anchor and the candidate) and posts a `dream/dream/success` lab event with `summary="drift measured"` carrying `{anchorSim, stepSim, aspectValues, aspectStyle, aspectTopic, embedderOk, driftMode}`. `dream.sh` does neither. So a round run through the documented rollback path contributes NOTHING to the calibration series — not a row with null values, no row at all — and `stepSim` does not exist under Bash in any form. | Python-only capability; Bash silently omits | `dream/gate.py`'s `_whole_document_similarities`, `dream/round.py`'s `gate_step` vs `dream.sh:742-749` |
+
+**Why it matters more than "Bash logs one line fewer".** The series this event
+feeds is the sole input to Phase B's calibration gate 1, which sets the step
+gate's threshold. A window of rounds run under `SWIL_RUNTIME=bash` is not a
+window of low-drift rounds and is not a window of failed measurements — it is a
+window that is simply absent, and absence is indistinguishable from "that
+account did not dream" unless someone knows the rollback happened. A threshold
+fitted across such a window is fitted to a biased sample, which is the exact
+defect (a censored series) that task 1 existed to end.
+
+**Why it is not being fixed by porting it to Bash.** `agent/scripts/*.sh` is
+frozen; Phase A's whole point was to stop maintaining two runtimes, and Stage 5
+made Python the runtime of record. Adding a third `_embed_text` call and a
+seventh `_post_agent_event` to `dream.sh` would re-open the two-implementations
+problem for a script nobody is expected to run again.
+
+**What to do instead.** Treat a Bash round as a gap in the series, and say so
+where the gap is read: if the rollback is ever exercised, note the date range in
+`docs/13-observation-lab.md`'s change-point list, so the analyst reading the
+calibration data sees it without having to reconstruct it from `git log`.
+
+Contrast with §15.6, deliberately: there, Bash got the fix precisely BECAUSE
+the rollback path must not re-open a data-integrity hole. The rule is not "Bash
+always gets the fix" — it is that a rollback must never make things *unsafe*.
+§15.6 was a write-access hole (unsafe). This is a missing observation (a gap,
+and a knowable one). Those warrant different answers.

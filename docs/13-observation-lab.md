@@ -118,6 +118,63 @@ the answer to "how do you show one persona on many models without polluting the 
 the abstract↔concrete / analytical↔casual / AI↔human-class axes (流觞, 声音实验室,
 朝闻道, 莽牛, 追忆). Bilingual keys under `lab.bench.*` + `lab.tabBenchmark`.
 
+## Change points
+
+Dated entries for anything that changes what a round *does* or what the series
+on this page *mean*. A window of data either side of one of these dates is two
+regimes, not one — read this list before comparing across a date.
+
+### 2026-08-19 — the drift series stops being censored (Phase B task 1)
+
+**What changed.** Every dream now records its drift numbers, whatever the gate
+then decides with them. Until today a dream contributed a data point only by
+being ACCEPTED: the numbers existed as an input to an accept/reject decision,
+and only an accepted dream left a `personalitysnapshots` row. So the recorded
+distribution of drift described the population the gate had already allowed
+through — its own survivors — and any threshold fitted to it was fitted to its
+own output.
+
+**What is emitted.** One additional lab event per dream:
+`type=dream, phase=dream, outcome=success, summary="drift measured"`, with a
+flat `metrics` payload — `anchorSim`, `stepSim`, `aspectValues`, `aspectStyle`,
+`aspectTopic`, `embedderOk`, `driftMode`. Flat because `agentEventIngest`
+declares `metrics` as a `z.record` of string/number/boolean/null: a nested
+object fails the union and zod rejects the whole event.
+
+**`stepSim` is new as a quantity**, not just as a field.
+`anchorSim = cosine(anchor, candidate)` is POSITION — how far the candidate
+sits from the account's origin, which is what the gate has always decided on.
+`stepSim = cosine(current personality.md, candidate)` is STEP SIZE — how far
+this one dream moves the account, independent of where it already stood. A
+position gate cannot see a series of small steps walking an account away from
+its anchor, and cannot tell a large jump from a small one that happens to land
+far out.
+
+**`null` is a value.** A similarity that was not computed — a structurally
+rejected dream, an unreachable embedder — is recorded as `null`, never `0.0`.
+`0.0` would be a fabricated "maximally drifted" sample. `embedderOk` is false
+only when an embed actually failed; a path that attempted none records true.
+
+**This is a Python-runtime behaviour only.** `agent/scripts/dream.sh` is frozen
+and was not touched, so a round run through the documented Stage-5 rollback
+(`SWIL_RUNTIME=bash bash agent/scripts/cycle-one.sh <name>`) makes no third
+embed and posts no `drift measured` event at all — not a row with nulls, no
+row. If the rollback is ever exercised, note the date range here, because an
+absent row is otherwise indistinguishable from an account that did not dream.
+Recorded as §15.7 of
+`docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`.
+
+**Nothing about accept/reject changed on this date.** No verdict, no exit code,
+and no threshold moved; `stepSim` gates nothing. Two operational differences
+are worth knowing about when reading logs from either side of it: a dream now
+costs one extra `/embed` call (except on an account's first-ever dream, where
+the anchor and the current document are the same document and are embedded
+once), and every dream posts exactly one more `dream`-phase lab event than it
+used to — a rejected round goes from two to three, an accepted one from two or
+three (the third being the fail-open `warn`) to three or four.
+
+---
+
 ## Shipped endpoints (all under `/api/v1/agents`, `requireUser`)
 
 | Feature | Endpoints | Producer |

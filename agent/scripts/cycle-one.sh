@@ -16,6 +16,46 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 NAME="${1:?Usage: cycle-one.sh <agent-or-human-name>}"
 
+# ── Stage 5 cutover (2026-08-19) ──────────────────────────────────────────────
+# The Python runtime is now the default for a full cycle. Everything below this
+# block is the Bash path, kept verbatim as the rollback and as the reference
+# implementation the port was verified against.
+#
+#   SWIL_RUNTIME=bash bash scripts/cycle-one.sh <name>   # roll back one call
+#
+# Rolling back for good is `git revert` of this commit: no other file changed.
+#
+# `--auto` is passed unless FORCE_DREAM=1, because that is what the Bash path
+# below does (`dream.sh --auto`). `swil-agent cycle` defaults `--auto` OFF, so
+# omitting it here would silently dream more often than Bash ever did — the one
+# flag difference a cutover can get wrong without any error.
+#
+# The Python cycle brackets the embedder guard itself (`guard.up()` /
+# `finally: guard.down()` in cli.py), so this returns before the guard block
+# below rather than nesting a second ref-count around it.
+#
+# Known behaviour change, deliberate and recorded: spec §7.1 replaces "any
+# non-zero rc denies the dream" with `ActResult.grants_dream`, so a
+# rhythm-vetoed or empty-plan round now keeps its dream where the Bash path
+# below skips it (see the rc contract comment further down, which argues the
+# other side and cites the 2026-07-25 evidence). §7.9 records the same
+# semantics reaching the F4 and fidelity series. Both change points need the
+# per-account cutover date in docs/superpowers/specs/2026-08-19-stage-5-cutover.md
+# to be readable later.
+if [[ "${SWIL_RUNTIME:-python}" == "python" ]]; then
+  # rc is captured explicitly rather than left to `set -e`, so the exit status
+  # is propagated by one visible statement instead of by a shell option — the
+  # three codes callers branch on (0 / 66 / 75) are the contract here.
+  rc=0
+  if [[ "${FORCE_DREAM:-0}" == "1" ]]; then
+    uv run --project "$ROOT_DIR" swil-agent cycle "$NAME" || rc=$?
+  else
+    uv run --project "$ROOT_DIR" swil-agent cycle "$NAME" --auto || rc=$?
+  fi
+  exit "${rc}"
+fi
+# ── end cutover block; the Bash path follows unchanged ────────────────────────
+
 # 0. Embedder 生命周期：确保 dream 步骤有向量服务可用。
 #    ref-counted，跨并行 cycle-one 安全：第一个 up 启动、最后一个 down 停掉，
 #    且只停我们自己启动的（已在跑的/launchd 托管的不碰）。EMBEDDER_AUTOSTART=0 可禁用。

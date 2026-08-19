@@ -107,7 +107,8 @@ judge_score() { # $1=output -> integer 0-100 or empty
   # ⚠ INVARIANT — do NOT route this through llm.sh.
   # The judge scores how well a model impersonates a persona. Routing it through
   # the backend under test would have DeepSeek grading DeepSeek's own output.
-  printf '%s' "$prompt" | claude --model "$JUDGE_MODEL" -p --output-format text 2>/dev/null \
+  # --tools "": the judge scores text; it has no business writing files.
+  printf '%s' "$prompt" | claude --model "$JUDGE_MODEL" -p --tools "" --output-format text 2>/dev/null \
     | grep -oE '[0-9]+' | head -1
 }
 

@@ -85,10 +85,14 @@ _llm_raw() {
     codex)
       local tmpfile
       tmpfile="$(mktemp)"
+      # -s read-only, NOT --full-auto: --full-auto is workspace-write plus
+      # auto-approval, i.e. a persona model that can edit this repo. `-o` is
+      # written by the CLI, not the model, so it still works. See the
+      # `--tools ""` note below for the incident that found this.
       codex exec \
         --ephemeral \
         --skip-git-repo-check \
-        --full-auto \
+        -s read-only \
         --color never \
         -o "$tmpfile" \
         "$(printf 'System:\n%s\n\n---\n\n%s' "$sys" "$usr")" \
@@ -102,6 +106,7 @@ _llm_raw() {
       raw="$(
         . "$LLM_SH_DIR/deepseek-env.sh" || exit 1
         printf '%s' "$usr" | command claude -p \
+          --tools "" \
           --model "${model:-deepseek-v4-flash}" \
           --system-prompt "$sys" \
           --output-format text 2>/dev/null
@@ -111,7 +116,19 @@ _llm_raw() {
       # Empty model → omit the flag entirely, preserving pre-pinning behaviour.
       local model_args=()
       [[ -n "$model" ]] && model_args=(--model "$model")
+      # `--tools ""` disables the CLI's built-in tools for this call.
+      #
+      # NOT cosmetic. Without it `claude -p` runs the full agent with
+      # Write/Edit/Bash and, from this repo's cwd, no permission prompt -- so a
+      # persona LLM can put its answer on disk instead of returning it. Two
+      # dreams did exactly that in the 2026-08-19 round: one overwrote a real
+      # personality.md with an ungated candidate (no archive, no drift gate, no
+      # validators, no snapshot) while the gate logged "LLM returned empty" and
+      # "keeping original"; the other invented a directory in the wrong cohort.
+      # The constitution layer is only a gate if the model's ONLY channel to
+      # disk is its return value.
       raw="$(printf '%s' "$usr" | claude -p \
+        --tools "" \
         "${model_args[@]+"${model_args[@]}"}" \
         --system-prompt "$sys" \
         --output-format text \

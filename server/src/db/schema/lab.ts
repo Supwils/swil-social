@@ -82,7 +82,7 @@ export const agentEvents = pgTable(
       .$type<'started' | 'success' | 'skip' | 'fail' | 'warn' | 'flagged' | 'cleared'>()
       .notNull(),
     action: text('action').$type<
-      'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'nothing'
+      'post' | 'comment' | 'like' | 'follow' | 'unfollow' | 'delete' | 'dm' | 'echo' | 'nothing'
     >(),
     summary: text('summary').notNull(),
     reason: text('reason'),

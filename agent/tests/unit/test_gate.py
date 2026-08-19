@@ -37,6 +37,26 @@ from swil_agent.models import AspectSims, AspectVectors
 
 from ._runners import FakeEmbedder, RecordingRunner, ScriptedRunner
 
+# ⚠ THE TRAILING NEWLINE ON THIS CONSTANT IS LOAD-BEARING. Do not "tidy" it,
+# and do not rstrip it when reusing this constant.
+#
+# Every scenario in this file calls `evaluate_candidate(ORIGINAL, ORIGINAL, ...)`
+# -- the same string as the original AND the candidate -- while scripting a
+# DIFFERENT vector per call through the call-indexed `FakeEmbedder`. That only
+# works because the gate sees THREE distinct strings and so makes the two
+# embeds these fixtures are written for:
+#
+#   anchor   = resolve_anchor_text(dir)          -> ORIGINAL.rstrip("\n")   call 1
+#   candidate= ORIGINAL, passed through as-is    -> ORIGINAL                call 2
+#   current  = canonical_document_text(ORIGINAL) -> ORIGINAL.rstrip("\n")   cache HIT
+#
+# Remove the trailing newline here (or make `clean_candidate` preserve one, or
+# start canonicalising the candidate inside the gate) and all three collapse to
+# one cache key: ONE embed, similarity 1.0 everywhere, and every scripted vector
+# below shifted by one. It fails loudly rather than silently -- `ScriptedRunner`
+# over-call errors and wrong-sim assertions, not a green suite -- but the cause
+# is two files away from the failure, so it is named here.
+
 ORIGINAL = """# 测试
 
 ## 身份
@@ -119,7 +139,7 @@ def test_a_structural_failure_short_circuits_before_any_embedding(tmp_path: Path
         embedder=embedder,
         runner=ScriptedRunner([]),  # any call raises
         settings=Settings(),
-    )
+    ).verdict
     assert verdict.accepted is False
     # `validate_candidate`'s own detail carries the old->new diff
     # (`test_validators.py` already pins that shape); the gate is not
@@ -141,7 +161,7 @@ def test_a_structural_failure_reports_the_failing_check_not_a_generic_message(
         embedder=FakeEmbedder(fail_always=True),
         runner=ScriptedRunner([]),
         settings=Settings(),
-    )
+    ).verdict
     assert verdict.accepted is False
     assert "发帖节律" in verdict.reason
 
@@ -160,7 +180,7 @@ def test_scalar_mode_never_computes_aspects(tmp_path: Path) -> None:
         embedder=embedder,
         runner=runner,
         settings=Settings(drift_mode="scalar"),
-    )
+    ).verdict
     assert verdict.sims is None
     assert verdict.breached == []
 
@@ -192,7 +212,7 @@ def test_shadow_mode_computes_aspects_but_gates_on_the_scalar(
             embedder=embedder,
             runner=runner,
             settings=Settings(drift_mode="shadow"),
-        )
+        ).verdict
     assert verdict.accepted is True
     assert verdict.sims == AspectSims(values=0.10, style=0.10, topic=0.10)
     # Contract 04 §5 step 3: the SHADOW-OBS line fires regardless of the
@@ -235,7 +255,7 @@ def test_shadow_mode_logs_shadow_obs_even_when_the_scalar_gate_rejects(
             embedder=embedder,
             runner=runner,
             settings=Settings(drift_mode="shadow"),
-        )
+        ).verdict
     assert verdict.accepted is False
     assert "SHADOW-OBS" in caplog.text
 
@@ -259,7 +279,7 @@ def test_aspect_mode_rejects_on_a_single_breach(tmp_path: Path) -> None:
         embedder=embedder,
         runner=runner,
         settings=Settings(drift_mode="aspect"),
-    )
+    ).verdict
     assert verdict.accepted is False
     assert verdict.breached == ["style"]
 
@@ -275,7 +295,7 @@ def test_aspect_mode_accepts_when_nothing_breaches(tmp_path: Path) -> None:
         embedder=embedder,
         runner=runner,
         settings=Settings(drift_mode="aspect"),
-    )
+    ).verdict
     assert verdict.accepted is True
     assert verdict.breached == []
 
@@ -299,7 +319,7 @@ def test_a_failed_distill_falls_back_to_the_scalar_gate(
             embedder=embedder,
             runner=runner,
             settings=Settings(drift_mode="aspect"),
-        )
+        ).verdict
     assert verdict.accepted is True
     assert "falling back to scalar drift" in verdict.reason
     assert "falling back to scalar drift" in caplog.text
@@ -320,7 +340,7 @@ def test_an_unreachable_embedder_skips_the_drift_check_entirely(
             embedder=embedder,
             runner=runner,
             settings=Settings(),  # default: aspect
-        )
+        ).verdict
     assert verdict.accepted is True
     assert "embedder unreachable" in verdict.reason
     assert "embedder unreachable" in caplog.text
@@ -340,7 +360,7 @@ def test_an_unreachable_embedder_still_enforces_the_structural_validators(
         embedder=FakeEmbedder(fail_always=True),
         runner=RecordingRunner(_VALID_CARDS_JSON),
         settings=Settings(),
-    )
+    ).verdict
     assert verdict.accepted is False
 
 
@@ -366,7 +386,7 @@ def test_a_partial_candidate_embed_failure_falls_back_to_the_scalar_gate(
         embedder=embedder,
         runner=runner,
         settings=Settings(drift_mode="aspect"),
-    )
+    ).verdict
     assert verdict.accepted is True
     assert "falling back to scalar drift" in verdict.reason
     assert "drift OK" in verdict.reason
@@ -386,7 +406,7 @@ def test_scalar_gate_rejects_when_similarity_is_below_threshold(tmp_path: Path) 
         embedder=embedder,
         runner=ScriptedRunner([]),  # scalar mode -- never touched
         settings=Settings(drift_mode="scalar"),
-    )
+    ).verdict
     assert verdict.accepted is False
     assert "drift too large" in verdict.reason
 

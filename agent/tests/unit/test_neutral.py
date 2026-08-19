@@ -45,6 +45,11 @@ def test_distill_neutral_pins_the_given_model_and_puts_prompt_on_stdin() -> None
     argv = call["argv"]
     assert isinstance(argv, list)
     assert argv[:2] == ["claude", "-p"]
+    # The ruler must not be able to touch what it measures. Adjacent-pair
+    # assertion, not membership: `--tools` with a non-empty neighbour still
+    # contains the flag and still re-enables the tool set. See
+    # `test_backends.py`'s sandbox block for the incident.
+    assert argv[argv.index("--tools") : argv.index("--tools") + 2] == ["--tools", ""]
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "haiku"
     assert "--system-prompt" in argv and "SYS" in argv

@@ -425,6 +425,10 @@ def _gate(
     embedder: FakeEmbedder | None = None,
     settings: Settings | None = None,
 ) -> Any:
+    """Returns `gate_step`'s VERDICT half only. The measurement half and the
+    calibration event it posts are exercised in `test_drift_measurement.py`,
+    which is where every assertion about what a dream RECORDS lives; the
+    tests below are about what the step DECIDES and logs."""
     return gate_step(
         persona=_persona(directory),
         candidate_text=candidate,
@@ -432,7 +436,7 @@ def _gate(
         embedder=embedder if embedder is not None else FakeEmbedder(vectors=[[1.0], [1.0]]),
         runner=RecordingRunner(),
         settings=settings if settings is not None else Settings(drift_mode="scalar"),
-    )
+    ).verdict
 
 
 def test_gate_step_owns_the_rejection_log_and_event(
@@ -513,7 +517,11 @@ def test_gate_step_compares_against_the_persona_it_was_given_not_the_file(
     verdict = _gate(directory, _valid_candidate(), resources=resources)
 
     assert verdict.accepted is True
-    assert [e.outcome for e in resources.lab_events] == []
+    # No rejection and no fail-open warning -- the only event a clean accept
+    # posts here is the calibration measurement, which `gate_step` posts on
+    # every path and which says nothing about the verdict.
+    assert [e.outcome for e in resources.lab_events if e.outcome != "success"] == []
+    assert [e.summary for e in resources.lab_events] == ["drift measured"]
 
 
 def test_gate_step_writes_nothing_of_the_accounts(tmp_path: Path) -> None:
@@ -1012,4 +1020,8 @@ def test_the_snapshot_follows_the_write_not_the_verdict(
 
     assert result.accepted is False
     assert resources.snapshots == []
-    assert [e.type for e in resources.lab_events] == ["dream"]  # started only
+    # The dream phase's own two events and nothing from the snapshot phase.
+    assert [(e.type, e.summary) for e in resources.lab_events] == [
+        ("dream", "dream started"),
+        ("dream", "drift measured"),
+    ]

@@ -603,18 +603,27 @@ def make_gate_node(deps: CycleDeps) -> NodeFn:
     off the verdict rather than recomputed, so the graph carries no second
     copy of the drift maths.
 
-    `dry_run` completes the set: `gate_step` posts two lab events and, in the
-    deployed `DRIFT_MODE=aspect`, writes `personality.anchor.aspects.json` for
-    any account whose anchor cache is cold. An empty partial is the right
+    `dry_run` completes the set: `gate_step` posts one lab event
+    unconditionally and a second one on all but a fail-open accept, and, in
+    the deployed `DRIFT_MODE=aspect`, writes `personality.anchor.aspects.json`
+    for any account whose anchor cache is cold. An empty partial is the right
     return because nothing downstream needs a verdict on this path -- the
     write and snapshot nodes check `dry_run` before they `_require` one, and a
     dry cycle is routed away from the dream phase before reaching either.
+
+    `step.measurement` is deliberately DROPPED rather than added to the
+    graph state: `gate_step` has already posted it as the calibration
+    series' own lab event (see its docstring for why the emission lives
+    there and not in a composition), and no node after this one reads it.
+    That equivalence expires the moment a later task gates on the step size
+    -- at which point the measurement becomes an input to a decision and
+    has to reach whichever node makes it.
     """
 
     def gate(state: CycleState) -> CycleState:
         if deps.dry_run:
             return {}
-        verdict = gate_step(
+        step = gate_step(
             persona=state["persona"],
             candidate_text=_require(state.get("candidate"), key="candidate", node="gate"),
             resources=deps.resources,
@@ -622,7 +631,7 @@ def make_gate_node(deps: CycleDeps) -> NodeFn:
             runner=deps.runner,
             settings=deps.settings,
         )
-        return {"verdict": verdict, "aspect_sims": verdict.sims}
+        return {"verdict": step.verdict, "aspect_sims": step.verdict.sims}
 
     return gate
 

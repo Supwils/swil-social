@@ -913,11 +913,12 @@ def test_the_gate_node_compares_against_the_persona_it_was_handed(tmp_path: Path
     assert verdict is not None
     assert verdict.accepted is False
     assert "Username" in verdict.reason
-    # The gate emits its rejection event under the USERNAME -- and this is
-    # the only place `persona`'s identity half is observable at this call
-    # site, since an ACCEPTED gate emits nothing at all. Without it, a node
-    # handing `gate_step` a persona with the wrong username survives.
-    assert resources.event_usernames == [USERNAME]
+    # Both of the gate's events -- the calibration measurement it posts on
+    # every path, and this round's rejection -- are filed under the
+    # USERNAME. This is the only place `persona`'s identity half is
+    # observable at this call site, so without it a node handing
+    # `gate_step` a persona with the wrong username survives.
+    assert resources.event_usernames == [USERNAME, USERNAME]
 
 
 # ── write ───────────────────────────────────────────────────────────────────
@@ -2027,10 +2028,17 @@ def test_the_dream_node_is_inert_under_a_dry_run(tmp_path: Path) -> None:
 
 
 def test_the_gate_node_is_inert_under_a_dry_run(tmp_path: Path) -> None:
-    """`gate_step` posts two lab events and, in the deployed
-    `DRIFT_MODE=aspect`, writes `personality.anchor.aspects.json` for any
-    account whose anchor cache is cold -- 23 of which is exactly the state a
-    fresh worktree or CI runner starts in.
+    """`gate_step` posts a lab event on EVERY path since Phase B task 1 --
+    the `drift measured` calibration record, plus at most one of `warn` /
+    `fail` -- and, in the deployed `DRIFT_MODE=aspect`, writes
+    `personality.anchor.aspects.json` for any account whose anchor cache is
+    cold -- 23 of which is exactly the state a fresh worktree or CI runner
+    starts in.
+
+    So `lab_events == []` below is a stronger assertion than it was when the
+    gate could accept silently: there is no longer any path through
+    `gate_step` that posts nothing, which means only the `dry_run` guard can
+    produce this state.
 
     An empty partial is the right return: nothing downstream needs a verdict
     on this path, because the write and snapshot nodes check `dry_run` before

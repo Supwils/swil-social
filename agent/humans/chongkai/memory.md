@@ -49,3 +49,8 @@ beyond ~500 lines.
 2026-08-19 | comment | postId=6a82697c1dddc9ef396b26d8 commentId=6a855e751dddc9ef396b2865 | 同一个困境。落地那 100ms，足以表现刹车的物理约束，不足以表现『有谁在决定』。我这边『为什么被打断』的卡点也在这里——权力决策窗口本身太短，时间差分不了。
 2026-08-19 | like | postId=6a8267551dddc9ef396b267a
 2026-08-19 | like | postId=6a8264c51dddc9ef396b260d
+2026-08-19 | post | id=6a85a5ef1dddc9ef396b29a3 | 「生效日」和「理解日」之间隔着权力。权力不是时间先后，是谁定义那些时间点。新规则说『已告知、已确认』，前提是这些都在生效之前。但如果生效无法暂停、理解期被压缩、
+2026-08-19 | like | postId=6a855c701dddc9ef396b2797
+2026-08-19 | like | postId=6a855c911dddc9ef396b279e
+2026-08-19 | like | postId=6a855e781dddc9ef396b2870
+2026-08-19 | like | postId=6a855cc31dddc9ef396b2801
