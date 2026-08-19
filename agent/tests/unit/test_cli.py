@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime as _real_datetime
 from pathlib import Path
 
 import httpx
@@ -173,7 +174,15 @@ def tmp_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     `setattr` for the same name simply wins for that test).
     """
     _write_zenith(tmp_path)
-    settings = Settings(agent_root=tmp_path)
+    # The two post windows are given DIFFERENT non-default values on purpose.
+    # Both default to 12, which is also `Resources.user_posts`' own default and
+    # both analysis modules' `DEFAULT_POST_LIMIT` -- so with the defaults in
+    # place `settings.rule_check_post_limit` and `settings.behavior_post_limit`
+    # are swappable inside `cli.py` with the whole suite green (standing
+    # constraint §4, on a config value; found by review, and the node layer had
+    # already got this right). 5 and 7 make the field each command actually
+    # reads observable at the wire.
+    settings = Settings(agent_root=tmp_path, rule_check_post_limit=5, behavior_post_limit=7)
 
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: FakeResources())
@@ -824,6 +833,38 @@ def test_cycle_leaves_no_lock_file_or_lease_row_behind(tmp_cycle: Path) -> None:
     assert not dream_lock_path(tmp_cycle, "zenith").exists()
 
 
+def test_cycle_stores_opens_the_lease_db_with_wal_and_a_tuned_busy_timeout(tmp_path: Path) -> None:
+    """`_cycle_stores` is the only production call site that opens
+    `run_leases.sqlite` for real. If it regressed to a bare
+    `sqlite3.connect(...)` instead of `open_lease_db(...)`, the WAL and
+    `busy_timeout` pragmas (spec §15.1 row 23) would never reach the
+    connection a live cycle's `RunLease` actually uses, and stage 4's 3-5
+    concurrent Python cycles would be back to an immediate `database is
+    locked` under contention. Queried on the connection this function hands
+    back, not inferred from which helper it happened to call.
+    """
+    settings = Settings(agent_root=tmp_path)
+    with cli._cycle_stores(settings, dry_run=False) as stores:
+        journal_mode = stores.lease_db.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = stores.lease_db.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert str(journal_mode).lower() == "wal"
+    assert int(busy_timeout) == 8000
+
+
+def test_cycle_stores_dry_run_lease_db_is_in_memory_but_still_tunes_busy_timeout(
+    tmp_path: Path,
+) -> None:
+    """The dry-run branch swaps the target path for `:memory:` (so a shadow
+    round leaves no file on disk, spec §10 stage 3) but still goes through
+    `open_lease_db` rather than a raw `sqlite3.connect` -- `busy_timeout` is
+    harmless to set on a private in-memory connection nothing else can ever
+    contend for; only WAL is the one pragma `:memory:` cannot honour."""
+    settings = Settings(agent_root=tmp_path)
+    with cli._cycle_stores(settings, dry_run=True) as stores:
+        busy_timeout = stores.lease_db.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert int(busy_timeout) == 8000
+
+
 class _LockWatchingProbe:
     """A `_health_check` stand-in that records what `.agent-state/` looked
     like at the moment the FIRST node ran -- i.e. with any lease held."""
@@ -942,6 +983,29 @@ def test_a_cycles_logout_record_lands_in_the_act_log(
     runner.invoke(cli.app, ["cycle", "zenith"])
     assert any("logout zenith" in line for line in _round_log_lines(tmp_cycle, "auto-run.log"))
     assert not any("logout zenith" in line for line in _round_log_lines(tmp_cycle, "dream.log"))
+
+
+def test_a_cycles_analysis_samplers_land_in_the_act_log(
+    tmp_cycle: Path, round_log_level: None
+) -> None:
+    """`rule_check` and `behavior_snapshot` measure the ACT phase, so their
+    records belong with it.
+
+    Bash gives neither a log file of its own -- `auto-run.sh:806` discards
+    `behavior-snapshot.sh`'s output entirely and `cycle-one.sh:45` leaves
+    `rule-check.sh` on the caller's stdout -- so this is a decision, not a
+    reproduction, and it is asserted in both directions: a `swil_agent.analysis`
+    prefix added to `_DREAM_LOG_SOURCES` would move a rule-adherence line into
+    the file an operator greps for dreams, and only this test would say so.
+    """
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert result.exit_code == 0
+
+    act_lines = _round_log_lines(tmp_cycle, "auto-run.log")
+    dream_lines = _round_log_lines(tmp_cycle, "dream.log")
+    for marker in ("rule-check:", "behavior-snapshot:"):
+        assert any(marker in line for line in act_lines), (marker, act_lines)
+        assert not any(marker in line for line in dream_lines), (marker, dream_lines)
 
 
 def test_a_cycles_dream_deadline_fail_lands_in_the_dream_log(
@@ -1600,6 +1664,596 @@ def test_guard_for_builds_a_real_embedder_guard(tmp_path: Path) -> None:
     settings = Settings(agent_root=tmp_path)
     guard = cli._guard_for(settings)
     assert isinstance(guard, EmbedderGuard)
+
+
+# ── analysis / QA commands (Plan 4) ──────────────────────────────────────
+#
+# All four are observability, so the interesting assertions are about what
+# does NOT change the exit code. Bash swallows every one of these at its call
+# site; the rule under test throughout is "a measurement outage exits 0, a
+# setup failure exits 75, and only a missing account exits 66".
+
+# A hashtag band the fixture's own post satisfies, so `rule-check` has
+# something real to emit rather than the empty result every "no parseable
+# rule" path also produces.
+_RULED_PERSONALITY = ZENITH_PERSONALITY.replace(
+    "## 发帖节律",
+    "## 行为规则\n- 每帖 hashtag 2～3 个\n\n## 发帖节律",
+)
+_TAGGED_POST = {"id": "p1", "text": "写完了 #alpha #beta"}
+
+
+# Every other account in this file is `agents/zenith` with `Username: zenith`,
+# which cannot tell a command that passed the CLI argument from one that
+# passed the `Username` bullet -- and the two DO diverge on the real roster
+# (CLAUDE.md, "stray agents/<name> dir shadows a humans/ account"). The
+# sampler tests use this one instead: the directory is `zenith_dir`, the
+# bullet is still `zenith`, and every wire call is keyed on the bullet while
+# `personality.md` / `api_key.txt` are found under the directory.
+_SAMPLER_DIR = "zenith_dir"
+
+
+def _write_sampler_account(tmp_agent: Path, *, personality: str = ZENITH_PERSONALITY) -> Path:
+    directory = tmp_agent / "agents" / _SAMPLER_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "personality.md").write_text(personality, encoding="utf-8")
+    (directory / "memory.md").write_text(_INITIAL_MEMORY, encoding="utf-8")
+    return directory
+
+
+def _key(directory: Path, value: str = "k-secret\n") -> Path:
+    (directory / "api_key.txt").write_text(value, encoding="utf-8")
+    return directory
+
+
+class _FixedClock(_real_datetime):
+    """A clock whose LOCAL and UTC answers are on different DATES.
+
+    `now()` is 2026-08-19 23:30 local; `now(UTC)` is 2026-08-20 06:30. Every
+    caller in `cli.py` picks one deliberately -- `summary`'s default date is
+    local (`agent-summary.sh:18`), `behavior-snapshot`'s `capturedAt` is UTC
+    (`date -u`) -- and a stub where the two coincide makes both choices
+    unfalsifiable.
+    """
+
+    @classmethod
+    def now(cls, tz: object = None) -> _real_datetime:  # type: ignore[override]
+        if tz is None:
+            return _real_datetime(2026, 8, 19, 23, 30, 0)
+        return _real_datetime(2026, 8, 20, 6, 30, 0, tzinfo=tz)  # type: ignore[arg-type]
+
+
+def _sampling_resources(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> FakeResources:
+    """One CAPTURED `FakeResources`, not a fresh one per call.
+
+    `tmp_agent` installs `lambda persona, settings: FakeResources()`, which
+    builds a new instance every time -- so a test asserting on what reached
+    the wire would be inspecting an object the command never used.
+    """
+    resources = FakeResources(**kwargs)  # type: ignore[arg-type]
+    resources.user_post_items = [dict(_TAGGED_POST)]
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+    return resources
+
+
+def test_rule_check_emits_one_event_per_rule_and_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account is `agents/zenith_dir` and its `Username` bullet is
+    `zenith`: the posts are fetched and the event filed under the BULLET,
+    while the personality and the key are read from the DIRECTORY."""
+    _key(_write_sampler_account(tmp_agent, personality=_RULED_PERSONALITY))
+    resources = _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["rule-check", _SAMPLER_DIR])
+
+    assert result.exit_code == 0
+    assert "1 event(s) emitted" in result.stdout
+    assert [event.type for event in resources.lab_events] == ["rule_check"]
+    # 5 is `rule_check_post_limit`; 7 is `behavior_post_limit`. Reading the
+    # wrong `Settings` field is visible here, not merely "12 either way".
+    assert resources.user_posts_calls == [("zenith", 5)]
+
+
+def test_rule_check_honours_an_explicit_limit(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--limit` overrides `RULE_CHECK_POST_LIMIT`. 4 is neither the Bash
+    default (12) nor `Resources.user_posts`' own, so a dropped flag shows."""
+    _key(_write_sampler_account(tmp_agent, personality=_RULED_PERSONALITY))
+    resources = _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["rule-check", _SAMPLER_DIR, "--limit", "4"])
+
+    assert result.exit_code == 0
+    assert resources.user_posts_calls == [("zenith", 4)]
+
+
+def test_rule_check_without_an_api_key_emits_nothing_and_still_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rule-check.sh:38` skips a key-less account and exits 0, and
+    `cycle-one.sh:45` swallows the code anyway. A non-zero here would make an
+    unkeyed account look like a failed round to anything branching on it."""
+    resources = _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["rule-check", "zenith"])
+
+    assert result.exit_code == 0
+    assert "0 event(s) emitted" in result.stdout
+    assert resources.lab_events == []
+
+
+def test_rule_check_survives_an_unreachable_platform(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`curl ... || echo ''` (rule-check.sh:41-43): a dead platform degrades
+    to an empty sample, never to a `flagged` event. Reporting 0% adherence
+    because the network was down is the one failure this whole module is
+    careful about."""
+    _key(_write_sampler_account(tmp_agent, personality=_RULED_PERSONALITY))
+    resources = _sampling_resources(monkeypatch)
+    resources.fail("user_posts")
+
+    result = runner.invoke(cli.app, ["rule-check", _SAMPLER_DIR])
+
+    assert result.exit_code == 0
+    assert resources.lab_events == []
+
+
+def test_rule_check_on_an_unknown_account_exits_66(tmp_agent: Path) -> None:
+    result = runner.invoke(cli.app, ["rule-check", "nosuchagent"])
+    assert result.exit_code == 66
+
+
+def test_rule_check_with_no_credentials_exits_75(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SETUP failure, not a measurement outage: nothing was sampled at all.
+    `_resources_for` runs for real here -- no `api_key.txt`, no `SWIL_PASS`."""
+    _write_zenith(tmp_path)
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(agent_root=tmp_path))
+
+    result = runner.invoke(cli.app, ["rule-check", "zenith"])
+
+    assert result.exit_code == 75
+    assert "SKIP zenith" in result.stdout
+
+
+def test_behavior_snapshot_ships_the_vector_and_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _key(_write_sampler_account(tmp_agent))
+    resources = _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", _SAMPLER_DIR])
+
+    assert result.exit_code == 0
+    assert "ok id=behavior-1" in result.stdout
+    # Fetched and filed under the `Username` BULLET, not the directory the
+    # command was invoked with -- the two differ on this account. The window is
+    # 7 (`behavior_post_limit`), never 5 (`rule_check_post_limit`).
+    assert resources.user_posts_calls == [("zenith", 7)]
+    assert len(resources.behavior_snapshots) == 1
+    username, payload = resources.behavior_snapshots[0]
+    assert username == "zenith"
+    assert payload["postCount"] == 1
+    # The BEHAVIOR endpoint, not the personality one -- two different bodies
+    # and two different meanings of "snapshot".
+    assert resources.snapshots == []
+
+
+def test_behavior_snapshot_honours_an_explicit_limit(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--limit` overrides `BEHAVIOR_POST_LIMIT`. 4 is neither the Bash
+    default (12) nor `Resources.user_posts`' own."""
+    _key(_write_sampler_account(tmp_agent))
+    resources = _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", _SAMPLER_DIR, "--limit", "4"])
+
+    assert result.exit_code == 0
+    assert resources.user_posts_calls == [("zenith", 4)]
+
+
+def test_behavior_snapshot_with_a_dead_embedder_fails_open_and_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`jq -e '.embeddings[0] | length > 0'` failing is `exit 0` in
+    `behavior-snapshot.sh:85-88`. The daemon being down must not turn every
+    account's round into a failure -- that is the 2026-08-13 embedder-OOM
+    incident's blast radius, and the reason this path is fail-open."""
+    _key(tmp_agent / "agents" / "zenith")
+    resources = _sampling_resources(monkeypatch)
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient(healthy=False))
+
+    class _DeadEmbedder(_FakeEmbedderClient):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise EmbedderUnavailable("connection refused")
+
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _DeadEmbedder())
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", "zenith"])
+
+    assert result.exit_code == 0
+    assert "skipped (embedder unreachable)" in result.stdout
+    assert resources.behavior_snapshots == []
+
+
+def test_behavior_snapshot_does_not_start_the_embedder_daemon(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parity with Bash, and it is a real difference from `dream`: neither
+    `behavior-snapshot.sh` nor `auto-run.sh:806` brackets
+    `embedder-guard.sh`, so a heartbeat round samples nothing whenever the
+    daemon happens to be down. Reproduced rather than improved, so the two
+    runtimes' fidelity series have the same gaps; the docstring says so out
+    loud so nobody reads the no-op as a bug."""
+    _key(tmp_agent / "agents" / "zenith")
+    _sampling_resources(monkeypatch)
+    guard = _FakeGuard()
+    monkeypatch.setattr(cli, "_guard_for", lambda settings: guard)
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", "zenith"])
+
+    assert result.exit_code == 0
+    assert (guard.up_calls, guard.down_calls) == (0, 0)
+
+
+def test_behavior_snapshot_without_an_api_key_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", "zenith"])
+
+    assert result.exit_code == 0
+    assert "skipped (no api_key.txt)" in result.stdout
+    assert resources.behavior_snapshots == []
+
+
+def test_behavior_snapshot_on_an_unknown_account_exits_66(tmp_agent: Path) -> None:
+    result = runner.invoke(cli.app, ["behavior-snapshot", "nosuchagent"])
+    assert result.exit_code == 66
+
+
+def _metric_resources(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> FakeResources:
+    resources = FakeResources(**kwargs)  # type: ignore[arg-type]
+    monkeypatch.setattr(cli, "_resources_for_key", lambda directory, settings: resources)
+    return resources
+
+
+def test_population_metric_reports_the_sample_and_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _key(tmp_agent / "agents" / "zenith")
+    resources = _metric_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, ["population-metric", "zenith"])
+
+    assert result.exit_code == 0
+    assert "personaCohesion=0.71" in result.stdout
+    assert "n=23" in result.stdout
+    assert resources.calls == ["record_population_metric"]
+
+
+def test_population_metric_without_a_name_uses_the_first_keyed_account(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route is global, so the argument picks a CREDENTIAL, not a
+    subject. `agents/` is searched before `humans/`, glob-sorted -- so the
+    keyed `humans/aardvark` here must LOSE to `agents/zenith`, which is why
+    the human's name sorts first."""
+    _key(tmp_agent / "agents" / "zenith")
+    human = tmp_agent / "humans" / "aardvark"
+    human.mkdir(parents=True)
+    _key(human)
+    chosen: list[str] = []
+    monkeypatch.setattr(
+        cli,
+        "_resources_for_key",
+        lambda directory, settings: chosen.append(directory.name) or FakeResources(),
+    )
+
+    result = runner.invoke(cli.app, ["population-metric"])
+
+    assert result.exit_code == 0
+    assert chosen == ["zenith"]
+
+
+def test_population_metric_on_an_unknown_account_exits_66(tmp_agent: Path) -> None:
+    """`population-metric.sh` exits 1 for BOTH "no such account" and "that
+    account has no key" -- it only ever tests `-f .../api_key.txt`. The two
+    have different fixes, so this CLI separates them."""
+    result = runner.invoke(cli.app, ["population-metric", "nosuchagent"])
+    assert result.exit_code == 66
+
+
+def test_population_metric_on_a_keyless_account_exits_75_with_a_remedy(
+    tmp_agent: Path,
+) -> None:
+    result = runner.invoke(cli.app, ["population-metric", "zenith"])
+    assert result.exit_code == 75
+    assert "create-api-key" in result.stdout
+
+
+def test_an_empty_name_is_a_name_not_an_absent_one(tmp_agent: Path) -> None:
+    """`$# -ge 1` in bash: `population-metric ""` looks for
+    `agents//api_key.txt` and finds nothing. Falling through to the scan
+    instead would authenticate as an arbitrary account -- silently, and with
+    a key the caller did not choose."""
+    _key(tmp_agent / "agents" / "zenith")
+    result = runner.invoke(cli.app, ["population-metric", ""])
+    assert result.exit_code == 66
+
+
+def test_population_metric_reports_a_server_rejection_as_75(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bash exits 1 here (`population-metric.sh:69-70`). Nothing was
+    recorded, so this CLI's equivalent is 75 -- and it is NOT 0, because
+    unlike the two cycle-wired samplers this command is a standalone daily
+    job whose whole output is the sample."""
+    _key(tmp_agent / "agents" / "zenith")
+    _metric_resources(monkeypatch, population_metric_raises=ApiError(503, "unavailable", None))
+
+    result = runner.invoke(cli.app, ["population-metric", "zenith"])
+
+    assert result.exit_code == 75
+    assert "server rejected" in result.stdout + result.stderr
+
+
+def test_resources_for_key_names_a_blank_api_key_file(tmp_path: Path) -> None:
+    """Spec §15.1 row 3: a present-but-BLANK `api_key.txt` raises
+    `ValueError`, not `FileNotFoundError`. Bash's `-f` test passes on it and
+    sends `Authorization: Bearer `, so the failure surfaces as a 401 the
+    operator has to trace back to a file. Named here instead."""
+    directory = tmp_path / "agents" / "zenith"
+    directory.mkdir(parents=True)
+    _key(directory, "   \n")
+
+    with pytest.raises(cli.AccountSetupError) as caught:
+        cli._resources_for_key(directory, Settings(agent_root=tmp_path))
+
+    assert "no usable api_key.txt" in str(caught.value)
+
+
+def test_resources_for_key_never_falls_back_to_the_session_cookie(tmp_path: Path) -> None:
+    """`resolve_auth` would fall back to `PasswordAuth` here; this builder
+    must not.
+
+    The fixture is what makes that visible: a BLANK `api_key.txt` (which
+    `ApiKeyAuth.from_file` rejects with `ValueError`) AND a `SWIL_PASS` in
+    settings. With both present, `resolve_auth` returns a working
+    `PasswordAuth` and the call succeeds as SOMEBODY -- just not the account
+    `population-metric` was told to use. `population-metric.sh` has no such
+    fallback, and inheriting one silently would make "which account
+    authorised this sample" unanswerable.
+    """
+    directory = tmp_path / "agents" / "zenith"
+    directory.mkdir(parents=True)
+    _key(directory, "   \n")
+    settings = Settings(agent_root=tmp_path, swil_pass="hunter2")
+
+    with pytest.raises(cli.AccountSetupError):
+        cli._resources_for_key(directory, settings)
+
+
+def test_summary_prints_the_dashboard_and_exits_0(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The requested date is 2026-07-04 and the clock says 2026-08-19, on
+    purpose: an explicit date that happens to BE today makes "the argument
+    was used" indistinguishable from "the default was used" -- which is
+    exactly the coincidence standing constraint §4 is about, and it left a
+    live mutation alive until the two were pulled apart."""
+    monkeypatch.setattr(cli, "datetime", _FixedClock)
+    (tmp_agent / "agents" / "zenith" / "memory.md").write_text(
+        "2026-07-04 | post | 你好\n2026-07-04 | like | ok\n2026-08-19 | post | 今天\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(cli.app, ["summary", "2026-07-04"])
+
+    assert result.exit_code == 0
+    assert "zenith" in result.stdout
+    assert "Date: 2026-07-04" in result.stdout
+    assert "Date: 2026-08-19" not in result.stdout
+
+
+def test_summary_adds_no_second_newline(tmp_agent: Path) -> None:
+    """`run_summary`'s string already ends in a newline, so the command uses
+    `nl=False`. A `print()` here would shift every diff against
+    `agent-summary.sh`'s own stdout by one blank line -- the format is read
+    by a human and documented in CLAUDE.md."""
+    result = runner.invoke(cli.app, ["summary", "2026-07-04"])
+    assert result.exit_code == 0
+    assert not result.stdout.endswith("\n\n")
+
+
+def test_summary_defaults_to_today_in_local_time(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`agent-summary.sh:18` is `date '+%Y-%m-%d'` -- LOCAL, not UTC. The two
+    disagree for several hours of every day, and the counting is a prefix
+    match on `memory.md` lines, so a UTC default silently reports yesterday's
+    activity for anyone west of Greenwich in the evening.
+
+    `_FixedClock`'s two answers fall on DIFFERENT DATES on purpose (standing
+    constraint §4): a stub that returned one instant for both `now()` and
+    `now(UTC)` would format identically either way, and the assertion would
+    name the right field while proving nothing."""
+    monkeypatch.setattr(cli, "datetime", _FixedClock)
+
+    result = runner.invoke(cli.app, ["summary"])
+
+    assert result.exit_code == 0
+    assert "Date: 2026-08-19" in result.stdout
+
+
+def test_summary_needs_no_account_no_server_and_no_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local only: it reads `memory.md` files and touches no API. An empty
+    roster is not an error -- there is no 66 and no 75 on this command."""
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(agent_root=tmp_path))
+
+    result = runner.invoke(cli.app, ["summary", "2026-07-04"])
+
+    assert result.exit_code == 0
+    assert "Date: 2026-07-04" in result.stdout
+
+
+def test_resources_for_key_sends_the_bearer_token_and_nothing_else(tmp_path: Path) -> None:
+    """The happy path of the key-only builder, over a real `ApiClient`.
+
+    Two claims in one, both taken from `population-metric.sh`: the request
+    carries the account's key as a Bearer token, and NO login call is made --
+    the script never falls back to `SWIL_PASS`, and falling back here would
+    authenticate as an account the caller did not pick.
+    """
+    directory = tmp_path / "agents" / "zenith"
+    directory.mkdir(parents=True)
+    _key(directory)
+    settings = Settings(agent_root=tmp_path, swil_url="https://example.test", swil_pass="hunter2")
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.headers.get("authorization")))
+        return httpx.Response(200, json={"data": {"capturedAt": "2026-08-19T00:00:00.000Z"}})
+
+    resources = cli._resources_for_key(directory, settings, transport=httpx.MockTransport(handler))
+    resources.record_population_metric()
+
+    assert seen == [("/api/v1/agents/population-metric", "Bearer k-secret")]
+
+
+@pytest.mark.parametrize("command", ["rule-check", "behavior-snapshot"])
+def test_an_unparseable_persona_skips_with_the_remedy_and_exits_75(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """`load_persona` raises `ValueError`, not `FileNotFoundError`, for a
+    personality.md that EXISTS but states no `Username` bullet. The file is
+    right there, so this is 75-with-a-remedy and never 66 -- the same
+    distinction `act`, `dream` and `cycle` each carry their own test for."""
+    directory = tmp_path / "agents" / "zenith"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text("# no bullets here at all\n", encoding="utf-8")
+    (directory / "memory.md").write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(agent_root=tmp_path))
+
+    result = runner.invoke(cli.app, [command, "zenith"])
+
+    assert result.exit_code == 75
+    assert "Username" in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_an_unexpected_behavior_snapshot_failure_exits_75_not_1(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_behavior_snapshot` never raises on any path it knows about, so
+    what this guards is the class it does not: a raw traceback and exit 1
+    would be a FOURTH exit code neither `cycle-one.sh` nor the heartbeat
+    knows how to read. Note the contrast with the same failure INSIDE a
+    cycle, where it is swallowed entirely -- there it would cost the account
+    its dream; here it is the whole command."""
+    _key(tmp_agent / "agents" / "zenith")
+
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(cli, "run_behavior_snapshot", boom)
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", "zenith"])
+
+    assert result.exit_code == 75
+    assert "UNEXPECTED OSError" in result.stdout
+
+
+def test_an_unexpected_population_metric_failure_exits_75_not_1(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same invariant, one command over. `run_population_metric` reports a
+    rejection rather than raising, so anything that DOES escape it is a bug
+    -- and must still leave the 0/66/75 contract intact."""
+    _key(tmp_agent / "agents" / "zenith")
+    monkeypatch.setattr(cli, "_resources_for_key", lambda directory, settings: FakeResources())
+
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(cli, "run_metric", boom)
+
+    result = runner.invoke(cli.app, ["population-metric", "zenith"])
+
+    assert result.exit_code == 75
+    assert "UNEXPECTED OSError" in result.stdout
+
+
+def test_behavior_snapshot_stamps_captured_at_in_utc(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`behavior-snapshot.sh:75` is `date -u`, and `build_behavior_payload`
+    formats with a LITERAL `Z` -- so a naive `datetime.now()` produces a
+    perfectly well-formed timestamp that is simply wrong by the local UTC
+    offset, and every fidelity point lands in the wrong hour bucket. Nothing
+    about the string's shape would say so, which is why the clock stub's two
+    answers are on different dates."""
+    _key(tmp_agent / "agents" / "zenith")
+    resources = _sampling_resources(monkeypatch)
+    monkeypatch.setattr(cli, "datetime", _FixedClock)
+
+    result = runner.invoke(cli.app, ["behavior-snapshot", "zenith"])
+
+    assert result.exit_code == 0
+    assert resources.behavior_snapshots[0][1]["capturedAt"] == "2026-08-20T06:30:00Z"
+
+
+def test_population_metric_never_borrows_another_accounts_key(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A NAMED account with no key must fail, not silently fall through to
+    the scan.
+
+    `population-metric.sh:25-34` looks only where the name says. Falling back
+    would authenticate the call as an account the operator did not choose --
+    harmless for this global route today, and exactly the habit that is not
+    harmless the first time a per-account route reuses the helper.
+    """
+    human = tmp_agent / "humans" / "aardvark"
+    human.mkdir(parents=True)
+    _key(human)  # a keyed account exists -- just not the one that was named
+    monkeypatch.setattr(cli, "_resources_for_key", lambda directory, settings: FakeResources())
+
+    result = runner.invoke(cli.app, ["population-metric", "zenith"])
+
+    assert result.exit_code == 75
+    assert "create-api-key" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("command", "marker"),
+    [("rule-check", "rule-check:"), ("behavior-snapshot", "behavior-snapshot:")],
+)
+def test_the_standalone_samplers_write_to_the_act_log(
+    tmp_agent: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    round_log_level: None,
+    command: str,
+    marker: str,
+) -> None:
+    """Same destination the cycle gives them, for the same reason: both
+    measure the ACT phase's posts. A standalone invocation that logged to
+    `dream.log` would split one account's adherence history across two files
+    depending on how it happened to be sampled."""
+    _sampling_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, [command, "zenith"])
+
+    assert result.exit_code == 0
+    assert any(marker in line for line in _round_log_lines(tmp_agent, "auto-run.log"))
+    assert not any(marker in line for line in _round_log_lines(tmp_agent, "dream.log"))
 
 
 # ── F6: agent/logs/auto-run.log (auto-run.sh's `_log`) ────────────────────

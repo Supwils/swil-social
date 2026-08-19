@@ -747,6 +747,142 @@ def test_create_snapshot_raises_write_not_verified_without_id() -> None:
         _resources(handler).create_snapshot("zenith", {"contentHash": "abc"})
 
 
+# ── create_behavior_snapshot (behavior-snapshot.sh:109-122) ───────────────
+
+
+def test_create_behavior_snapshot_uses_its_own_endpoint() -> None:
+    """A DIFFERENT path from `create_snapshot`'s `/snapshots`. Sending a
+    behavior body to the personality route (or vice versa) would 400 on a
+    field neither schema shares — and, worse, a body that happened to
+    validate would land in the wrong collection, plotting posts as
+    personality versions on /lab."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(201, json={"data": {"id": "beh-1", "fidelity": 0.5}})
+
+    assert _resources(handler).create_behavior_snapshot("zenith", {"contentHash": "abc"}) == (
+        "beh-1",
+        0.5,
+    )
+    assert seen == ["/api/v1/agents/zenith/behavior-snapshots"]
+
+
+def test_create_behavior_snapshot_sends_the_payload_unchanged() -> None:
+    payload = {"contentHash": "abc", "postCount": 3, "commentCount": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert _json.loads(request.content) == payload
+        return httpx.Response(201, json={"data": {"id": "beh-1", "fidelity": 0.5}})
+
+    _resources(handler).create_behavior_snapshot("zenith", payload)
+
+
+def test_create_behavior_snapshot_reports_a_null_fidelity_as_none() -> None:
+    """`fidelity` is null until the account has a personality snapshot to
+    compare against (agents.drift.ts:236-237) — the normal state before an
+    account's first accepted dream. `0.0` would read as total infidelity."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": {"id": "beh-1", "fidelity": None}})
+
+    assert _resources(handler).create_behavior_snapshot("zenith", {}) == ("beh-1", None)
+
+
+def test_create_behavior_snapshot_coerces_an_integer_fidelity() -> None:
+    """A cosine of exactly 1 serialises as JSON `1`, which json.loads reads
+    as an `int`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": {"id": "beh-1", "fidelity": 1}})
+
+    assert _resources(handler).create_behavior_snapshot("zenith", {}) == ("beh-1", 1.0)
+
+
+def test_create_behavior_snapshot_does_not_read_a_boolean_as_a_score() -> None:
+    """`isinstance(True, int)` is True in Python, so a naive numeric check
+    turns JSON `true` into a perfect 1.0 fidelity conjured from a flag."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": {"id": "beh-1", "fidelity": True}})
+
+    assert _resources(handler).create_behavior_snapshot("zenith", {}) == ("beh-1", None)
+
+
+def test_create_behavior_snapshot_raises_write_not_verified_without_id() -> None:
+    """behavior-snapshot.sh:115-121's "server rejected" branch."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": {"fidelity": 0.9}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).create_behavior_snapshot("zenith", {})
+
+
+# ── record_population_metric (population-metric.sh:58-70) ─────────────────
+
+
+def test_record_population_metric_posts_to_the_global_route_with_no_body() -> None:
+    """`/agents/population-metric` is registered BEFORE the `/:username/*`
+    routes (agents.routes.ts:41), so it is a literal path and not a username.
+    `curl -X POST` with no `-d` sends no body at all — `json=None`, not
+    `json={}`."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201, json={"data": {"capturedAt": "2026-08-19T00:00:00.000Z"}})
+
+    _resources(handler).record_population_metric()
+
+    assert [(r.method, r.url.path) for r in seen] == [("POST", "/api/v1/agents/population-metric")]
+    assert seen[0].content == b""
+
+
+def test_record_population_metric_returns_the_data_object() -> None:
+    sample = {
+        "capturedAt": "2026-08-19T00:00:00.000Z",
+        "personaCohesion": 0.11,
+        "behaviorCohesion": 0.92,
+        "n": 17,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": sample})
+
+    assert _resources(handler).record_population_metric() == sample
+
+
+def test_record_population_metric_rejects_a_response_without_captured_at() -> None:
+    """`jq -e '.data.capturedAt'` (population-metric.sh:63) — a 2xx envelope
+    that proves no sample was taken."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": {"n": 4}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).record_population_metric()
+
+
+def test_record_population_metric_rejects_a_null_captured_at() -> None:
+    """`jq -e` fails on `null` as well as on a missing key."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"data": {"capturedAt": None, "n": 4}})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).record_population_metric()
+
+
+def test_record_population_metric_rejects_a_missing_data_envelope() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"ok": True})
+
+    with pytest.raises(WriteNotVerifiedError):
+        _resources(handler).record_population_metric()
+
+
 # ── mark_notifications_read (swil.sh:657-664) ─────────────────────────────
 
 

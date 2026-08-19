@@ -86,7 +86,16 @@ import typer
 
 from swil_agent import __version__
 from swil_agent.act.round import run_act
-from swil_agent.api.auth import PasswordAuth, resolve_auth
+from swil_agent.analysis.behavior_snapshot import run_behavior_snapshot
+from swil_agent.analysis.population_metric import (
+    API_KEY_FILENAME,
+    COHORTS,
+    find_account_with_api_key,
+)
+from swil_agent.analysis.population_metric import run_population_metric as run_metric
+from swil_agent.analysis.rule_check import run_rule_check
+from swil_agent.analysis.summary import local_today, run_summary
+from swil_agent.api.auth import ApiKeyAuth, PasswordAuth, resolve_auth
 from swil_agent.api.client import ApiClient
 from swil_agent.api.resources import Resources
 from swil_agent.config import Settings, load_settings
@@ -101,7 +110,7 @@ from swil_agent.graph.checkpoint import (
     latest_round_id,
 )
 from swil_agent.graph.cycle import run_cycle
-from swil_agent.graph.leases import LEASE_DB_NAME, LeaseBusy
+from swil_agent.graph.leases import LEASE_DB_NAME, LeaseBusy, open_lease_db
 from swil_agent.graph.nodes import CycleDeps, agent_dir_name
 from swil_agent.graph.state import BUILTIN_TENANT, CycleState
 from swil_agent.llm.base import (
@@ -195,6 +204,16 @@ DREAM_LOG_FILENAME: Final = "dream.log"
 # round-level embedder-down ERROR, which `swil-agent dream` already writes to
 # `dream.log` and which must not change file just because the same probe ran
 # inside a cycle.
+# `swil_agent.analysis.*` is deliberately ABSENT, so both cycle-wired
+# samplers land in `auto-run.log`. Bash gives neither a home of its own --
+# `auto-run.sh:806` sends `behavior-snapshot.sh` to `/dev/null` outright, and
+# `cycle-one.sh:45` lets `rule-check.sh` write to whatever stdout the caller
+# had -- so this is a choice rather than a reproduction, and it goes with the
+# ACT log because that is what both measure: the behaviour snapshot embeds the
+# posts this round's act phase produced, and the rule check scores those same
+# posts against the ruleset that was in force while they were written. Putting
+# them in `dream.log` would file the act phase's measurements under the phase
+# that happens to run next.
 _DREAM_LOG_SOURCES: Final[tuple[str, ...]] = (
     "swil_agent.dream",
     "swil_agent.embedder",
@@ -402,6 +421,39 @@ def _resources_for(
                 "session config, or the platform was unreachable)"
             ) from exc
     return Resources(client)
+
+
+def _resources_for_key(
+    directory: Path, settings: Settings, *, transport: httpx.BaseTransport | None = None
+) -> Resources:
+    """A `Resources` authorised by ONE account's `api_key.txt` and nothing
+    else -- the shape `population-metric` needs.
+
+    `POST /agents/population-metric` is a global route: picking an account
+    here is picking a CREDENTIAL, never a subject (`population-metric.sh:56-57`
+    says so, and `:53` computes a `USERNAME` it then never uses). So this
+    deliberately does NOT go through `_resources_for`, which would need a
+    `Persona` -- i.e. a parseable `personality.md` the call does not consult.
+    Reproducing that requirement would resurrect an accident of the script's
+    `set -euo pipefail`, where an account with a key but a broken personality
+    aborts the run (task-2-3-report.md §3.3).
+
+    There is no `PasswordAuth` fallback for the same reason: `find_account_
+    with_api_key` has already established the file exists, and falling back to
+    a session cookie would authenticate as an account the caller did not pick.
+    """
+    try:
+        auth = ApiKeyAuth.from_file(directory / API_KEY_FILENAME)
+    except (FileNotFoundError, ValueError) as exc:
+        # ValueError is the present-but-BLANK file (spec §15.1 row 3). Bash's
+        # `-f` test passes on it and sends `Authorization: Bearer `, which the
+        # server 401s -- reported as "server rejected". Naming it here instead
+        # sends the reader to the file rather than to the server.
+        raise AccountSetupError(
+            f"{directory.name}: no usable {API_KEY_FILENAME} ({exc}) -- run "
+            f"`SWIL_AGENT={directory.name}/personality.md agent/scripts/swil.sh create-api-key`"
+        ) from exc
+    return Resources(ApiClient(settings.swil_url, auth, transport=transport))
 
 
 def _auth_setup_remedy(persona: Persona, settings: Settings) -> str:
@@ -661,7 +713,7 @@ def _cycle_stores(settings: Settings, *, dry_run: bool) -> Iterator[_CycleStores
             lease_path = _lease_db_path(settings)
             lease_path.parent.mkdir(parents=True, exist_ok=True)
             target = str(lease_path)
-        lease_db = stack.enter_context(closing(sqlite3.connect(target)))
+        lease_db = stack.enter_context(closing(open_lease_db(target)))
         checkpointer = (
             None if dry_run else stack.enter_context(checkpointer_at(_checkpoint_db_path(settings)))
         )
@@ -1163,6 +1215,263 @@ def cycle(
 
     _report_cycle_result(name, final, dry_run=dry_run)
     raise typer.Exit(EXIT_OK if _cycle_granted_dream(final) else EXIT_NO_ACTION)
+
+
+# ── analysis / QA commands ───────────────────────────────────────────────
+#
+# All four are OBSERVABILITY, never the main flow, and their exit codes say
+# so: `0` whenever the command ran, whatever it found. Bash swallows every
+# one of these at its call site (`auto-run.sh:806`, `cycle-one.sh:45`) or
+# runs it as a standalone daily job, and a measurement outage -- no api_key,
+# no parseable rule, a dead embedder, an unreachable platform -- is never a
+# round failure. `75` is reserved for the SETUP failures that mean nothing
+# was measured at all, and `66` for an account that does not exist.
+#
+# `rule-check` and `behavior-snapshot` are ALSO wired into `cycle`
+# (`graph/nodes.py`); these two commands exist for the same reason `dream.sh`
+# exists next to `cycle-one.sh` -- re-sampling one account by hand without
+# spending a round on it, and covering anyone still driving the act phase
+# with `swil-agent act`, which (like the frozen `run_act` it wraps) does not
+# sample.
+
+
+@app.command("rule-check")
+def rule_check(
+    name: str,
+    limit: int | None = typer.Option(
+        None, "--limit", help="Recent posts to score (default: RULE_CHECK_POST_LIMIT)."
+    ),
+) -> None:
+    """Python port of `rule-check.sh`, for one account.
+
+    Scores the account's recent posts against the machine-checkable rules its
+    own `personality.md` states, and files one `rule_check` lab event per
+    rule -- the only thing `/lab`'s F4 adherence panel reads.
+
+    Exits 0 even when nothing was emitted. "No api_key.txt", "no parseable
+    rule" and "the platform was unreachable" are all normal, and Bash ends
+    the call with `|| true` at every call site. The number of events emitted
+    is printed, so a caller that wants to know still can.
+
+    **Run this BEFORE a dream, never after** -- it parses the rules out of
+    `personality.md`, and a dream rewrites that file, so afterwards it
+    measures the new rules against the old posts (`cycle-one.sh:39-41`).
+    `swil-agent cycle` gets that ordering by construction; a hand-driven
+    sequence does not.
+    """
+    settings = load_settings()
+    _attach_round_log(settings, ACT_LOG_FILENAME)
+    persona_source = _persona_source_for(settings)
+    try:
+        persona = _load_persona_or_raise_setup_error(persona_source, name)
+    except FileNotFoundError as exc:
+        typer.echo(f"no such account: {name}", err=True)
+        raise typer.Exit(EXIT_NO_SUCH_ACCOUNT) from exc
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    try:
+        events = run_rule_check(
+            _resources_for(persona, settings),
+            directory=persona.directory,
+            username=persona.username,
+            limit=limit if limit is not None else settings.rule_check_post_limit,
+        )
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    typer.echo(f"rule-check {name} -- {len(events)} event(s) emitted")
+    raise typer.Exit(EXIT_OK)
+
+
+@app.command("behavior-snapshot")
+def behavior_snapshot(
+    name: str,
+    limit: int | None = typer.Option(
+        None, "--limit", help="Recent posts to embed (default: BEHAVIOR_POST_LIMIT)."
+    ),
+) -> None:
+    """Python port of `behavior-snapshot.sh`, for one account.
+
+    Embeds the account's recent posts as ONE document and ships the vector;
+    the server computes persona fidelity = cosine(personality, behavior).
+    This is the *revealed self* half of `/lab`'s fidelity pair -- `dream`'s
+    own snapshot supplies the *stated self*, and neither is derivable from
+    the other.
+
+    **The embedder daemon is NOT started for this**, matching Bash: neither
+    `behavior-snapshot.sh` nor `auto-run.sh:806` brackets
+    `embedder-guard.sh` (only `cycle-one.sh` does, and only for the dream).
+    A daemon that is down means this fails open with a WARN and exits 0 --
+    the same no-op Bash produces, including on every heartbeat round. Start
+    it yourself (`agent/scripts/embedder/start.sh`) if you want the sample
+    to land.
+
+    Exits 0 on every outcome the script exits 0 on, which is all of them: no
+    api_key, no recent posts, a dead embedder, a server rejection.
+    """
+    settings = load_settings()
+    _attach_round_log(settings, ACT_LOG_FILENAME)
+    persona_source = _persona_source_for(settings)
+    try:
+        persona = _load_persona_or_raise_setup_error(persona_source, name)
+    except FileNotFoundError as exc:
+        typer.echo(f"no such account: {name}", err=True)
+        raise typer.Exit(EXIT_NO_SUCH_ACCOUNT) from exc
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    try:
+        result = run_behavior_snapshot(
+            _resources_for(persona, settings),
+            directory=persona.directory,
+            username=persona.username,
+            embedder=_embedder_for(settings),
+            captured_at=datetime.now(UTC),
+            limit=limit if limit is not None else settings.behavior_post_limit,
+        )
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    if result.ok:
+        fidelity = "n/a" if result.fidelity is None else result.fidelity
+        typer.echo(
+            f"behavior-snapshot {name} -- ok id={result.snapshot_id} "
+            f"fidelity={fidelity} posts={result.post_count}"
+        )
+    else:
+        typer.echo(f"behavior-snapshot {name} -- skipped ({result.reason})")
+    raise typer.Exit(EXIT_OK)
+
+
+@app.command("population-metric")
+def population_metric(
+    name: str | None = typer.Argument(
+        None, help="Account whose api_key.txt authorises the call. Any keyed account works."
+    ),
+) -> None:
+    """Python port of `population-metric.sh`.
+
+    Triggers ONE population-cohesion sample. The route
+    (`POST /agents/population-metric`) is global and the server does the
+    maths; this only triggers and timestamps it -- which is why `name` picks
+    a CREDENTIAL rather than a subject, and why omitting it is normal: the
+    first keyed account under `agents/` then `humans/` is used, in the same
+    order `dream.sh::_find_dir` searches.
+
+    Exit codes, where Bash has only `exit 1`:
+
+      * `66` -- a NAME was given and no such account directory exists.
+      * `75` -- an account exists but has no usable `api_key.txt`, no keyed
+        account exists at all, or the server rejected the call. Nothing was
+        measured, which is what 75 means everywhere else in this CLI.
+
+    Bash conflates those two (`population-metric.sh:25-34` tests
+    `-f .../api_key.txt` and never `-d .../<name>`), and they have different
+    fixes: one is a typo, the other is a missing key.
+
+    `n < 2` is a SUCCESS. The server declines to historise a degenerate
+    sample but still answers with a `capturedAt`, so a first run against a
+    fresh database is not a failure.
+    """
+    settings = load_settings()
+    try:
+        directory = _population_metric_account(settings, name)
+    except FileNotFoundError as exc:
+        typer.echo(f"no such account: {name}", err=True)
+        raise typer.Exit(EXIT_NO_SUCH_ACCOUNT) from exc
+    except Exception as exc:
+        _skip_for_exception(name or "(any keyed account)", exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    label = directory.name
+    try:
+        result = run_metric(_resources_for_key(directory, settings))
+    except Exception as exc:
+        _skip_for_exception(label, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    if not result.ok:
+        typer.echo(f"population-metric -- server rejected ({result.reason})", err=True)
+        raise typer.Exit(EXIT_NO_ACTION)
+    typer.echo(
+        f"population-metric -- ok personaCohesion={result.persona_cohesion} "
+        f"behaviorCohesion={result.behavior_cohesion} n={result.n} at={result.captured_at}"
+    )
+    raise typer.Exit(EXIT_OK)
+
+
+def _population_metric_account(settings: Settings, name: str | None) -> Path:
+    """The account directory whose key authorises the metric call.
+
+    `find_account_with_api_key` answers `None` for BOTH "no such account" and
+    "that account has no key", because the script it ports cannot tell them
+    apart. This CLI's `66` means exactly the first of those, so the cohort
+    directories are probed separately when -- and only when -- a name was
+    given.
+
+    An EMPTY name is a name, not an absent one: bash's `$# -ge 1` makes
+    `population-metric ""` look for `agents//api_key.txt` and find nothing,
+    rather than falling through to the scan and authenticating as an
+    arbitrary account. `find_account_with_api_key` reproduces that with
+    `if name is not None`, and the same distinction is kept here.
+    """
+    found = find_account_with_api_key(settings.agent_root, name)
+    if found is not None:
+        return found
+    if name is not None and not _account_directory_exists(settings.agent_root, name):
+        raise FileNotFoundError(name)
+    who = f"{name!r}" if name is not None else "any account"
+    raise AccountSetupError(
+        f"no usable {API_KEY_FILENAME} for {who} under {settings.agent_root} -- "
+        "any lab account's key authorises this global route, so create one with "
+        "`SWIL_AGENT=<cohort>/<name>/personality.md agent/scripts/swil.sh create-api-key`"
+    )
+
+
+def _account_directory_exists(agent_root: Path, name: str) -> bool:
+    """Is there an `agents/<name>` or `humans/<name>` directory at all?
+
+    `bool(name)` first, and it is load-bearing rather than defensive:
+    `Path("agents") / ""` is `Path("agents")`, which IS a directory, so an
+    empty name would otherwise report the cohort directory itself as a real
+    account and downgrade `population-metric ""` from "no such account" to
+    "that account has no key". Caught by
+    `test_an_empty_name_is_a_name_not_an_absent_one`, which is the same empty
+    -name case `find_account_with_api_key` already had to spell out.
+    """
+    return bool(name) and any((agent_root / cohort / name).is_dir() for cohort in COHORTS)
+
+
+@app.command()
+def summary(
+    date: str | None = typer.Argument(None, help="YYYY-MM-DD. Defaults to today, LOCAL time."),
+) -> None:
+    """Python port of `agent-summary.sh`: the daily activity dashboard.
+
+    LOCAL only -- it reads each account's `memory.md` and touches no API, so
+    it needs no credentials, no server and no account to exist. There is
+    therefore no `66` and no `75` here: an empty roster prints an empty
+    table, which is the honest answer.
+
+    The default date is LOCAL, not UTC (`agent-summary.sh:18` is
+    `date '+%Y-%m-%d'`), and printing uses `nl=False` because
+    `run_summary`'s string already ends in a newline -- `print()` would add a
+    second and shift every diff against the script's own output.
+    """
+    settings = load_settings()
+    typer.echo(
+        run_summary(
+            settings.agent_root,
+            date=date if date is not None else local_today(datetime.now()),
+        ),
+        nl=False,
+    )
+    raise typer.Exit(EXIT_OK)
 
 
 @app.command()

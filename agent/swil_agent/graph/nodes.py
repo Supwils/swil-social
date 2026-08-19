@@ -19,8 +19,10 @@ and friends) at graph-assembly time, and the node itself keeps the plain
 `(state) -> partial` shape LangGraph wants.
 
 **Node -> step map.** §5.4's topology names nine nodes; Tasks 5 and 6
-extracted twelve steps. Three nodes therefore call more than one step, and
-each grouping is a behavioural constraint rather than a tidying:
+extracted twelve steps, and Plan 4 added two more nodes (`behavior_snapshot`,
+`rule_check`) that call `analysis/` rather than a step. Three nodes call more
+than one step, and each grouping is a behavioural constraint rather than a
+tidying:
 
   * `login` -> `login_step`, `sync_backend_step`, `context_step`. Bash's own
     order: probe, then the `agentBackend` PATCH (`auto-run.sh:473-494`,
@@ -34,6 +36,12 @@ each grouping is a behavioural constraint rather than a tidying:
   * `execute` -> `execute_step`, `finalize_step`. §5.4's topology has no
     `finalize` node, and the smart mark-read is gated on `landed > 0` from
     the tally `execute_step` has just produced.
+  * `behavior_snapshot` -> `analysis.run_behavior_snapshot`, and
+    `rule_check` -> `analysis.run_rule_check`. The two observability
+    samplers `cycle-one.sh` and `auto-run.sh` call and Plan 3's cycle
+    omitted (spec §15.1 row 21). They call no step function -- `analysis/`
+    is a peer of `act/` and `dream/`, not a layer under them -- and they are
+    the only two nodes whose failure is SWALLOWED rather than surfaced.
   * `dream` -> `cooldown_step`, `dream_step`. The cooldown gate must decide
     BEFORE `dream_step` consumes the one-shot echo flag.
   * `gate` -> `gate_step`; `write` -> `write_step`; `snapshot` ->
@@ -69,10 +77,11 @@ changing `dream/gate.py`, so none is claimed here.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,6 +96,8 @@ from swil_agent.act.round import (
     plan_step,
     sync_backend_step,
 )
+from swil_agent.analysis.behavior_snapshot import run_behavior_snapshot
+from swil_agent.analysis.rule_check import run_rule_check
 from swil_agent.api.resources import Resources
 from swil_agent.config import Settings
 from swil_agent.dream.candidate import DreamState
@@ -373,6 +384,155 @@ def make_execute_node(deps: CycleDeps) -> NodeFn:
     return execute
 
 
+@contextlib.contextmanager
+def _fail_soft(label: str, name: str) -> Iterator[None]:
+    """Bash's `|| true`, spelled once.
+
+    `auto-run.sh:806` and `cycle-one.sh:45` both swallow their sampler's exit
+    code, and `cycle-one.sh:43-44` says why in as many words: *fail-soft --
+    a missing rule, a missing api_key or a network failure must not affect
+    whether this round succeeded; this is the observability layer, not the
+    main flow.* Neither `run_rule_check` nor `run_behavior_snapshot` raises
+    on any path it knows about, so what this catches is the class NEITHER of
+    them anticipated -- an `OSError` reading `personality.md`, a
+    `UnicodeDecodeError`, a future `Resources` method that starts raising a
+    type they do not list. Left uncaught, any of those aborts the whole
+    LangGraph run (these two nodes carry no retry policy and no fallback
+    edge) and costs the account its dream, its logout record and, on a
+    checkpointed run, a resumable thread -- to record a number on a panel.
+
+    `Exception`, not a tuple: the invariant is "no measurement outage may
+    change the round's outcome", which is not the same claim as "these
+    particular exceptions". Same reasoning `cli.py`'s outer guard records.
+    `BaseException` is deliberately NOT caught -- a `KeyboardInterrupt` or a
+    `SystemExit(141)` is the operator or the platform ending the run, and
+    swallowing it would leave the lease held.
+    """
+    try:
+        yield
+    except Exception as exc:
+        # The traceback at DEBUG and the one-line cause at WARNING, matching
+        # `cli.py`'s `_skip_for_exception`: Bash discards this output
+        # entirely (`>/dev/null 2>&1`), so a stack trace in `auto-run.log`
+        # would read as a round failure to anyone grepping it for one.
+        logger.debug("%s failed for %s", label, name, exc_info=exc)
+        logger.warning(
+            "%s: %s — sampling failed (%s: %s); the round is unaffected",
+            label,
+            name,
+            type(exc).__name__,
+            exc,
+        )
+
+
+def make_behavior_snapshot_node(deps: CycleDeps) -> NodeFn:
+    """`run_behavior_snapshot` -- `auto-run.sh:806`, the act phase's tail.
+
+    Bash calls `behavior-snapshot.sh` as the LAST thing inside `run_agent`,
+    after the smart mark-read and before the subshell's EXIT trap logs the
+    account out. It embeds the account's recent posts and ships the vector so
+    `/lab` can compare *revealed self* against the *stated self*
+    `snapshot_step` uploads -- the two halves of the persona-fidelity pair.
+    Neither half is derivable from the other, which is why omitting this one
+    flattens a panel rather than degrading it.
+
+    A NODE rather than a tail call inside `make_execute_node`, for two
+    reasons that are both about not sampling twice. `execute` carries
+    `EXECUTE_RETRY`, so a failure after the write loop (an `OSError`
+    appending to `memory.md`) re-enters that node -- and a tail call would
+    ship a second snapshot for the same round. And on `--resume`, LangGraph
+    restarts at the node that died; a completed node is not re-run, where a
+    tail call inside a re-run node is.
+
+    Reachability is Bash's, taken from where the call sits rather than
+    reproduced by a condition of our own: `auto-run.sh:806` is below every
+    early return in `run_agent`, so an offline probe, a dead backend and an
+    empty plan after guardrails all skip it -- and in the graph those three
+    are exactly the paths that never reach `execute`. The ONE divergence is
+    a round where every planned action failed: Bash returns 75 at
+    `auto-run.sh:763` and never samples, where the graph continues (design
+    spec §7.1 -- only `BACKEND_UNAVAILABLE` and `OFFLINE` deny the round its
+    tail, the same correction `finalize_step` already records for the dream).
+
+    `dry_run` is checked HERE, and here is the ONLY place it can be checked:
+    unlike the dream phase, the act phase has no edge that routes a shadow
+    round around this node -- `execute` runs under `--dry-run` (inertly) and
+    flows straight into it. `run_behavior_snapshot` takes no `dry_run`
+    parameter to be inert under, and it POSTs on every successful path, so
+    deleting this line posts a behavior snapshot for all 23 accounts during
+    the round whose exit criterion is "Python never wrote" (standing
+    constraint §5 and §9).
+    """
+
+    def behavior_snapshot(state: CycleState) -> CycleState:
+        if deps.dry_run:
+            return {}
+        persona = state["persona"]
+        with _fail_soft("behavior-snapshot", agent_dir_name(persona)):
+            run_behavior_snapshot(
+                deps.resources,
+                directory=persona.directory,
+                username=persona.username,
+                embedder=deps.embedder,
+                captured_at=deps.captured_at,
+                limit=deps.settings.behavior_post_limit,
+            )
+        return {}
+
+    return behavior_snapshot
+
+
+def make_rule_check_node(deps: CycleDeps) -> NodeFn:
+    """`run_rule_check` -- `cycle-one.sh:45`, the dream phase's FIRST node.
+
+    **The position is the property.** `cycle-one.sh:39-41` states it: this
+    parses the rules out of `personality.md`, and the dream REWRITES that
+    file. Sampling afterwards measures the new rules against the old posts --
+    plausible numbers about the wrong document, filed to `/lab`'s F4 panel as
+    if they were about the round that just happened.
+
+    `run_rule_check` re-reads `personality.md` at call time rather than
+    accepting text or a `Persona` (Task 1's own decision, kept), which is
+    what keeps that mis-ordering DETECTABLE instead of merely wrong: a
+    sampler handed text captured at round start would answer correctly from
+    either position, and the ordering test would pin nothing.
+
+    A node rather than a call at the head of `make_dream_node`, so loop 2 --
+    the dream retry, default OFF -- cannot re-sample. `_after_gate` routes a
+    rejected verdict back to `dream`, bypassing this node entirely; a call
+    inside `dream` would file a duplicate `rule_check` event on every retry,
+    identical in every field because nothing between the two attempts can
+    have changed either the posts or the rules. Double-counted adherence is
+    worse than absent adherence: it is wrong and it looks fine.
+
+    It runs BEFORE the cooldown gate, not before the rewrite, because
+    `cycle-one.sh` calls it before `dream.sh` at all -- so an account whose
+    dream SKIPs on the 12h cooldown is still sampled every round. That is
+    what makes F4 a per-ROUND series rather than a per-dream one.
+
+    `dry_run` is checked here as well as on the edge that routes a shadow
+    round from the act phase straight to logout, for the same reason the
+    four dream-phase nodes each carry their own (spec §15.1 row 20): the
+    routing is one arrow, and `run_rule_check` POSTs one lab event per
+    parseable rule.
+    """
+
+    def rule_check(state: CycleState) -> CycleState:
+        if deps.dry_run:
+            return {}
+        persona = state["persona"]
+        with _fail_soft("rule-check", agent_dir_name(persona)):
+            run_rule_check(
+                deps.resources,
+                directory=persona.directory,
+                username=persona.username,
+                limit=deps.settings.rule_check_post_limit,
+            )
+        return {}
+
+    return rule_check
+
+
 def make_dream_node(deps: CycleDeps) -> NodeFn:
     """`cooldown_step` -> `dream_step`, under an explicit deadline.
 
@@ -481,7 +641,7 @@ def make_write_node(deps: CycleDeps) -> NodeFn:
     cooldown override fire on any memory at all.
 
     `dry_run` is checked HERE and not only on the edge that routes a shadow
-    round straight to logout (`graph/cycle.py`'s `_dream_or_logout`), because
+    round straight to logout (`graph/cycle.py`'s `_dream_phase_or_logout`), because
     this function performs 100% of the dream's writes and `write_step` -- in
     the frozen `dream/round.py`, which predates the shadow round -- takes no
     `dry_run` to be inert under. Standing constraint §5: the guard belongs
@@ -523,7 +683,7 @@ def make_snapshot_node(deps: CycleDeps) -> NodeFn:
 
     `dry_run` is checked here for the same reason as in the write node above:
     a snapshot is a PUBLISHED claim about this account's personality, and
-    `snapshot_step` has no `dry_run` parameter. Belt to `_dream_or_logout`'s
+    `snapshot_step` has no `dry_run` parameter. Belt to `_dream_phase_or_logout`'s
     braces; the returned pair is `snapshot_step`'s own "no snapshot was owed"
     shape.
     """

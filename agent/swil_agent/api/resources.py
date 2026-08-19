@@ -518,3 +518,66 @@ class Resources:
         if snapshot_id is None:
             raise WriteNotVerifiedError(f"snapshot rejected by server: {response}")
         return snapshot_id
+
+    def create_behavior_snapshot(
+        self, username: str, payload: dict[str, Any]
+    ) -> tuple[str, float | None]:
+        """POST a BEHAVIOR snapshot; return `(id, fidelity)`.
+
+        A DIFFERENT endpoint from `create_snapshot` above, with a different
+        body and a different response: `ingestBehavior` answers
+        `ok(res, { id, fidelity }, 201)`
+        (server/src/modules/agents/agents.controller.ts:115-120, returning
+        `agents.drift.ts:209-213`'s `{ id, fidelity }`), so the envelope is
+        `{"data": {"id": ..., "fidelity": ...}}`.
+
+        `fidelity` is `null` whenever the account has no personality
+        snapshot to compare against (`agents.drift.ts:236-237`), which is
+        the normal state for an account whose first dream has not landed
+        yet -- so `None` here is data, not an error, and matches the
+        script's own `.data.fidelity // "n/a"` (behavior-snapshot.sh:117).
+
+        Raises WriteNotVerifiedError when the server answers 2xx with no
+        `data.id`, which is exactly the "server rejected" branch of
+        behavior-snapshot.sh:115-122.
+        """
+        response = self._client.post(f"/agents/{username}/behavior-snapshots", json=payload)
+        snapshot_id = _nested_id(response, "data", "id")
+        if snapshot_id is None:
+            raise WriteNotVerifiedError(f"behavior snapshot rejected by server: {response}")
+        data = response.get("data")
+        raw = data.get("fidelity") if isinstance(data, dict) else None
+        # `isinstance(True, int)` is True in Python, and a JSON `true` here
+        # would otherwise become `1.0` -- a perfect fidelity score invented
+        # out of a boolean.
+        if isinstance(raw, bool) or not isinstance(raw, int | float):
+            return snapshot_id, None
+        return snapshot_id, float(raw)
+
+    def record_population_metric(self) -> dict[str, Any]:
+        """POST /agents/population-metric -- GLOBAL, no username, no body.
+
+        `agentsRouter.post('/population-metric', requireUser, ...)`
+        (agents.routes.ts:41-46) is mounted before the `/:username/*`
+        routes, so this is a literal path and ANY lab account's api_key
+        authorises it (population-metric.sh:56-57 says so in as many
+        words). The script sends `-H 'content-type: application/json'` with
+        no `-d`, i.e. no body at all; `json=None` reproduces that -- httpx
+        omits the body entirely rather than sending `null`.
+
+        Returns the `data` object (`capturedAt`, `personaCohesion`,
+        `behaviorCohesion`, `n` -- `agents.population.ts:231-245`).
+
+        The verification is `jq -e '.data.capturedAt'`
+        (population-metric.sh:63), which fails on `null` and on `false` --
+        so those two, and a missing key, are the rejection. A degenerate
+        sample (`n < 2`) is deliberately NOT historised by the server but
+        still answers with a `capturedAt`, so it counts as success here
+        exactly as it does in Bash.
+        """
+        response = self._client.post("/agents/population-metric")
+        data = response.get("data")
+        captured_at = data.get("capturedAt") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or captured_at is None or captured_at is False:
+            raise WriteNotVerifiedError(f"population metric rejected by server: {response}")
+        return data

@@ -182,6 +182,32 @@ def test_persona_and_llm_do_not_import_api() -> None:
                 assert not module.startswith("swil_agent.api"), f"{path} imports {module}"
 
 
+def test_analysis_imports_nothing_from_graph_act_or_dream() -> None:
+    """Dependency direction, spec §5.2: `graph -> act, dream, analysis ->
+    api, llm, persona, embedder -> config, models`.
+
+    `analysis/` sits at the same level as `act/` and `dream/`, so an import
+    of any of the three would be the first sideways (or upward) edge in that
+    graph. The langgraph half is already covered by
+    `test_no_module_outside_graph_imports_langgraph`; this is the rest of the
+    rule, and it is what keeps a measurement pass callable from a plain test
+    with no graph, no checkpointer and no lease DB.
+
+    The concrete pressure it resists: `dream/distill.py` already declares an
+    `Embedder` Protocol of exactly the shape `analysis/behavior_snapshot.py`
+    needs, and importing it instead of re-declaring one locally is the
+    obvious-looking edit. Protocols are structural, so nothing is gained by
+    sharing the declaration and a layering rule is lost.
+    """
+    forbidden = ("swil_agent.graph", "swil_agent.act", "swil_agent.dream")
+    offenders: list[str] = []
+    for path in (PACKAGE / "analysis").rglob("*.py"):
+        for module in _imported_modules(path):
+            if module.startswith(forbidden):
+                offenders.append(f"{path.relative_to(PACKAGE)} imports {module}")
+    assert offenders == [], offenders
+
+
 def test_drift_module_does_no_io_beyond_reading_anchor_files() -> None:
     """`dream/drift.py` is pure math plus one file read (`resolve_anchor_text`).
     This is what makes the routines it carries -- cosine similarity, aspect

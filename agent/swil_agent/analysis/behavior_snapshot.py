@@ -1,0 +1,289 @@
+"""What an account actually posts, embedded and shipped to `/lab`.
+
+Port of `agent/scripts/behavior-snapshot.sh` (frozen; that script, not any
+prose about it, is the contract). It embeds the account's RECENT POSTS and
+POSTs the vector; the SERVER computes persona fidelity =
+cosine(personality, behavior) against the newest `personalitysnapshots` row
+(`server/src/modules/agents/agents.drift.ts:228-237`). Nothing here computes
+a similarity.
+
+This is the "revealed self" half of `/lab`'s fidelity pair -- `snapshot.sh`
+(ported in `dream/round.py`'s `build_snapshot_payload`) supplies the "stated
+self". The two are DIFFERENT endpoints with DIFFERENT bodies and must not be
+derived from one another:
+
+  * `/agents/{u}/snapshots`           <- personality.md, 6 fields including
+                                        `snapshotType` and `archivePath`
+  * `/agents/{u}/behavior-snapshots`  <- recent posts, 6 DIFFERENT fields
+                                        including `postCount`/`commentCount`
+                                        and neither of those two
+
+Fail-soft is a hard requirement, not a quality bar: `auto-run.sh:806` calls
+this with `|| true` after every act cycle. No `api_key.txt`, no posts, a
+dead platform, a dead embedder and a server rejection all return cleanly.
+Only the two cases the script itself treats as caller error -- an account
+directory that does not exist, and a `personality.md` with no `Username`
+bullet -- are absent here, because this function takes `directory` and
+`username` already resolved (same seam as `analysis/rule_check.py`), so its
+caller owns them.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from collections.abc import Iterable
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Final, Protocol
+
+from pydantic import BaseModel, ConfigDict
+
+from swil_agent.api.client import ApiError
+from swil_agent.api.resources import Resources, WriteNotVerifiedError
+from swil_agent.embedder.client import EmbedderUnavailable
+
+logger = logging.getLogger(__name__)
+
+# `LIMIT="${BEHAVIOR_POST_LIMIT:-12}"` (behavior-snapshot.sh:28). Same
+# treatment as `rule_check.DEFAULT_POST_LIMIT`: a parameter with this
+# default, rather than this module reaching into `os.environ` behind its
+# caller's back. A caller wanting env parity passes `limit=` itself.
+DEFAULT_POST_LIMIT: Final = 12
+
+# `[:280]`, applied to CODEPOINTS (behavior-snapshot.sh:91 decodes to a str
+# before slicing, precisely so a multibyte CJK character is never split).
+# The server's own ceiling is 320 (`behaviorSnapshotIngest.excerpt`,
+# agents.schemas.ts:73), so 280 leaves headroom rather than sitting on it.
+EXCERPT_MAX_CHARS: Final = 280
+
+# `join("\n\n")` (behavior-snapshot.sh:66) -- ONE document, blank-line
+# separated, embedded as a single text. Not one vector per post: fidelity is
+# a claim about the account's whole recent voice.
+POST_SEPARATOR: Final = "\n\n"
+
+API_KEY_FILENAME: Final = "api_key.txt"
+
+
+class Embedder(Protocol):
+    """The one method this module needs from the bge-m3 daemon.
+
+    Declared HERE rather than imported from `dream/distill.py` to keep the
+    dependency direction in spec §5.2 (`graph -> act, dream, analysis ->
+    api, llm, persona, embedder`): `analysis` and `dream` are PEERS, so
+    importing one from the other would be the first sideways edge in that
+    graph. Protocols are structural, so `EmbedderClient` and every existing
+    test double satisfy both declarations without knowing either exists.
+    """
+
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+
+class BehaviorSnapshotResult(BaseModel):
+    """What one `run_behavior_snapshot` call did.
+
+    `ok` is true only when the server actually stored a snapshot. Every
+    other terminal state carries a distinct `reason` -- the script prints a
+    different line for each and they mean genuinely different things to
+    whoever reads `/lab` afterwards (an account that posted nothing this
+    week vs. an embedder that was down all week produce the SAME flat
+    fidelity series, and `reason` is the only thing that tells them apart
+    after the fact).
+
+    `post_count` is the value SENT as `postCount`, which is the count of
+    items the API returned, NOT the number of texts that survived the blank
+    filter -- see `count_posts`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ok: bool
+    reason: str | None = None
+    snapshot_id: str | None = None
+    fidelity: float | None = None
+    post_count: int = 0
+
+
+def select_post_texts(items: Iterable[dict[str, Any]]) -> list[str]:
+    """The bodies to embed, in the order the API returned them.
+
+    `(.originalText // .text)` (behavior-snapshot.sh:65) -- the ORIGINAL-
+    language text, so the behavior vector is never polluted by the
+    translation layer, which is the script's own stated reason (:57-58).
+
+    Reproduces jq's `//`, which is NOT Python's `or`, and the difference is
+    observable: jq falls back only when the left side is `null` or `false`,
+    and an EMPTY STRING is truthy in jq. So an item with
+    `originalText: ""` and `text: "hello"` yields `""` here -- which the
+    blank filter then drops entirely -- where `originalText or text` would
+    have embedded `"hello"`.
+
+    This is deliberately NOT shared with `rule_check.extract_posts`, which
+    ports a DIFFERENT script whose extraction is embedded Python
+    (`rule-check.sh:59`, literally `it.get("originalText") or it.get("text")
+    or ""`) and therefore genuinely does have `or` semantics. The two
+    scripts disagree; unifying the ports would silently pick a winner.
+
+    The blank filter is `(. | gsub("\\s";"")) != ""` -- removing every
+    whitespace character and comparing to empty, which is true exactly when
+    the string is not all-whitespace, i.e. `raw.strip() != ""`.
+
+    A non-string body is dropped rather than raising. Bash would abort the
+    whole jq pipeline on one (`gsub` on a number is an error), losing the
+    entire sample to `|| echo ''`; dropping the one bad item keeps the other
+    eleven measurable, and this module may never turn a surprising payload
+    into a round failure.
+    """
+    texts: list[str] = []
+    for item in items:
+        raw: Any = item.get("originalText")
+        if raw is None or raw is False:
+            raw = item.get("text")
+        if isinstance(raw, str) and raw.strip():
+            texts.append(raw)
+    return texts
+
+
+def count_posts(items: Iterable[dict[str, Any]]) -> int:
+    """`(.data.items // []) | length` (behavior-snapshot.sh:67).
+
+    The RAW item count, deliberately not `len(select_post_texts(items))`:
+    the two differ whenever a returned post has an empty or whitespace-only
+    body, and `postCount` is a statement about how much activity the sample
+    covers, not about how many characters got embedded.
+    """
+    return sum(1 for _ in items)
+
+
+def build_behavior_payload(
+    *,
+    text: str,
+    post_count: int,
+    embedding: list[float],
+    captured_at: datetime,
+) -> dict[str, Any]:
+    """`behavior-snapshot.sh:94-107`'s POST body. Six fields, exactly.
+
+    `commentCount` is a hardcoded 0 in the script: comments are never
+    sampled, and the field exists because the server's schema
+    (`behaviorSnapshotIngest`, agents.schemas.ts:64-74) accepts one. Sending
+    it explicitly rather than relying on the schema default keeps the wire
+    body identical to Bash's.
+
+    NOT present, and their absence is the contract: `snapshotType` and
+    `archivePath`. Those belong to the personality-snapshot body
+    (`snapshot.sh` / `dream/round.py`'s `build_snapshot_payload`); the
+    server's behavior-snapshot schema has no such fields.
+
+    `captured_at` must already be UTC-valued (production passes
+    `datetime.now(UTC)`); this only formats, matching
+    `date -u '+%Y-%m-%dT%H:%M:%SZ'` (:92).
+
+    `excerpt` replaces `\\n` with a space and slices CODEPOINTS, matching
+    the script's own `python3` one-liner (:91) -- which exists because the
+    obvious `head -c 280` splits a multibyte CJK character mid-sequence.
+    """
+    return {
+        "contentHash": hashlib.sha256(text.encode()).hexdigest(),
+        "capturedAt": captured_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "postCount": post_count,
+        "commentCount": 0,
+        "excerpt": text.replace("\n", " ")[:EXCERPT_MAX_CHARS],
+        "embedding": list(embedding),
+    }
+
+
+def run_behavior_snapshot(
+    resources: Resources,
+    *,
+    directory: Path,
+    username: str,
+    embedder: Embedder,
+    captured_at: datetime,
+    limit: int = DEFAULT_POST_LIMIT,
+) -> BehaviorSnapshotResult:
+    """Fetch recent posts, embed them as ONE document, POST the vector.
+
+    The embedder is INJECTED and this function is given no `Settings`, so it
+    structurally cannot construct one of its own -- the failure standing
+    constraint §4 records (an injected collaborator indistinguishable from a
+    self-built one) is closed by the signature rather than by a test.
+
+    `captured_at` is a parameter for the same reason `dream/round.py`'s is:
+    the caller owns the clock, and a frozen value in a test is then
+    distinguishable from `datetime.now(UTC)`.
+
+    Every failure path returns a `BehaviorSnapshotResult` with `ok=False`;
+    none raises. `auto-run.sh:806` runs this with `|| true` after each act
+    cycle, and a measurement outage must never become a round failure.
+    """
+    name = directory.name
+    if not (directory / API_KEY_FILENAME).is_file():
+        # behavior-snapshot.sh:51-54, exit 0. Checked against the account
+        # directory, not against `resources`: `resolve_auth` falls back to a
+        # session cookie for a key-less account, which reaches the READ
+        # endpoint but cannot authorise the ingest -- so the snapshot would
+        # silently never land (CLAUDE.md, "new account needs API key").
+        logger.info("behavior-snapshot: no api_key.txt for %s — skipping", name)
+        return BehaviorSnapshotResult(ok=False, reason="no api_key.txt")
+
+    try:
+        items = resources.user_posts(username, limit=limit)
+    except ApiError as exc:
+        # `curl ... || echo ''` (:59-62) folds this into the "no recent
+        # posts" message. Kept SEPARATE here on purpose: those two produce
+        # an identical flat fidelity series on /lab, and "this account has
+        # been quiet" vs "the platform was unreachable" is exactly the
+        # distinction this plan exists to stop losing. Reported as a
+        # divergence in task-2-3-report.md.
+        logger.info("behavior-snapshot: %s — could not fetch posts; skipping (%s)", name, exc)
+        return BehaviorSnapshotResult(ok=False, reason="could not fetch posts")
+
+    texts = select_post_texts(items)
+    if not texts:
+        logger.info("behavior-snapshot: %s has no recent posts — skipping", name)
+        return BehaviorSnapshotResult(ok=False, reason="no recent posts")
+
+    text = POST_SEPARATOR.join(texts)
+    post_count = count_posts(items)
+
+    try:
+        vectors = embedder.embed([text])
+    except EmbedderUnavailable:
+        vectors = []
+    vector = vectors[0] if vectors else []
+    if not vector:
+        # `jq -e '.embeddings[0] | length > 0'` (:85-88), exit 0. An empty
+        # vector is checked here and not left to `EmbedderClient`, because
+        # the script checks it itself and any `Embedder` may be passed.
+        logger.warning("behavior-snapshot: embedder unreachable/invalid — skipping (fail-open)")
+        return BehaviorSnapshotResult(
+            ok=False, reason="embedder unreachable", post_count=post_count
+        )
+
+    payload = build_behavior_payload(
+        text=text,
+        post_count=post_count,
+        embedding=vector,
+        captured_at=captured_at,
+    )
+
+    try:
+        snapshot_id, fidelity = resources.create_behavior_snapshot(username, payload)
+    except (ApiError, WriteNotVerifiedError) as exc:
+        # `server rejected — $RESP` (:120-121), still exit 0.
+        logger.warning("behavior-snapshot: server rejected — %s", exc)
+        return BehaviorSnapshotResult(ok=False, reason=str(exc), post_count=post_count)
+
+    logger.info(
+        "behavior-snapshot: ok id=%s fidelity=%s posts=%d",
+        snapshot_id,
+        "n/a" if fidelity is None else fidelity,
+        post_count,
+    )
+    return BehaviorSnapshotResult(
+        ok=True,
+        snapshot_id=snapshot_id,
+        fidelity=fidelity,
+        post_count=post_count,
+    )

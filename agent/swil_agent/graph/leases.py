@@ -52,11 +52,23 @@ unlinked while its inode is still the one this lease created.
 A busy lease raises `LeaseBusy` immediately. There is deliberately no retry
 loop: Bash logs `SKIP <name> -- locked` and moves on (auto-run.sh:424), and
 waiting instead would change round scheduling.
+
+**Concurrency on the SQLite file itself** (spec §15.1 row 23). Stage 3's
+`--dry-run` shadow round never opened `run_leases.sqlite` -- a dry run takes
+no lease -- so it never exercised what stage 4 does: 3-5 Python cycles, each
+its own connection, sharing one file. `open_lease_db` sets `journal_mode=WAL`
+and `busy_timeout` on that connection, once, at open, so a second writer
+waits instead of raising `database is locked` on the spot. `heartbeat()`
+still treats a locked database as a recoverable miss, not a reason to end the
+cycle -- but logs it, because a heartbeat that fails silently and a heartbeat
+that stops running are indistinguishable to Bash, which reclaims this lease's
+file half after `LEASE_TTL_SECONDS` either way.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import sqlite3
 import time
@@ -66,6 +78,8 @@ from types import TracebackType
 from typing import Final, Literal
 
 from swil_agent.locks import FileLock, LockBusy, act_lock_path, dream_lock_path
+
+logger = logging.getLogger(__name__)
 
 # The same 1800s Bash reclaims at (auto-run.sh:423, dream.sh:464), and the
 # same window `locks.STALE_AFTER_SECONDS` applies to the file half. The two
@@ -79,6 +93,23 @@ LEASE_TTL_SECONDS: Final = 1800.0
 # testable against a `tmp_path` while the composition root (`cli.py`) decides
 # they live next to `lock_<name>` under `agent/.agent-state/`.
 LEASE_DB_NAME: Final = "run_leases.sqlite"
+
+# Milliseconds `sqlite3`'s busy handler waits before raising `OperationalError`
+# on a locked database, rather than raising immediately (SQLite's own C-level
+# default). Stage 4 puts 3-5 Python cycles' `heartbeat()` calls on the same
+# `run_leases.sqlite` -- Bash never opens this file, but the Python side alone
+# is enough concurrent writers that "raise instantly" turns an ordinary
+# lock-step collision into a lost round. Spec §15.1 row 23 names 5000; that
+# value is deliberately NOT used here -- `sqlite3.connect()`'s own `timeout`
+# parameter defaults to 5.0s and is *already* wired to this exact pragma
+# (confirmed: a bare `sqlite3.connect(path)` reports `PRAGMA busy_timeout`
+# as 5000 with no code in this module involved), so setting 5000 explicitly
+# would be indistinguishable from not setting it at all -- a mutation
+# deleting the pragma call would leave every test green. 8000 is chosen
+# instead: still short enough that a stuck peer does not stall a heartbeat
+# for minutes, and far enough from stdlib's own default that "this line
+# runs" is provable rather than assumed.
+_BUSY_TIMEOUT_MS: Final = 8000
 
 LeaseKind = Literal["act", "dream"]
 
@@ -155,6 +186,39 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return True
     return True
+
+
+def open_lease_db(path: str) -> sqlite3.Connection:
+    """Open a connection to the lease database, tuned for the concurrency
+    stage 4 introduces: `journal_mode=WAL` and `busy_timeout` set on the
+    connection, once, here.
+
+    Before this, `sqlite3.connect` was called with every other setting left
+    at SQLite's own defaults: rollback journal, and a busy timeout of zero --
+    meaning a second writer that finds the database locked raises
+    `sqlite3.OperationalError` immediately rather than waiting for the first
+    writer to finish its transaction. `ensure_schema` runs on every
+    `RunLease.__enter__` and every `sweep_expired` call -- setting pragmas
+    there would mean re-issuing them on every one of those, which is `PRAGMA
+    busy_timeout` for the connection either way but is exactly the "scattered
+    across call sites" shape this function exists to avoid: one caller
+    reconnecting with a different timeout would have no single place that
+    still describes what the connection's settings actually are. Applying it
+    once, at the point the connection is opened, means the pragmas are a
+    property of the connection for its entire lifetime, not of any particular
+    call that happens to run first.
+
+    A `:memory:` connection (dry runs, most of this module's own tests)
+    cannot use WAL -- SQLite pins an in-memory database to `MEMORY` journal
+    mode regardless of what is requested, silently, which is fine: nothing
+    else can open a second connection to the same private `:memory:`
+    database, so there is no contention for WAL to help with there anyway.
+    `busy_timeout` still applies (and is harmless) on that path.
+    """
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    return db
 
 
 def ensure_schema(db: sqlite3.Connection) -> None:
@@ -301,10 +365,36 @@ class RunLease:
         Both writes are identity-scoped. A lease that was legitimately
         reclaimed while still running updates zero rows and touches nothing,
         rather than extending its successor's claim on its behalf.
+
+        The row write is best-effort. `run_cycle` calls this between every
+        graph superstep with no guard of its own (spec §15.1 row 23), so a
+        `sqlite3.OperationalError` here -- realistically `database is locked`,
+        stage 4's 3-5 concurrent Python cycles sharing `run_leases.sqlite`
+        with `busy_timeout` already exhausted -- would otherwise propagate out
+        of `run_cycle` and end the round over a single missed beat. That is
+        the wrong failure mode: a missed beat is recoverable (the next node's
+        heartbeat tries again), a dead round is not. But it is not swallowed
+        silently either -- a heartbeat that keeps failing is functionally
+        identical, from Bash's side, to a process that stopped heartbeating
+        for real, and Bash reclaims this lease's file half after
+        `LEASE_TTL_SECONDS` regardless of why the row went stale. Logged at
+        WARNING, so an operator sees a struggling lease well before that
+        1800s clock runs out and a second runtime starts acting on the same
+        account -- not after. The lock file below is still touched
+        regardless of whether the row write succeeded: it is the
+        Bash-visible half of this same beat and does not depend on SQLite.
         """
         stamp = self._now() if now is None else now
-        self._db.execute(_TOUCH, (stamp, *self._owned_key))
-        self._db.commit()
+        try:
+            self._db.execute(_TOUCH, (stamp, *self._owned_key))
+            self._db.commit()
+        except sqlite3.OperationalError as exc:
+            logger.warning(
+                "lease heartbeat failed for %s:%s %s (run_id=%s): %s -- row not refreshed",
+                *self._key,
+                self._run_id,
+                exc,
+            )
         if self._holds_lock_file():
             # Gone means someone swept `.agent-state/` by hand mid-round; the
             # row is still the liveness record, so do not kill the cycle.

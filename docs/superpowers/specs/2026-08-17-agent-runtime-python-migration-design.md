@@ -216,20 +216,53 @@ built-in roster only.
 
 ### 5.4 The cycle graph
 
+**Updated 2026-08-19 (Plan 4).** This section is the topology reference a
+cutover operator reads, and it described nine nodes after the shipped graph had
+eleven — including two edges (`guardrail ──> dream`, `execute ──> dream`) that
+no longer exist, which made it contradict §15.1 row 21. Corrected below; the
+node-policy table gains the two new rows.
+
 ```
-                        ┌───────────── loop 3 (default OFF, MAX_ROUNDS=1)
-                        ↓                                          │
-  login ──> plan ──> guardrail ──> execute ─────────────────────────┘
-                        │              │
-              (rhythm veto / empty)    └─ transient failure: node-level retry
-                        │                 permanent failure: record, continue
-                        ↓
+                        ┌──────────────────── loop 3 (default OFF, MAX_ROUNDS=1)
+                        ↓                                                    │
+  login ──> plan ──> guardrail ──> execute ──> behavior_snapshot ────────────┘
+                        │                            │
+              (rhythm veto / empty)                  └─ transient failure: node-level retry
+                        │                               permanent failure: record, continue
+                        └──────────────┬───────────────┘
+                                       ↓
+                                  rule_check
+                                       │
+                                       ↓
                      dream ──> gate ──accept──> write ──> snapshot ──> logout
                         ↑         │                                      ↑
                         └─────────┤                                      │
        loop 2 (default OFF,       └──reject──> keep original ────────────┘
        max 1 retry, attempt recorded)
 ```
+
+`rule_check` is the dream phase's ONLY entrance from the act phase, and the
+sole unconditional edge out of it is `rule_check ──> dream`. Loop 2 re-enters
+`dream` directly, bypassing it. Every early exit (`login` offline, `plan` dead
+backend, and any route under `--dry-run`) goes straight to `logout` and reaches
+neither.
+
+**Positions are contracts, taken from Bash call sites, not layout choices:**
+
+- `behavior_snapshot` sits at the act phase's tail because `auto-run.sh:806` is
+  the last statement of `run_agent`, below every early return in it — so
+  offline, dead-backend and empty-plan rounds skip it by topology rather than
+  by a condition of our own.
+- `rule_check` sits *before* `dream` — and before its COOLDOWN gate, since
+  `cycle-one.sh:45` precedes `dream.sh` itself — because it parses rules out of
+  `personality.md` and the dream rewrites that file (`cycle-one.sh:39-41`).
+  Sampling afterwards measures the new rules against the old posts.
+
+**Neither new node runs under `--dry-run`.** `rule_check` is guarded twice (the
+act phase's router sends a dry cycle straight to `logout`, and the node checks
+`deps.dry_run` itself); `behavior_snapshot` is guarded once, and can only be —
+the act phase *does* run under `--dry-run` and flows into it unconditionally,
+so that single line is the whole defence (standing constraint §5). Both POST.
 
 Node policies:
 
@@ -239,6 +272,8 @@ Node policies:
 | `plan` | 2 | `SubprocessRunner` 300s | codex is ~3× slower; `node_attempt > 1` may select a fallback path |
 | `guardrail` | — | — | Pure function, no I/O |
 | `execute` | 1 (transient only) | `httpx` + image fetch timeouts | Permanent failures (404/403) are not retried, via `RetryPolicy(retry_on=…)` |
+| `behavior_snapshot` | — | `httpx` + embedder client timeouts | Plan 4. Swallows every `Exception` internally (Bash's `\|\| true`), so nothing reaches the boundary for a policy to act on — and a retry that DID fire would double-file the measurement. Skipped under `--dry-run`. |
+| `rule_check` | — | `httpx` client timeout | Plan 4. Same reasoning. Skipped under `--dry-run`. |
 | `dream` | 1 | `SubprocessRunner` 300s per call, node deadline for the sum | Multiple LLM calls (candidate + 3× distill) |
 | `gate` | 1 | embedder client 60s | Fail-open to scalar if distill/embed fails |
 | `snapshot` | 2 | `httpx` client timeout | Fail-soft; never blocks the cycle |
@@ -505,12 +540,29 @@ The file-lock half is removed at **Stage 5**, and not before. A cleanup that
 deletes it earlier on the grounds that "the row is the lock now" would read as
 correct and would silently restore concurrent runs on one account.
 
-**Accuracy note (2026-08-18).** The claim below was written before the lease
-existed and overstates what it delivers. What is true: the row records the
-holder's pid, and a lease whose pid is no longer alive is reclaimable
-**immediately** rather than after the 1800s window, so an orphan self-clears in
-seconds instead of thirty minutes. What is not true: that orphans become
-impossible. A *recycled* pid reads as live and falls back to the 1800s TTL —
+**Accuracy note (2026-08-18, corrected 2026-08-19 by measurement).** The claim
+below was written before the lease existed and overstates what it delivers. What
+is true: the row records the holder's pid, and a lease **row** whose pid is no
+longer alive is reclaimable **immediately** rather than after the 1800s window.
+
+**But that speed-up is NOT observable before Stage 5, and the earlier wording of
+this note — "an orphan self-clears in seconds instead of thirty minutes" — was
+wrong for Stages 3–4.** A lease holds two halves (see the amendment below), and
+`FileLock` deliberately uses Bash's rule, which is **age-only**: `locks.py`
+compares `st_mtime` against `STALE_AFTER_SECONDS = 1800` and never inspects the
+pid, because matching Bash byte-for-byte is the whole point of that half.
+
+Measured against a real orphan on 2026-08-19, after an interrupted canary left 25
+dead-pid lock files and 10 dead-pid lease rows: a fresh `RunLease` for the same
+account was refused with `lock_zenith held (83s)` — **blocked by the file half,
+not by the row**. So during the coexistence window an orphan still costs the full
+thirty minutes; the pid-liveness reclaim only becomes observable once the
+file-lock half is dropped at Stage 5. Until then its value is that the row does
+not *add* a second orphan class on top of the file's, which is what it was
+introduced to prevent.
+
+What is also not true: that orphans become impossible. A *recycled* pid reads as
+live and falls back to the 1800s TTL —
 degrading to the old behaviour rather than failing unsafely. Pid liveness also
 assumes a single host: if the lease DB ever moves to shared storage, `_pid_alive`
 would read foreign pids against the local process table and reclaim live leases.
@@ -601,6 +653,56 @@ Python emits the correct text, so cutover would have introduced it silently. Lan
 now, deliberately and dated, makes it attributable. It also removes an expected divergence
 from the shadow round, so remaining divergences there are real findings rather than known
 noise.
+
+### 7.9 Recorded change point — `grants_dream` reaches two MORE `/lab` series at cutover, 2026-08-19
+
+§7.1 replaced `cycle-one.sh`'s "any non-zero rc denies the dream" with
+`ActResult.grants_dream` (only `BACKEND_UNAVAILABLE` and `OFFLINE` deny), and told
+implementers to record the resulting rise in dream attempts as a change point in the
+**drift** series. Plan 4 wired the two observability samplers into the same cycle, and
+the same semantics therefore now govern **two further series** that §7.1 was not written
+about. Recorded here because neither §7.1 nor §15.1 row 21 said so, and an operator
+reading a step in either panel after cutover must be able to find this page.
+
+**What changes, and for which series.**
+
+| series | fed by | rounds it newly samples |
+|---|---|---|
+| F4 rule adherence | `rule_check` (`cycle-one.sh:45`) | rhythm-vetoed, empty-plan-after-guardrails, and all-actions-failed rounds |
+| persona fidelity (revealed self) | `behavior_snapshot` (`auto-run.sh:806`) | all-actions-failed rounds |
+
+Under Bash all of those return non-zero from `auto-run.sh` (`:744` empty plan, `:763`
+every action failed) and `cycle-one.sh` never reaches its step 2, while `:806` sits below
+`:763` and is likewise never reached. Under the Python cycle the act phase's routers use
+`grants_dream`, so the dream phase — whose entry node is `rule_check` — is entered on the
+first two, and `behavior_snapshot` (an unconditional successor of `execute`) runs on the
+third.
+
+**Why this is not merely "more data".** Both samplers re-score **unchanged** posts. An
+account that was rhythm-vetoed posted nothing this round, so its F4 point repeats the
+previous round's numerator and denominator over the same recent-post window; the same is
+true of a fidelity point after a round where every action failed. So after cutover:
+
+- F4 and fidelity **sample more often per unit of real activity**, which compresses the
+  visible variance of both without any behaviour changing;
+- a quiet account contributes points where it previously contributed gaps, so "flat" in
+  those panels stops meaning "not sampled" and starts meaning what it says — which is the
+  outcome this plan wanted, arriving as a discontinuity;
+- **points before and after cutover are not directly comparable**, and any step at the
+  cutover date is this change, not the agents.
+
+**Not fixed, deliberately.** Reproducing Bash's gaps would mean re-deriving
+`auto-run.sh`'s rc contract inside two nodes and re-introducing the conflation §7.1 exists
+to end — in the one place where "the agent chose to be quiet" and "the agent stopped
+obeying its rules" must not be the same reading. The reachability of each sampler is taken
+from where its Bash call site SITS (below the early returns, hence after `execute` /
+inside the dream phase) rather than from a condition of our own; §15.1 row 21 states that,
+and `test_an_empty_plan_samples_the_rules_but_ships_no_behaviour_vector` and
+`test_a_round_that_never_acted_samples_nothing` pin the boundaries that were kept.
+
+**Date the cutover, not this commit.** The change point is whenever a given account moves
+onto `swil-agent cycle`, which under a staged canary is per-account. Whoever runs Stage 5
+should record the per-account cutover dates alongside this section.
 
 ---
 
@@ -796,9 +898,9 @@ direction that can silently contaminate data.
 | 19 | **A cycle emits one log line the direct path cannot, and raises a different exception type for a busy account.** (a) `graph/nodes.py`'s `logout` node writes §7.6's terminal record (`logout <name> — run_id=… outcome=… dream_written=… snapshot_ok=… dry_run=…`); `run_act` + `run_dream` have no equivalent, because `cycle-one.sh` ends by returning an exit code rather than by logging. It is the only record that a cycle reached its end rather than dying in the middle, so it is kept — and `test_cycle_parity.py` asserts it is EXACTLY one extra line, not "at least one", so a graph path that duplicated an act line could not hide behind the same filter. (b) `run_act`/`run_dream` raise `LockBusy` for a held account; `run_cycle` raises `LeaseBusy` (which wraps it). `cli.py` normalises both into the same exit-75 SKIP, and `swil-agent cycle` additionally attaches the orphan-lock remedy, since `LeaseBusy`'s own message is a cause with no fix in it. | neutral | `graph/nodes.py`, `graph/cycle.py`, `cli.py` |
 | 20 | **A `--dry-run` CYCLE does not dream at all**, where `--dry-run` on the act path is inert *within* each step. Found while wiring `swil-agent cycle` (task 9): nothing in the dream path takes a `dry_run` to be inert under — `write_step` archives and rewrites `personality.md`, `snapshot_step` publishes it, and `dream_step` CONSUMES the one-shot `echo_flag_<name>` marker — because `dream/round.py` predates the shadow round and is frozen. An unguarded dry cycle would therefore have rewritten 23 personalities and uploaded 23 snapshots during the stage-3 round whose exit criterion is "nothing to revert; Python never wrote". Invisible to the whole suite at the time: every dry-run test used a `FakePersonaSource` that records into a list instead of writing a file. Fixed in two places on purpose — `dry_run` is a `CycleState` field and `_dream_or_logout` routes a shadow round straight to logout (so it also spends no LLM call on a dream nobody reads), AND **all four dream-phase nodes carry their own guard**, because the routing is one edge and standing constraint §5 puts the guard with the write. All four, not just the two that write files: `dream_step` posts a lab event and then **irreversibly** consumes the one-shot `echo_flag_<name>` marker (a shadow round that spent it would silently change what the account's next REAL dream is prompted with), and `gate_step` posts two lab events and writes `personality.anchor.aspects.json` for any account whose anchor cache is cold — which, in a fresh worktree or on a CI runner, is all 23. §9.4's comparison set (rhythm policy, guardrail verdicts, veto lists) is entirely act-phase, so nothing the shadow round measures is lost. The dry cycle also takes no lease, no checkpoint and no lease database — `sqlite3.connect(<path>)` creates its file whether or not anything is written through it. | fail-safe | `graph/cycle.py`, `graph/nodes.py`, `cli.py` |
 
-| 21 | **`swil-agent cycle` omits `cycle-one.sh`'s step 2, `rule-check.sh`.** That script samples "did this account obey the mechanically-checkable rules it wrote for itself" into a `rule_check` event, and `/lab`'s F4 panel reads nothing else. `cycle-one.sh` runs it BETWEEN the act and the dream on purpose — `dream.sh` rewrites `personality.md`, so sampling afterwards would measure the new rules against the old posts. The Python equivalent is `analysis/rule_check.py`, which is **Plan 4** and does not exist; the cycle graph has no node for it and no seam where one would go without also porting the rule parser. **The exposure is the stage-4 canary window**: 3–5 accounts move to `swil-agent cycle`, their F4 series goes flat, and a flat series in that panel is indistinguishable from an account that stopped obeying its own rules — which is exactly the reading the panel exists to support. Closure is Plan 4 shipping `analysis/rule_check.py` plus a node (or a post-cycle call in `cli.py`) between the act and dream phases. Until then, canary accounts' F4 rows must be read as "not sampled", not as "not compliant". | neutral | `analysis/rule_check.py` (Plan 4), `cli.py` |
+| 21 | **CLOSED by Plan 4 (2026-08-19).** ~~`swil-agent cycle` omits `cycle-one.sh`'s step 2, `rule-check.sh`.~~ The original row recorded only half the gap, and the half it recorded was the smaller one. Kept in full below, because the reasoning is what made the second half findable. **Original wording:** *`swil-agent cycle` omits `cycle-one.sh`'s step 2, `rule-check.sh`. That script samples "did this account obey the mechanically-checkable rules it wrote for itself" into a `rule_check` event, and `/lab`'s F4 panel reads nothing else. `cycle-one.sh` runs it BETWEEN the act and the dream on purpose — `dream.sh` rewrites `personality.md`, so sampling afterwards would measure the new rules against the old posts. The Python equivalent is `analysis/rule_check.py`, which is Plan 4 and does not exist; the cycle graph has no node for it and no seam where one would go without also porting the rule parser. The exposure is the stage-4 canary window: 3–5 accounts move to `swil-agent cycle`, their F4 series goes flat, and a flat series in that panel is indistinguishable from an account that stopped obeying its own rules — which is exactly the reading the panel exists to support.* **The second, separate omission, found while writing Plan 4:** the cycle also omitted **`behavior-snapshot.sh`** (`auto-run.sh:806`, the last thing `run_agent` does), which embeds the account's recent posts and ships the vector the server turns into persona fidelity = cosine(personality, behavior). That is a DIFFERENT panel fed by a DIFFERENT endpoint (`POST /agents/{u}/behavior-snapshots`, not `/events`), and it is the *revealed self* half of a pair whose *stated self* half `snapshot_step` was already uploading — so the cycle was publishing one side of a comparison and silently withholding the other. Neither absence is loud: a flat series reads as "fidelity collapsed", never as "not sampled". **Both are closed by Plan 4 Task 4**, as two graph NODES rather than tail calls: `execute → behavior_snapshot → … → rule_check → dream`. Nodes and not tail calls for reasons that are about not sampling twice — `execute` carries `EXECUTE_RETRY` and `--resume` re-runs the node that died, and routing loop 2's dream retry `gate → dream` (bypassing `rule_check`) is what stops a retried dream filing a second, identical adherence event. Both are fail-soft (`_fail_soft` is Bash's `|| true`, catching `Exception` and never `BaseException`) and both are skipped under `--dry-run` with the guard AT the call, since the act phase runs under `--dry-run` and flows straight into `behavior_snapshot` with no edge to route around it. The ordering constraint is now pinned three independent ways — topologically (every edge into `dream` enumerated), by recorded call sequence, and by WHICH DOCUMENT was measured, the last being why `run_rule_check` re-reads `personality.md` instead of taking a `Persona`. **One asymmetry remains and is deliberate:** `swil-agent act` alone still samples neither, because `run_act` is frozen and Bash makes both calls from the composition; `cycle` is the round runner Stage 5 cuts over to, and Plan 4 Task 5 adds `swil-agent rule-check` / `behavior-snapshot` for anyone driving the act phase by hand. | neutral | `graph/nodes.py`, `graph/cycle.py`, `cli.py`, `analysis/` |
 | 22 | **Loop 2 (the dream retry, default OFF) never clears `candidate` between attempts.** `_after_gate` routes a rejected verdict back to the `dream` node, which overwrites `candidate` with the new rewrite — but if the retry produces no candidate at all (an empty LLM reply, a blown deadline), the node returns without setting the key and the PREVIOUS attempt's candidate is still in state. `_after_dream` then routes to `gate`, which re-gates the already-rejected text. No write can result — the second verdict rejects the same text for the same reason and `write_step` guards on `verdict.accepted` — so this is wasted work, not a correctness hole. Unreachable while `max_dream_attempts=1` (the default and the only shipped value). Whoever turns loop 2 on must clear `candidate` in the `dream` node's failure branches first. | neutral | `graph/cycle.py`, `graph/nodes.py` |
-| 23 | **The lease database opens with SQLite's defaults: no WAL, no `busy_timeout`, and `heartbeat()` commits without error handling.** With 6 parallel cycles sharing `agent/.agent-state/run_leases.sqlite`, a concurrent writer raises `sqlite3.OperationalError: database is locked` immediately rather than waiting. `RunLease.__enter__` already gives the file lock back on any exception, so the failure mode is a spurious `LeaseBusy`-shaped SKIP rather than a stranded lock — safe, but a round lost for a reason nobody will diagnose from the log. A `heartbeat()` that raises mid-cycle propagates out of `run_cycle` and ends the round; it is a plain `UPDATE ... WHERE run_id = ?` on a row this process owns, so the only realistic cause is the same contention. **Exposure is stage 4/5 only** — a dry run takes no lease at all, so stage 3's 23-account shadow round never touches this file. Fix before the canary widens: `PRAGMA journal_mode=WAL` + `PRAGMA busy_timeout=5000` at `ensure_schema`, and a `contextlib.suppress(sqlite3.OperationalError)` around the heartbeat's commit (a missed beat is recoverable; a dead round is not). | fail-safe | `graph/leases.py`, `cli.py` |
+| 23 | **The lease database opens with SQLite's defaults: no WAL, no `busy_timeout`, and `heartbeat()` commits without error handling.** With 6 parallel cycles sharing `agent/.agent-state/run_leases.sqlite`, a concurrent writer raises `sqlite3.OperationalError: database is locked` immediately rather than waiting. `RunLease.__enter__` already gives the file lock back on any exception, so the failure mode is a spurious `LeaseBusy`-shaped SKIP rather than a stranded lock — safe, but a round lost for a reason nobody will diagnose from the log. A `heartbeat()` that raises mid-cycle propagates out of `run_cycle` and ends the round; it is a plain `UPDATE ... WHERE run_id = ?` on a row this process owns, so the only realistic cause is the same contention. **Exposure is stage 4/5 only** — a dry run takes no lease at all, so stage 3's 23-account shadow round never touches this file. Fix before the canary widens: `PRAGMA journal_mode=WAL` + `PRAGMA busy_timeout=5000` at `ensure_schema`, and a `contextlib.suppress(sqlite3.OperationalError)` around the heartbeat's commit (a missed beat is recoverable; a dead round is not). **CLOSED (2026-08-19), with two deliberate deviations from this row's own prescription — the code wins, recorded here as the standing rule requires.** (1) The pragmas are NOT set inside `ensure_schema`: that function runs on every `RunLease.__enter__` and every `sweep_expired` call, so setting them there would BE the "scattered across call sites" shape the fix exists to avoid. `graph/leases.py` gained `open_lease_db(path)`, now the only place `sqlite3.connect` is called for this file; `cli.py`'s `_cycle_stores` — the sole production call site — calls it instead of a bare `sqlite3.connect`. (2) The busy timeout is NOT 5000: `sqlite3.connect()`'s own `timeout` parameter already defaults to 5.0s and is wired to the same pragma (confirmed empirically — a bare `sqlite3.connect(path)`, no code from this module involved, already reports `PRAGMA busy_timeout` as 5000), so setting it to that same value would be indistinguishable, by any test, from never setting it at all — the fixture-discriminability trap this plan's standing constraints warn about. `_BUSY_TIMEOUT_MS = 8000` instead: still a short, bounded wait, and provably in force by test. `heartbeat()` does not use `contextlib.suppress` — a bare swallow satisfies "must not abort the round" but not "must not go unnoticed": a heartbeat that fails silently is, from Bash's side, indistinguishable from one that stopped running at all, and Bash reclaims the file half after `LEASE_TTL_SECONDS` either way. It now catches `sqlite3.OperationalError`, logs at WARNING with the lease's identity (`tenant:agent kind`, `run_id`), and still refreshes the Bash-visible lock file's mtime regardless of whether the row write succeeded — the two are different liveness signals for different readers, and a transient row failure should not also cost the cycle its cross-runtime half. Tests added to `tests/unit/test_graph_leases.py` (pragmas queried on the actual connection a lease uses, not inferred from setup code having run; the busy-timeout test asserts against stdlib's own 5000 default so the assertion stays discriminating; heartbeat-failure coverage: does not raise, is logged at WARNING with the account identity, the lock file is still touched, the row is left untouched, and a healthy heartbeat is a negative control that logs nothing) and `tests/unit/test_cli.py` (`_cycle_stores` — the real composition root, both the real-file and the dry-run `:memory:` branch — opens with WAL and the tuned timeout). Mutation-tested by hand, pycache swept before and after each run: removing either pragma line, and replacing the heartbeat's `logger.warning` call with a silent `pass`, and deleting the heartbeat's `try`/`except` entirely — each killed by a distinct test. `npm run ci:check` 13/13, `mypy --strict` and `ruff` clean. | fail-safe | `graph/leases.py`, `cli.py` |
 | 24 | **`sweep_expired` has no production caller, and `--resume` walks every checkpoint row with nothing pruning the database.** Neither is a defect today and both are recorded so they are not rediscovered as one. `sweep_expired` is deliberately optional — `RunLease.__enter__` reclaims its own key, the same way `auto-run.sh:427` reclaims its own stale lock — so correctness never depended on an external sweep; it exists for startup hygiene and observability, and a future scheduler entry point is where it belongs. `latest_round_id` iterates `saver.list(None)` across every thread in `cycle_checkpoints.sqlite`, which grows one thread per account per non-dry cycle forever, since nothing prunes it: at 23 accounts × 3 rounds/day that is ~25k threads/year, still trivial for one `--resume` lookup but unbounded. Retention belongs with whoever adds the scheduler, not with the lookup. | neutral | `graph/leases.py`, `graph/checkpoint.py` |
 | 25 | **The cycle snapshots `memory.md` BEFORE acquiring the lease; Bash reads it after `acquire_lock`.** `cli.py` builds the whole `CycleDeps` — including `memory_text` — and hands it to `run_cycle`, which only then takes both leases; `auto-run.sh` acquires its lock first and reads the file inside. So a Python cycle that loses the acquire race read a `memory.md` it then discards (harmless), and one that WINS it may hold a snapshot taken microseconds before a losing Bash round released the file it had been appending to. Bounded and benign in practice: the only writer of another account's `memory.md` is that account's own round, which the lease excludes, and the window is the microseconds between the read and the acquire. It is recorded because "the deps are frozen before the lease" is a structural property someone will later assume the opposite of. | neutral | `cli.py`, `graph/cycle.py` |
 
@@ -833,3 +935,36 @@ Recorded so a later reader does not mistake them for coverage:
 - `test_control_field_absent_from_original_is_not_a_failure` does not catch a
   bare-equality mutant, because original and candidate are identical in that
   fixture, so `None == None` either way.
+
+### 15.5 Two FROZEN SCRIPTS that disagree with each other — do not "deduplicate" the ports
+
+Not a Bash↔Python divergence. `rule-check.sh` and `behavior-snapshot.sh` both
+extract a post's body as "the original-language text, falling back to the
+translated one", and they **implement that differently**. The ports reproduce
+each script's own semantics, so `analysis/rule_check.py` and
+`analysis/behavior_snapshot.py` deliberately do NOT share a helper.
+
+- `rule-check.sh:59` is embedded Python: `p.get('originalText') or p.get('text') or ''`.
+- `behavior-snapshot.sh:65` is jq: `(.originalText // .text)`, then a
+  not-all-whitespace `select`.
+
+jq's `//` falls back only on `null` and `false` — **an empty string is truthy in
+jq**. So for an item with `originalText: ""` and `text: "hello"`:
+
+| | `originalText` | `text` | result |
+|---|---|---|---|
+| `rule-check.sh` (Python `or`) | `""` | `"hello"` | `"hello"` |
+| `behavior-snapshot.sh` (jq `//`) | `""` | `"hello"` | **dropped entirely** |
+
+The obvious tidy-up — one shared `extract_posts` — silently picks the `or`
+semantics for both, which feeds **translated** text into the behaviour vector.
+That is the one thing `behavior-snapshot.sh:57-58`'s own comment exists to
+prevent: the fidelity number is a comparison against a persona written in the
+original language, and mixing the translation layer into one half of it moves
+the number for a reason that has nothing to do with the agent.
+
+Pinned in both directions (`test_an_empty_original_text_does_not_fall_back_to_text`,
+`test_a_false_original_text_falls_back_to_text`), and both module docstrings say
+why. Found in Plan 4 Task 2; recorded here because it is not self-evident from
+reading either module alone, and the refactor that breaks it looks like an
+obvious cleanup.

@@ -58,6 +58,25 @@ ignore = ["RUF001"]
 # echo-chamber sentence, the closing paragraph) exceed 100 columns on their
 # own. Wrapping them would insert a newline the real prompt never contains.
 "tests/unit/test_dream_candidate.py" = ["E501"]
+# Same family as the repo-wide RUF001 ignore above, scoped to the two files
+# that need the docstring/comment variants. `rule_check.py` quotes rule-check.sh's
+# own tag regex (`[#＃]`, where the full-width form is half the point of the
+# character class) and the verbatim production memory line whose full-width
+# comma sits inside the text that once mis-parsed as a hashtag range. Rewriting
+# either into ASCII would turn a quotation of the frozen script into a
+# paraphrase of it.
+"swil_agent/analysis/rule_check.py" = ["RUF002", "RUF003"]
+# As above, plus N802: four test names embed the CJK term they are about (标签,
+# 感叹号) so a failure line names the rule that broke. A CJK identifier has no
+# case, which ruff reports as "should be lowercase"; there is nothing to fix.
+"tests/unit/test_rule_check.py" = ["RUF002", "N802"]
+# Same family again. This file's whole discriminating fixture is a hashtag
+# band written the way the real personality.md files write it -- with the
+# FULL-WIDTH tilde `～`, which is one of the separators `rule_check`'s range
+# regex accepts. Its docstrings quote that band (`2～3` vs `5～6`) because
+# which of the two was measured is the property under test; ASCII-ising the
+# quotation would describe a fixture the file does not have.
+"tests/unit/test_cycle_analysis_steps.py" = ["RUF002"]
 
 [tool.mypy]
 python_version = "3.13"

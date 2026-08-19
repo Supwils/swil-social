@@ -1,16 +1,30 @@
-"""The cycle graph: the nine nodes of spec §5.4 wired together, plus the two
-things that wrap a whole run -- the lease and the checkpointer.
+"""The cycle graph: spec §5.4's nine nodes plus Plan 4's two observability
+nodes, wired together, and the two things that wrap a whole run -- the lease
+and the checkpointer.
 
 ```
-login → plan → guardrail → execute → dream → gate → write → snapshot → logout
-          │        │                   ↑        │
-          │        └ (veto / empty) ───┘        └ (reject) → keep original ──┘
-          └ (offline / dead backend) ────────────────────────────────→ logout
+login → plan → guardrail → execute → behavior_snapshot ─┐
+          │        │                                     │
+          │        └ (veto / empty) ────────────────────→ rule_check → dream
+          │                                                             │
+          └ (offline / dead backend) ─────────────────────────→ logout   ↓
+                                                          gate → write → snapshot
+                                                            └ (reject) → keep original
 ```
 
-Plus two loops, both **default OFF** (`CycleConfig`): loop 3 sends `execute`
-back to `login` for another act round (`max_rounds`), loop 2 sends a rejected
-`gate` back to `dream` for one more candidate (`max_dream_attempts`). They are
+`behavior_snapshot` and `rule_check` are the two steps `cycle-one.sh` and
+`auto-run.sh` perform and Plan 3's cycle did not (spec §15.1 row 21). Their
+POSITIONS are contracts, not layout: `behavior_snapshot` is the act phase's
+tail (`auto-run.sh:806`, once per act round), and `rule_check` is the dream
+phase's HEAD (`cycle-one.sh:45`) because the dream rewrites the very
+`personality.md` it parses its rules out of. Both are fail-soft and both are
+skipped entirely under `--dry-run`.
+
+Plus two loops, both **default OFF** (`CycleConfig`): loop 3 sends
+`behavior_snapshot` back to `login` for another act round (`max_rounds`),
+loop 2 sends a rejected `gate` back to `dream` for one more candidate
+(`max_dream_attempts`) -- back to `dream`, NOT to `rule_check`, so a retried
+dream cannot file a second, identical `rule_check` event. They are
 built rather than omitted so enabling one is a config change instead of a
 topology change -- but a graph that loops by DEFAULT doubles every account's
 LLM spend, so both defaults are 1 and
@@ -106,6 +120,7 @@ from swil_agent.graph.nodes import (
     CycleDeps,
     NodeFn,
     agent_dir_name,
+    make_behavior_snapshot_node,
     make_dream_node,
     make_execute_node,
     make_gate_node,
@@ -113,6 +128,7 @@ from swil_agent.graph.nodes import (
     make_login_node,
     make_logout_node,
     make_plan_node,
+    make_rule_check_node,
     make_snapshot_node,
     make_write_node,
 )
@@ -126,6 +142,8 @@ LOGIN: Final = "login"
 PLAN: Final = "plan"
 GUARDRAIL: Final = "guardrail"
 EXECUTE: Final = "execute"
+BEHAVIOR_SNAPSHOT: Final = "behavior_snapshot"
+RULE_CHECK: Final = "rule_check"
 DREAM: Final = "dream"
 GATE: Final = "gate"
 WRITE: Final = "write"
@@ -318,7 +336,23 @@ def _grants_dream(state: CycleState) -> bool:
     skips the dream on ANY non-zero `auto-run.sh` exit -- including a rhythm
     veto and an empty plan. §7.1 calls that conflation the reason "an empty
     plan came to cost a personality evolution", and `finalize_step` already
-    records the same change point on the `landed == 0` branch.
+    records the same change point on the `landed == 0` branch. Since Plan 4
+    the SAME decision also gates `/lab`'s F4 and fidelity series, because
+    `rule_check` is the dream phase's entry node -- spec §7.9 records that as
+    its own dated change point.
+
+    EQUIVALENT MUTANT, conditionally (standing constraint §7): the last line
+    can be replaced by a direct membership test
+    (`outcome not in (ActOutcome.BACKEND_UNAVAILABLE, ActOutcome.OFFLINE)`)
+    and no test can tell, because that IS `ActResult.grants_dream`'s body
+    today. It is written as a construction anyway, and the equivalence is the
+    point: the graph must not be able to answer differently from `run_act`'s
+    caller. It expires the moment §7.1's rule stops being a pure function of
+    `outcome` -- e.g. if a future rule consults `landed` or `attempted` --
+    at which point the membership form silently keeps the old semantics on
+    the graph path only. Review found one further mutation here with no
+    reachable failing case; it predates Plan 4 and is accepted rather than
+    papered over with an assertion invented to kill it.
     """
     outcome = state.get("outcome")
     if outcome is None:
@@ -326,9 +360,16 @@ def _grants_dream(state: CycleState) -> bool:
     return ActResult(outcome=outcome).grants_dream
 
 
-def _dream_or_logout(state: CycleState) -> str:
-    """The ONE place the act phase can enter the dream, so the ONE place a
-    shadow round has to be stopped.
+def _dream_phase_or_logout(state: CycleState) -> str:
+    """The ONE place the act phase can enter the dream PHASE, so the ONE
+    place a shadow round has to be stopped.
+
+    The phase's entry node is `rule_check`, not `dream`: `cycle-one.sh:45`
+    samples rule adherence between `auto-run.sh` and `dream.sh`, inside the
+    same `if` that gates the dream, and it must run BEFORE the rewrite
+    because the rewrite replaces the document it parses (`cycle-one.sh:39-41`).
+    So every route that used to name `DREAM` here names `RULE_CHECK`, and
+    `rule_check -> dream` is the only unconditional edge into the dream.
 
     Design spec §9.4: a dry run "builds context and produces a plan but
     executes nothing and **writes nothing**". `run_act`'s `dry_run` is
@@ -349,7 +390,7 @@ def _dream_or_logout(state: CycleState) -> str:
     """
     if state.get("dry_run", False):
         return LOGOUT
-    return DREAM if _grants_dream(state) else LOGOUT
+    return RULE_CHECK if _grants_dream(state) else LOGOUT
 
 
 def _continue_or_logout(next_node: str) -> _Router:
@@ -373,18 +414,24 @@ def _after_guardrail(state: CycleState) -> str:
     """
     if state.get("actions"):
         return EXECUTE
-    return _dream_or_logout(state)
+    return _dream_phase_or_logout(state)
 
 
 def _after_execute(config: CycleConfig) -> _Router:
-    """Loop 3. `round_index` counts act rounds COMPLETED (the execute node
-    increments it), so it doubles as the index of the deps the next round
-    needs."""
+    """Loop 3, resolved AFTER the behavior snapshot rather than straight off
+    `execute`.
+
+    `round_index` counts act rounds COMPLETED (the execute node increments
+    it), so it doubles as the index of the deps the next round needs. The
+    router hangs off `behavior_snapshot` because `auto-run.sh:806` samples at
+    the end of EACH `run_agent` call, i.e. once per act round -- putting it
+    after this branch instead would sample only the last round of a loop-3
+    configuration."""
 
     def route(state: CycleState) -> str:
         if state.get("round_index", 0) < config.max_rounds:
             return LOGIN
-        return _dream_or_logout(state)
+        return _dream_phase_or_logout(state)
 
     return route
 
@@ -466,6 +513,8 @@ def build_cycle(config: CycleConfig | None = None) -> CycleGraph:
     graph.add_node(PLAN, _bind(make_plan_node), retry_policy=PLAN_RETRY)
     graph.add_node(GUARDRAIL, _bind(make_guardrail_node))
     graph.add_node(EXECUTE, _execute_node, retry_policy=EXECUTE_RETRY)
+    graph.add_node(BEHAVIOR_SNAPSHOT, _bind(make_behavior_snapshot_node))
+    graph.add_node(RULE_CHECK, _bind(make_rule_check_node))
     graph.add_node(DREAM, _dream_node, retry_policy=DREAM_RETRY)
     graph.add_node(GATE, _bind(make_gate_node), retry_policy=GATE_RETRY)
     graph.add_node(WRITE, _bind(make_write_node))
@@ -475,8 +524,10 @@ def build_cycle(config: CycleConfig | None = None) -> CycleGraph:
     graph.add_edge(START, LOGIN)
     graph.add_conditional_edges(LOGIN, _continue_or_logout(PLAN), [PLAN, LOGOUT])
     graph.add_conditional_edges(PLAN, _continue_or_logout(GUARDRAIL), [GUARDRAIL, LOGOUT])
-    graph.add_conditional_edges(GUARDRAIL, _after_guardrail, [EXECUTE, DREAM, LOGOUT])
-    graph.add_conditional_edges(EXECUTE, _after_execute(cfg), [LOGIN, DREAM, LOGOUT])
+    graph.add_conditional_edges(GUARDRAIL, _after_guardrail, [EXECUTE, RULE_CHECK, LOGOUT])
+    graph.add_edge(EXECUTE, BEHAVIOR_SNAPSHOT)
+    graph.add_conditional_edges(BEHAVIOR_SNAPSHOT, _after_execute(cfg), [LOGIN, RULE_CHECK, LOGOUT])
+    graph.add_edge(RULE_CHECK, DREAM)
     graph.add_conditional_edges(DREAM, _after_dream, [GATE, LOGOUT])
     graph.add_conditional_edges(GATE, _after_gate(cfg), [DREAM, WRITE])
     graph.add_edge(WRITE, SNAPSHOT)
@@ -486,12 +537,13 @@ def build_cycle(config: CycleConfig | None = None) -> CycleGraph:
 
 
 def _recursion_limit(config: CycleConfig) -> int:
-    """Four supersteps per act round, two per dream attempt, plus the write /
-    snapshot / logout tail and START. Only exceeds LangGraph's own default
-    for a configuration that turns a loop on -- but a `GraphRecursionError`
-    on the round that finally enables loop 3 would be a confusing way to
-    learn that."""
-    needed = 4 * config.max_rounds + 2 * config.max_dream_attempts + 6
+    """Five supersteps per act round (`login`, `plan`, `guardrail`, `execute`,
+    `behavior_snapshot`), two per dream attempt, plus the `rule_check` /
+    `write` / `snapshot` / `logout` tail and START. Only exceeds LangGraph's
+    own default for a configuration that turns a loop on -- but a
+    `GraphRecursionError` on the round that finally enables loop 3 would be a
+    confusing way to learn that."""
+    needed = 5 * config.max_rounds + 2 * config.max_dream_attempts + 7
     return max(_DEFAULT_RECURSION_LIMIT, needed)
 
 

@@ -9,6 +9,7 @@ Bash-visible file lock (cross-runtime exclusion). The file lock goes away at
 stage 5, when Bash no longer runs.
 """
 
+import logging
 import os
 import sqlite3
 import time
@@ -23,6 +24,7 @@ from swil_agent.graph.leases import (
     LeaseBusy,
     RunLease,
     ensure_schema,
+    open_lease_db,
     sweep_expired,
 )
 from swil_agent.locks import STALE_AFTER_SECONDS, act_lock_path, dream_lock_path
@@ -715,3 +717,171 @@ def test_the_run_id_and_pid_are_recorded_for_diagnostics(tmp_path: Path) -> None
     with RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="r-42", now=_now):
         row = db.execute("SELECT run_id, pid, acquired_at FROM run_leases").fetchone()
         assert row == ("r-42", os.getpid(), _NOW)
+
+
+# --------------------------------------------------------------------------
+# concurrency: WAL + busy_timeout on the connection a lease actually uses
+# (spec §15.1 row 23 -- stage 3's dry run never opened this file, since a dry
+# run takes no lease; stage 4 puts 3-5 Python cycles on it at once)
+# --------------------------------------------------------------------------
+
+
+def test_open_lease_db_puts_a_real_connection_in_wal_journal_mode(tmp_path: Path) -> None:
+    """Queried on the SAME connection `open_lease_db` returns and a lease
+    goes on to use -- not inferred from the setup code having run. A real
+    file, not `:memory:`: SQLite silently pins an in-memory database to
+    `memory` journal mode no matter what is requested, so a `:memory:`
+    fixture here would pass whether or not the WAL pragma executed, proving
+    nothing about the file every real cycle actually opens.
+    """
+    db_path = tmp_path / "run_leases.sqlite"
+    db = open_lease_db(str(db_path))
+    try:
+        with RunLease(db, tmp_path, "builtin", "zenith", kind="act"):
+            journal_mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+        assert str(journal_mode).lower() == "wal"
+    finally:
+        db.close()
+
+
+def test_open_lease_db_sets_a_busy_timeout_distinguishable_from_sqlite3s_own_default(
+    tmp_path: Path,
+) -> None:
+    """`sqlite3.connect()`'s own `timeout` parameter defaults to 5.0s and is
+    already wired to `PRAGMA busy_timeout` -- a bare `sqlite3.connect(path)`,
+    with no code from this module involved at all, reports `busy_timeout` as
+    5000. A test pinned to 5000 could not tell "the pragma ran" from "nobody
+    ever calls `open_lease_db` and plain `sqlite3.connect` was used instead"
+    apart -- exactly the fixture-discriminability trap (mutating this line
+    out would leave such a test green). `_BUSY_TIMEOUT_MS` is chosen away
+    from stdlib's default for exactly this reason; this test pins the actual
+    value in force on the connection a lease uses, not the module constant,
+    so a regression back to a value indistinguishable from the stdlib
+    default fails here even if `_BUSY_TIMEOUT_MS` itself is edited to match.
+    """
+    plain = sqlite3.connect(str(tmp_path / "plain.sqlite"))
+    assert plain.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    plain.close()
+
+    db_path = tmp_path / "run_leases.sqlite"
+    db = open_lease_db(str(db_path))
+    try:
+        with RunLease(db, tmp_path, "builtin", "zenith", kind="act"):
+            busy_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert int(busy_timeout) == 8000
+    finally:
+        db.close()
+
+
+def test_a_memory_lease_db_still_gets_a_busy_timeout_even_though_wal_is_impossible(
+    tmp_path: Path,
+) -> None:
+    """The dry-run path (`cli.py`'s `_cycle_stores`) opens `:memory:` through
+    this same function. WAL cannot apply there (SQLite pins in-memory
+    databases to `memory` journal mode), but `busy_timeout` is an ordinary
+    per-connection pragma with no such restriction, and costs nothing to set
+    on a connection nothing else can ever contend for."""
+    db = open_lease_db(":memory:")
+    try:
+        assert str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "memory"
+        assert int(db.execute("PRAGMA busy_timeout").fetchone()[0]) == 8000
+    finally:
+        db.close()
+
+
+# --------------------------------------------------------------------------
+# heartbeat is best-effort: a locked database must not abort a cycle, and a
+# failure to beat must not go unnoticed either (spec §15.1 row 23)
+# --------------------------------------------------------------------------
+
+
+class _LockedOnHeartbeat(sqlite3.Connection):
+    """Fails only the heartbeat's `UPDATE` -- `RunLease.__enter__` never
+    issues one (schema DDL, a `SELECT` for reclaim, an `INSERT`), so this
+    isolates the failure to exactly the statement `heartbeat()` runs and
+    leaves acquisition itself unaffected."""
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        if sql.lstrip().upper().startswith("UPDATE"):
+            raise sqlite3.OperationalError("database is locked")
+        return super().execute(sql, parameters)
+
+
+def _locked_on_heartbeat_db() -> sqlite3.Connection:
+    return sqlite3.connect(":memory:", factory=_LockedOnHeartbeat)
+
+
+def test_a_heartbeat_failure_does_not_abort_the_cycle(tmp_path: Path) -> None:
+    """The whole point: `run_cycle` calls `heartbeat()` between every graph
+    superstep with no guard of its own, so a raised `OperationalError` here
+    would end an in-flight round over a single missed beat. It must not."""
+    db = _locked_on_heartbeat_db()
+    with RunLease(db, tmp_path, "builtin", "zenith", kind="act") as lease:
+        lease.heartbeat()  # must not raise
+
+
+def test_a_heartbeat_failure_is_logged_at_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Not abort, but not silent either: a heartbeat that keeps failing is,
+    from Bash's side, indistinguishable from a process that stopped
+    heartbeating for real, and Bash reclaims this lease's file half after
+    `LEASE_TTL_SECONDS` either way. An operator needs to see this before
+    that clock runs out, which means it must be logged at a level nobody
+    has to opt into -- WARNING, not INFO or DEBUG."""
+    db = _locked_on_heartbeat_db()
+    with (
+        caplog.at_level(logging.WARNING, logger="swil_agent.graph.leases"),
+        RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="r-1") as lease,
+    ):
+        lease.heartbeat()
+    assert "heartbeat failed" in caplog.text
+    assert "zenith" in caplog.text
+    assert "r-1" in caplog.text
+
+
+def test_a_successful_heartbeat_logs_nothing_at_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Negative control for the test above: a mutant that warns unconditionally
+    (not only on failure) would pass every other test in this file and hide a
+    genuinely healthy fleet behind constant WARNING noise an operator would
+    learn to ignore -- which defeats the point of logging failures at all."""
+    db = _memory_db()
+    with (
+        caplog.at_level(logging.WARNING, logger="swil_agent.graph.leases"),
+        RunLease(db, tmp_path, "builtin", "zenith", kind="act") as lease,
+    ):
+        lease.heartbeat()
+    assert caplog.text == ""
+
+
+def test_a_heartbeat_row_failure_still_refreshes_the_bash_visible_lock_file(
+    tmp_path: Path,
+) -> None:
+    """The row write and the file touch are two different liveness signals
+    for two different readers (this module's own docstring). A transient
+    `database is locked` on the row must not also cost the cycle its
+    Bash-visible half -- that file's mtime is the ONLY thing a concurrently
+    running Bash round ever looks at (auto-run.sh:422)."""
+    db = _locked_on_heartbeat_db()
+    lock = act_lock_path(tmp_path, "zenith")
+    with RunLease(db, tmp_path, "builtin", "zenith", kind="act") as lease:
+        old = time.time() - (STALE_AFTER_SECONDS + 60)
+        os.utime(lock, (old, old))
+        assert time.time() - lock.stat().st_mtime > STALE_AFTER_SECONDS
+        lease.heartbeat()
+        assert time.time() - lock.stat().st_mtime < STALE_AFTER_SECONDS
+
+
+def test_a_heartbeat_failure_does_not_touch_the_row(tmp_path: Path) -> None:
+    """Companion to the failure-is-logged test, from the data side: a failed
+    `UPDATE` must leave `heartbeat_at` exactly where it was, not partially
+    applied -- `_LockedOnHeartbeat` raises before `sqlite3` can commit
+    anything, so the row this test reads back must still carry the
+    acquisition-time stamp."""
+    db = _locked_on_heartbeat_db()
+    with RunLease(db, tmp_path, "builtin", "zenith", kind="act", now=_now) as lease:
+        before = _heartbeat_of(db, "builtin", "zenith")
+        lease.heartbeat(now=before + 500)
+        assert _heartbeat_of(db, "builtin", "zenith") == before

@@ -36,6 +36,22 @@ roster directories and compares:
   * spec §15.1 **row 19** (added by this task) -- the graph path emits §7.6's
     `logout` record, which has no equivalent in the direct path at all, and
     raises `LeaseBusy` where the direct path raises `LockBusy`.
+  * spec §15.1 **row 21** (Plan 4) -- the graph path runs `analysis`'s two
+    observability samplers, `behavior_snapshot` after the act phase and
+    `rule_check` before the dream. The direct path runs neither: `run_act`
+    and `run_dream` are frozen, and Bash makes both calls from the
+    COMPOSITION (`auto-run.sh:806` inside `run_agent`, `cycle-one.sh:45`
+    between the two scripts), which on the direct path is `cli.py`'s two
+    separate commands. Asserted as a divergence by
+    `test_the_graph_path_also_samples_rules_and_behaviour`. **Every scenario
+    in this file, that one included, uses a KEY-LESS roster** -- so both
+    samplers take their `no api_key.txt` skip path, and the whole divergence
+    is one log line each with nothing on the wire. (An earlier draft of this
+    paragraph claimed that test drives a keyed roster. It does not, and never
+    did; the keyed version lives in `test_cycle_analysis_steps.py`. Corrected
+    after review, and recorded rather than silently reworded, because a
+    docstring that overstates what a test covers is the same failure class as
+    a test that names a behaviour it cannot detect -- §15.4.)
 
 Two corrections to the brief that produced this file, recorded rather than
 absorbed (standing constraint §1 -- the source wins):
@@ -566,6 +582,23 @@ def _run_direct(root: Path, scenario: Scenario, records: list[logging.LogRecord]
 # `run_act` + `run_dream` cannot.
 _GRAPH_ONLY_LOG_PREFIX = "swil_agent.graph.nodes INFO logout"
 
+# Spec §15.1 row 21, closed by Plan 4: the cycle runs `analysis`'s two
+# observability samplers (`behavior_snapshot` after the act phase,
+# `rule_check` before the dream) and the direct path runs neither, because
+# `run_act` and `run_dream` are frozen ports of `auto-run.sh`'s act path and
+# `dream.sh` -- the two calls live in `auto-run.sh:806` and `cycle-one.sh:45`,
+# i.e. in the composition, which on the direct path is the CLI.
+#
+# Filtered by LOGGER NAME rather than by message, and that is what keeps this
+# from being the blanket filter the logout line was deliberately not given: no
+# record from `swil_agent.analysis.*` can reach the direct path at all, so
+# every line this removes is one the divergence accounts for by construction.
+# `test_the_graph_path_also_samples_rules_and_behaviour` pins the positive
+# claim (the samplers really do run, and really do not on the direct path);
+# the exact-one-logout assertion below is unchanged, so a duplicated act line
+# is still caught by count.
+_ANALYSIS_LOG_PREFIX = "swil_agent.analysis."
+
 
 def _both(
     tmp_path: Path, scenario: Scenario, caplog: pytest.LogCaptureFixture
@@ -604,12 +637,15 @@ def _assert_parity(graph: Effects, direct: Effects, scenario: Scenario) -> None:
     assert graph.tally == direct.tally, f"{scenario.name}: landed/attempted diverged"
     assert graph.dream == direct.dream, f"{scenario.name}: the dream's result diverged"
 
-    # The ONE expected log difference (§7.6), removed rather than ignored: a
-    # blanket "ignore extra graph lines" filter would hide a real one.
-    graph_log = [line for line in graph.log if not line.startswith(_GRAPH_ONLY_LOG_PREFIX)]
-    assert len(graph_log) == len(graph.log) - 1, (
+    # The two expected log differences (§7.6 and §15.1 row 21), removed rather
+    # than ignored: a blanket "ignore extra graph lines" filter would hide a
+    # real one. The logout line is still counted EXACTLY, since it is the one
+    # a duplicated act line could hide behind.
+    without_logout = [line for line in graph.log if not line.startswith(_GRAPH_ONLY_LOG_PREFIX)]
+    assert len(without_logout) == len(graph.log) - 1, (
         f"{scenario.name}: expected exactly one logout line"
     )
+    graph_log = [line for line in without_logout if not line.startswith(_ANALYSIS_LOG_PREFIX)]
     assert graph_log == direct.log, f"{scenario.name}: log lines diverged"
 
 
@@ -714,7 +750,7 @@ def test_the_cycle_holds_both_locks_where_the_direct_path_holds_one(
         assert not dream_lock_path(root, DIR_NAME).exists()
 
 
-def test_the_graph_path_adds_exactly_one_log_line(
+def test_the_graph_path_adds_exactly_one_log_line_of_its_own(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """§7.6's terminal record: the only line that says a cycle reached its end
@@ -722,21 +758,65 @@ def test_the_graph_path_adds_exactly_one_log_line(
     equivalent -- `cycle-one.sh` ends by returning an exit code, not by
     logging.
 
-    Asserted as EXACTLY one extra line, by LENGTH rather than by set
-    difference: a graph path that logged an act line twice would produce a
-    duplicate that `line not in direct.log` cannot see, so the count is what
-    discriminates. `_assert_parity` makes the same check for every scenario;
-    this one also reads the line's contents.
+    Asserted by LENGTH rather than by set difference: a graph path that logged
+    an act line twice would produce a duplicate that `line not in direct.log`
+    cannot see, so the count is what discriminates. The arithmetic names the
+    two accounted-for differences explicitly -- ONE logout record (§7.6) plus
+    the TWO `analysis` sampler lines (§15.1 row 21) -- rather than being
+    loosened to an inequality, so a third, unexplained line still fails here.
+    `_assert_parity` makes the same checks for every scenario; this one also
+    reads the logout line's contents.
     """
     scenario = Scenario(name="logout record")
     graph, direct = _both(tmp_path, scenario, caplog)
 
     logout_lines = [line for line in graph.log if line.startswith(_GRAPH_ONLY_LOG_PREFIX)]
+    sampler_lines = [line for line in graph.log if line.startswith(_ANALYSIS_LOG_PREFIX)]
     assert len(logout_lines) == 1
-    assert len(graph.log) == len(direct.log) + 1
+    assert len(sampler_lines) == 2
+    assert len(graph.log) == len(direct.log) + 1 + 2
     assert DIR_NAME in logout_lines[0]
     assert "run_id=graph-run" in logout_lines[0]
     assert "outcome=landed_all" in logout_lines[0]
+
+
+def test_the_graph_path_also_samples_rules_and_behaviour(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Spec §15.1 row 21, closed by Plan 4 and pinned here as a divergence.
+
+    `cycle-one.sh:45` runs `rule-check.sh` between `auto-run.sh` and
+    `dream.sh`, and `auto-run.sh:806` runs `behavior-snapshot.sh` at the end
+    of each act round. Both calls live in the COMPOSITION, and on the direct
+    path the composition is `cli.py`'s two separate commands -- so the graph
+    path samples and `run_act` + `run_dream` do not.
+
+    Asserted as EXACTLY two extra lines in a known order, and as zero
+    `swil_agent.analysis` records on the direct path. The order is the
+    contract: the behaviour snapshot is the act phase's tail and the rule
+    check the dream phase's head, so the rule check must also precede every
+    dream-phase record -- which is the ordering `cycle-one.sh:39-41` exists
+    to state. (Both take their `no api_key.txt` skip path here: this roster
+    is key-less, exactly like the other scenarios, so the divergence is one
+    log line each and nothing on the wire. `test_cycle_analysis_steps.py`
+    drives the keyed version.)
+    """
+    scenario = Scenario(name="analysis samplers")
+    graph, direct = _both(tmp_path, scenario, caplog)
+
+    assert [line for line in direct.log if line.startswith(_ANALYSIS_LOG_PREFIX)] == []
+
+    sampled = [line for line in graph.log if line.startswith(_ANALYSIS_LOG_PREFIX)]
+    assert len(sampled) == 2, sampled
+    assert sampled[0].startswith("swil_agent.analysis.behavior_snapshot")
+    assert sampled[1].startswith("swil_agent.analysis.rule_check")
+    assert DIR_NAME in sampled[0] and DIR_NAME in sampled[1]
+
+    first_dream_record = next(
+        index for index, line in enumerate(graph.log) if line.startswith("swil_agent.dream")
+    )
+    assert graph.log.index(sampled[1]) < first_dream_record
+    _assert_parity(graph, direct, scenario)
 
 
 def test_the_dream_gate_is_grants_dream_on_both_paths(

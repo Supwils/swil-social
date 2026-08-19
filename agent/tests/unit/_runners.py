@@ -410,6 +410,8 @@ class FakeResources:
         update_profile_raises: ApiError | None = None,
         post_id: str | None = None,
         snapshot_raises: ApiError | WriteNotVerifiedError | None = None,
+        behavior_snapshot_raises: ApiError | WriteNotVerifiedError | None = None,
+        population_metric_raises: ApiError | WriteNotVerifiedError | None = None,
         lab_event_raises: Exception | None = None,
         order: list[str] | None = None,
     ) -> None:
@@ -417,6 +419,8 @@ class FakeResources:
         self._comment_returns_no_id = comment_returns_no_id
         self._post_raises = post_raises
         self._snapshot_raises = snapshot_raises
+        self._behavior_snapshot_raises = behavior_snapshot_raises
+        self._population_metric_raises = population_metric_raises
         self._lab_event_raises = lab_event_raises
         self._order = order
         self._like_raises = like_raises
@@ -461,11 +465,26 @@ class FakeResources:
         self.profile_patches: list[dict[str, Any]] = []
         self.marked_read: list[list[str] | None] = []
 
+        # analysis/ surface (Plan 4). `user_post_items` seeds what
+        # `user_posts` returns; `user_posts_calls` records (username, limit)
+        # so a test can pin WHICH account was sampled and with what window --
+        # the folder name and the `Username` bullet differ on this roster.
+        self.user_post_items: list[dict[str, Any]] = []
+        self.user_posts_calls: list[tuple[str, int]] = []
+        self.behavior_snapshots: list[tuple[str, dict[str, Any]]] = []
+        self.population_metric_data: dict[str, Any] = {
+            "capturedAt": "2026-08-19T00:00:00.000Z",
+            "personaCohesion": 0.71,
+            "behaviorCohesion": 0.63,
+            "n": 23,
+        }
+
     def fail(self, name: str) -> None:
         """Make the named read call raise `ApiError`. `name` is one of
         `"feed_global_recommended"`, `"feed_global_latest"`,
-        `"notifications"`, `"contacts"`, `"conversations"`, `"get_boards"`
-        — matching `test_act_context.py`'s local fake, plus `get_boards`."""
+        `"notifications"`, `"contacts"`, `"conversations"`, `"get_boards"`,
+        `"user_posts"` — matching `test_act_context.py`'s local fake, plus
+        `get_boards` and `analysis/`'s one read."""
         self._fail.add(name)
 
     def get_boards(self) -> dict[str, str]:
@@ -604,6 +623,35 @@ class FakeResources:
         if self._snapshot_raises is not None:
             raise self._snapshot_raises
         return "snap-1"
+
+    # ── analysis/ surface (Plan 4) ────────────────────────────────────────
+    #
+    # `user_posts` is a READ and therefore stays out of `self.calls`, like
+    # every other read above. `create_behavior_snapshot` is a WRITE to a
+    # DIFFERENT endpoint from `create_snapshot` -- the behavior half of the
+    # /lab fidelity pair -- and records into its own list so a test can tell
+    # a personality snapshot from a behaviour one without inspecting bodies.
+
+    def user_posts(self, username: str, limit: int = 12) -> list[dict[str, Any]]:
+        self.user_posts_calls.append((username, limit))
+        if "user_posts" in self._fail:
+            raise ApiError(500, "boom", None)
+        return list(self.user_post_items)
+
+    def create_behavior_snapshot(
+        self, username: str, payload: dict[str, Any]
+    ) -> tuple[str, float | None]:
+        self.calls.append("create_behavior_snapshot")
+        self.behavior_snapshots.append((username, payload))
+        if self._behavior_snapshot_raises is not None:
+            raise self._behavior_snapshot_raises
+        return "behavior-1", 0.77
+
+    def record_population_metric(self) -> dict[str, Any]:
+        self.calls.append("record_population_metric")
+        if self._population_metric_raises is not None:
+            raise self._population_metric_raises
+        return dict(self.population_metric_data)
 
 
 # ── FakeState (dream/candidate.py, task 10) ─────────────────────────────────

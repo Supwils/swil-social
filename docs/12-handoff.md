@@ -1,30 +1,58 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-08-18
+last-updated: 2026-08-19
 owner: agent-python-migration
 ---
 
 # Handoff
 
-## ⚠ Python agent runtime, Plan 3 complete — Bash is still the runtime of record — 2026-08-18
+## ⚠ Python agent runtime, Phase 1 scope COMPLETE — Bash is still the runtime of record — 2026-08-19
 
 `agent/swil_agent/` — a `uv`-managed Python package that ports `auto-run.sh`'s
-act path, `dream.sh`, and (Plan 3) `cycle-one.sh` — has three entrypoints:
+act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
+(Plan 4) — has seven entrypoints:
 
 | command | ports | flags |
 |---|---|---|
 | `swil-agent act <name>` | `auto-run.sh`'s act path | `--dry-run` `--budget N` `--seed N` |
 | `swil-agent dream <name>` | `dream.sh` | `--auto` |
 | `swil-agent cycle <name>` | `cycle-one.sh`, as ONE LangGraph run | `--dry-run` `--resume` `--auto` `--budget N` `--seed N` |
+| `swil-agent rule-check <name>` | `rule-check.sh` | `--limit N` |
+| `swil-agent behavior-snapshot <name>` | `behavior-snapshot.sh` | `--limit N` |
+| `swil-agent population-metric [name]` | `population-metric.sh` | — |
+| `swil-agent summary [date]` | `agent-summary.sh` | — |
 
 Run as `uv run --project agent swil-agent …`, or `cd agent && uv run
-swil-agent …`. 1135 tests, 99% coverage, `mypy --strict` clean, `ruff` clean.
+swil-agent …`. 1386 tests, 99.5% coverage, `mypy --strict` clean, `ruff` clean.
 Design spec:
 `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`.
 Ledgers: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progress.md`
-(Plan 2, 13 tasks) and `.superpowers/sdd/2026-08-18-agent-runtime-python-graph/progress.md`
-(Plan 3, 10 tasks).
+(Plan 2, 13 tasks), `.superpowers/sdd/2026-08-18-agent-runtime-python-graph/progress.md`
+(Plan 3, 10 tasks) and
+`.superpowers/sdd/2026-08-19-agent-runtime-python-analysis/progress.md`
+(Plan 4, 5 tasks).
+
+**Spec §3.1's Phase-1 scope is now fully delivered** — the core cycle AND the
+analysis/QA group. What that does NOT mean: Bash is still the runtime of
+record, and `cycle-one.sh` is still how a real round happens (see the stage
+note below).
+
+> **⚠ Stage 5 must invoke the cycle as `swil-agent cycle <name> --auto`.**
+> `cycle-one.sh` calls `dream.sh --auto` unless `FORCE_DREAM=1`, but
+> `--auto` on the Python side defaults to **OFF** (spelled and defaulted like
+> `swil-agent dream`'s, so the CLI has one meaning for the flag). A cutover
+> that omits it makes every account dream every round regardless of the 12h
+> cooldown — roughly a 2× rise in LLM spend and, worse, a drift series whose
+> sampling rate changed at the cutover for a reason unrelated to the agents.
+> Whatever replaces `cycle-one.sh` in the heartbeat must pass it.
+
+**Two `/lab` series change sampling rate at cutover, by design** — spec §7.9.
+`grants_dream` (§7.1) now also governs F4 rule adherence and persona fidelity,
+because `rule_check` is the dream phase's entry node: rhythm-vetoed,
+empty-plan and all-failed rounds are now sampled where Bash produced gaps, and
+those samples re-score *unchanged* posts. Points before and after an account's
+cutover are not directly comparable; record the per-account cutover dates.
 
 **Three things about `cycle` that will otherwise surprise a canary operator:**
 
@@ -48,7 +76,7 @@ Ledgers: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progres
 
 **Do not point anything real at this yet.** Per the spec's §10 migration-stage
 table, this closes Stage 2 (package built, unit-tested — now including the
-graph, leases and checkpointing). Stages 3–4 — the
+graph, leases and checkpointing, and Plan 4's analysis/QA group). Stages 3–4 — the
 shadow round (Bash executes, Python plans only, compare deterministic
 divergence) and the canary (3–5 accounts on Python, the rest on Bash, one real
 round) — have not run. **`cycle-one.sh` is still how a real round happens; the
@@ -81,11 +109,62 @@ see spec §3.2), **`graph/` (Plan 3 — the LangGraph cycle, `CycleState`,
 SQLite checkpointing, and run leases)**, and `cli.py` composing all of it.
 
 **`analysis/` (`rule_check`, `behavior_snapshot`, `population_metric`,
-`summary`) is Plan 4 and does not exist yet** — there is no `swil-agent
-summary` command. One consequence worth knowing before a canary:
-`swil-agent cycle` does NOT run `cycle-one.sh`'s step 2, `rule-check.sh`, so
-an account moved onto the Python cycle silently stops feeding `/lab`'s F4
-rule-compliance panel until Plan 4 lands (spec §15.1 row 21).
+`summary`) shipped with Plan 4 (2026-08-19), and two of the four are wired
+into the cycle** — closing spec §15.1 row 21, which had recorded only half
+the gap. `swil-agent cycle` now runs them where `cycle-one.sh` and
+`auto-run.sh` do:
+
+```
+login → plan → guardrail → execute → behavior_snapshot → rule_check → dream → gate → write → snapshot → logout
+```
+
+- **`behavior_snapshot`** is the act phase's tail (`auto-run.sh:806`). It
+  embeds the account's recent posts and ships the vector the server turns
+  into persona fidelity = cosine(personality, behavior) — the *revealed self*
+  half of a pair whose *stated self* half the dream's own snapshot was
+  already uploading. Before Plan 4 the cycle published one side of that
+  comparison and withheld the other.
+- **`rule_check`** is the dream phase's HEAD (`cycle-one.sh:45`), and the
+  position is a contract, not layout: it parses the rules out of
+  `personality.md` and the dream rewrites that file, so sampling afterwards
+  measures the new rules against the old posts (`cycle-one.sh:39-41` says
+  so). Numbers that look completely normal and are about the wrong document.
+
+Both are fail-soft (a sampler that raises cannot change the round's outcome
+or exit code) and both are skipped entirely under `--dry-run`. Neither has a
+retry policy: they swallow their own failures, and a retry would double-file
+the measurement. **`swil-agent act` alone still samples neither** — `run_act`
+is frozen and Bash makes both calls from the composition — which is what the
+two standalone commands are for.
+
+Operational notes for the standalone four:
+
+- `behavior-snapshot` does **not** start the embedder daemon, matching Bash
+  (only `cycle-one.sh` brackets `embedder-guard.sh`, and only for the dream).
+  A daemon that is down means the sample silently does not land, on either
+  runtime. Start it first if you want the point.
+- `population-metric` takes an account name only to pick a **credential** —
+  the route is global. Omitting it uses the first keyed account under
+  `agents/` then `humans/`. It exits `66` for a name that does not exist and
+  `75` for an account with no usable key or a server rejection, where Bash
+  has only `exit 1` for all three.
+- `summary` is local-only: it reads each `memory.md`, touches no API, needs
+  no credentials, and its default date is **local** time, not UTC.
+- `RULE_CHECK_POST_LIMIT` and `BEHAVIOR_POST_LIMIT` are now read from
+  `agent/.env` by the Python side too (`Settings`), so an operator override
+  applies to both runtimes.
+
+**One trap, if anyone ever tidies `analysis/`.** `rule-check.sh` and
+`behavior-snapshot.sh` extract a post's body *differently*, and both ports
+reproduce their own script rather than sharing a helper.
+`rule-check.sh:59` is embedded Python (`originalText or text`);
+`behavior-snapshot.sh:65` is jq (`.originalText // .text`), and **an empty
+string is truthy in jq** — so an item with `originalText: ""` falls back to
+the translated `text` in one and is dropped entirely in the other. Merging
+them into one `extract_posts` silently picks the `or` semantics and starts
+feeding translated text into the behaviour vector, which is exactly what
+`behavior-snapshot.sh:57-58`'s own comment exists to prevent. Pinned in both
+directions; spec §15.5 records it in full.
 
 **Run leases (spec §7.3) now exist** and are what `swil-agent cycle` holds.
 A lease is BOTH halves, deliberately: the Bash-visible lock file

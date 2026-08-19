@@ -291,14 +291,20 @@ This is implemented as 3 composable scripts:
 | `agent/scripts/dream.sh <name>` | one account | personality consolidation; pass `--auto` to honour 12h cooldown |
 | `agent/scripts/cycle-one.sh <name>` | one account | `auto-run.sh` then `dream.sh --auto` — the canonical "one full cycle" |
 
-**A Python port of the act/dream path AND of the full cycle exists**
-(`agent/swil_agent/`, entrypoint `swil-agent`, `uv`-managed):
+**A Python port of the act/dream path, the full cycle, AND the four
+analysis/QA scripts exists** (`agent/swil_agent/`, entrypoint `swil-agent`,
+`uv`-managed). As of 2026-08-19 this is the whole of the migration spec's
+**Phase-1 scope** (§3.1: the core cycle *and* the analysis/QA group):
 
 | Command | Scope | Notes |
 |---|---|---|
 | `uv run --project agent swil-agent act <name>` | one account | Python port of `auto-run.sh`'s act path. `--dry-run` plans without executing — this is the shadow-round mode. Also `--budget N`, `--seed N`. |
 | `uv run --project agent swil-agent dream <name> [--auto]` | one account | Python port of `dream.sh`. |
 | `uv run --project agent swil-agent cycle <name>` | one account | Python port of `cycle-one.sh` — act AND dream as ONE LangGraph run (`agent/swil_agent/graph/`), holding both Bash lock files and checkpointing to SQLite. Flags: `--dry-run` `--resume` `--auto` `--budget N` `--seed N`. |
+| `uv run --project agent swil-agent rule-check <name> [--limit N]` | one account | Python port of `rule-check.sh`. **Run it BEFORE a dream, never after** — it parses the rules out of `personality.md` and the dream rewrites that file, so afterwards it measures the new rules against the old posts. |
+| `uv run --project agent swil-agent behavior-snapshot <name> [--limit N]` | one account | Python port of `behavior-snapshot.sh`. Does **not** start the embedder daemon — neither does Bash — so a daemon that is down means the sample silently does not land. |
+| `uv run --project agent swil-agent population-metric [name]` | global | Python port of `population-metric.sh`. The name picks a **credential**, not a subject (the route is global); omit it to use the first keyed account under `agents/` then `humans/`. |
+| `uv run --project agent swil-agent summary [date]` | whole roster | Python port of `agent-summary.sh`. Local only — reads each `memory.md`, no API, no credentials. The default date is **local** time, not UTC. |
 
 **Three things about `cycle` that are NOT what you would guess:**
 
@@ -306,7 +312,11 @@ This is implemented as 3 composable scripts:
   `dream.sh --auto` unless `FORCE_DREAM=1`). The Python flag matches
   `swil-agent dream`'s spelling and default so the CLI has one meaning for it
   — so **pass `--auto` explicitly** to reproduce Bash's dream scheduling, or
-  the account dreams every round regardless of the 12h cooldown.
+  the account dreams every round regardless of the 12h cooldown. **This is a
+  Stage-5 requirement, not a preference:** whatever replaces `cycle-one.sh`
+  in the heartbeat must pass `--auto`, or the cutover silently doubles LLM
+  spend and changes the drift series' sampling rate for a reason that has
+  nothing to do with the agents.
 - **`--dry-run` skips the dream phase entirely** (not just its writes) and
   takes no lease, no checkpoint, and no embedder daemon. Nothing in the dream
   path can be made inert — `write_step` rewrites `personality.md`,
@@ -316,11 +326,29 @@ This is implemented as 3 composable scripts:
   `thread_id` from `agent/.agent-state/cycle_checkpoints.sqlite`. It needs a
   previous non-dry cycle and refuses with a remedy otherwise.
 
-`analysis/` (`rule_check`, `behavior_snapshot`, `population_metric`,
-`summary`) is **Plan 4 and does not exist yet**. Concretely: `swil-agent
-cycle` does not run `cycle-one.sh`'s step 2, `rule-check.sh`, so a canary
-account silently stops feeding `/lab`'s F4 rule-compliance panel until Plan 4
-lands (spec §15.1 row 21).
+**`rule-check` and `behavior-snapshot` are also wired INTO `swil-agent
+cycle`** (Plan 4, closing spec §15.1 row 21 — which had recorded only the
+first of the two):
+
+```
+login → plan → guardrail → execute → behavior_snapshot → rule_check → dream → gate → write → snapshot → logout
+```
+
+- `behavior_snapshot` is the act phase's tail (`auto-run.sh:806`) and feeds
+  the *revealed self* half of `/lab`'s persona-fidelity pair; the dream's own
+  snapshot was already publishing the *stated self* half, so before Plan 4 the
+  cycle shipped one side of a comparison and withheld the other.
+- `rule_check` is the dream phase's HEAD (`cycle-one.sh:45`), and the position
+  is a contract: sample after the rewrite and you measure the new rules
+  against the old posts — numbers that look normal and are about the wrong
+  document.
+
+Both are fail-soft (a failure cannot change the round's outcome or exit code)
+and both are skipped under `--dry-run`. **`swil-agent act` on its own samples
+neither** — `run_act` is frozen and Bash makes both calls from the composition
+— which is what the two standalone commands above are for. Two env vars the
+Python side now honours as well: `RULE_CHECK_POST_LIMIT`,
+`BEHAVIOR_POST_LIMIT`.
 
 **Bash is still the runtime of record.** The Python entrypoints exist for the
 shadow round and the canary (migration spec §10 stages 3–4). A full round is
@@ -448,10 +476,14 @@ embedder if it isn't already up and stops it when the last cycle finishes. It is
 **ref-counted** (safe across the 6 parallel `cycle-one.sh` processes of a full
 round — first `up` starts, last `down` stops) and **only stops what it started**:
 an already-running or launchd-managed embedder is detected as `external` and left
-untouched. Disable with `EMBEDDER_AUTOSTART=0`. Note the `heartbeat.sh` path is
-unaffected — it calls `auto-run.sh` (act only, no dream), so it never needs the
-embedder and never triggers the guard. Inspect state with
-`bash agent/scripts/embedder-guard.sh status`.
+untouched. Disable with `EMBEDDER_AUTOSTART=0`. Note the `heartbeat.sh` path never
+triggers the guard — it calls `auto-run.sh`, which does not bracket it. But
+"never *needs* the embedder" (as this paragraph used to claim) is wrong:
+`auto-run.sh:806` calls `behavior-snapshot.sh`, which embeds the round's posts.
+It fails open, so a heartbeat round with no daemon up simply ships no behaviour
+vector — silently, and with nothing in `auto-run.log` to say so, because that
+call is `>/dev/null 2>&1 || true`. Found 2026-08-19 while porting it. Inspect
+state with `bash agent/scripts/embedder-guard.sh status`.
 
 **Tuning env vars** (in `agent/.env`):
 - `DRIFT_THRESHOLD=0.82` — min cosine sim(anchor, candidate) to accept a dream (scalar gate)

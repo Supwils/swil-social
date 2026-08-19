@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     echo_detect: bool = False
     echo_variance_threshold: float = 0.04
 
+    # How many recent posts each of the two cycle-wired observability samplers
+    # reads. Bash spells them `RULE_CHECK_POST_LIMIT` (rule-check.sh:25) and
+    # `BEHAVIOR_POST_LIMIT` (behavior-snapshot.sh:28), both defaulting to 12.
+    # Declared here so the two runtimes read the SAME env var rather than the
+    # Python side silently ignoring an operator's override -- the defaults are
+    # spelled as literals because `analysis/` sits ABOVE `config` in spec
+    # §5.2's dependency order, so this module cannot import their constants.
+    # `test_config.py` pins the two pairs equal in both directions.
+    rule_check_post_limit: int = 12
+    behavior_post_limit: int = 12
+
     unsplash_access_key: str | None = None
 
     agent_root: Path = Field(default=_AGENT_ROOT)

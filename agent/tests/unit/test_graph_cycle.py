@@ -49,6 +49,7 @@ from swil_agent.config import Settings
 from swil_agent.graph import nodes as nodes_module
 from swil_agent.graph.checkpoint import open_checkpointer
 from swil_agent.graph.cycle import (
+    BEHAVIOR_SNAPSHOT,
     DREAM,
     EXECUTE,
     GATE,
@@ -56,6 +57,7 @@ from swil_agent.graph.cycle import (
     LOGIN,
     LOGOUT,
     PLAN,
+    RULE_CHECK,
     SNAPSHOT,
     WRITE,
     CycleConfig,
@@ -299,9 +301,10 @@ def test_no_node_declares_a_timeout() -> None:
 
 
 def test_the_topology_matches_the_spec(tmp_path: Path) -> None:
-    """§5.4's nine nodes and the edges between them, read back off the
-    compiled graph. A route deleted or re-pointed shows up here before any
-    behavioural test has to reproduce the round that would have taken it."""
+    """§5.4's nine nodes plus Plan 4's two, and the edges between them, read
+    back off the compiled graph. A route deleted or re-pointed shows up here
+    before any behavioural test has to reproduce the round that would have
+    taken it."""
     drawn = build_cycle().compile().get_graph()
     assert {node.id for node in drawn.nodes.values()} == {
         "__start__",
@@ -310,6 +313,8 @@ def test_the_topology_matches_the_spec(tmp_path: Path) -> None:
         PLAN,
         GUARDRAIL,
         EXECUTE,
+        BEHAVIOR_SNAPSHOT,
+        RULE_CHECK,
         DREAM,
         GATE,
         WRITE,
@@ -324,9 +329,11 @@ def test_the_topology_matches_the_spec(tmp_path: Path) -> None:
         (PLAN, GUARDRAIL),
         (PLAN, LOGOUT),
         (GUARDRAIL, EXECUTE),
-        (GUARDRAIL, DREAM),
-        (EXECUTE, DREAM),
-        (EXECUTE, LOGIN),
+        (GUARDRAIL, RULE_CHECK),
+        (EXECUTE, BEHAVIOR_SNAPSHOT),
+        (BEHAVIOR_SNAPSHOT, RULE_CHECK),
+        (BEHAVIOR_SNAPSHOT, LOGIN),
+        (RULE_CHECK, DREAM),
         (DREAM, GATE),
         (DREAM, LOGOUT),
         (GATE, WRITE),
@@ -336,6 +343,28 @@ def test_the_topology_matches_the_spec(tmp_path: Path) -> None:
         (LOGOUT, "__end__"),
     ):
         assert (source, target) in edges, f"missing edge {source} -> {target}"
+
+
+def test_the_act_phase_cannot_reach_the_dream_without_passing_rule_check(
+    tmp_path: Path,
+) -> None:
+    """The ordering constraint of `cycle-one.sh:39-45`, as a TOPOLOGICAL fact.
+
+    Every edge into `dream` is enumerated: exactly two exist, `rule_check ->
+    dream` (the act phase's only way in) and `gate -> dream` (loop 2, whose
+    whole point is that a RETRIED dream must not re-sample the same posts
+    against the same rules). So no act-phase router can be re-pointed at
+    `dream` without this failing -- which is the mutation "swap rule_check to
+    after the dream" in its cheapest form, one edge.
+    """
+    drawn = build_cycle().compile().get_graph()
+    into_dream = {edge.source for edge in drawn.edges if edge.target == DREAM}
+    assert into_dream == {RULE_CHECK, GATE}
+
+    # ...and `rule_check` is entered ONLY from the act phase, never from the
+    # dream phase -- the same claim from the other side.
+    into_rule_check = {edge.source for edge in drawn.edges if edge.target == RULE_CHECK}
+    assert into_rule_check == {GUARDRAIL, BEHAVIOR_SNAPSHOT}
 
 
 def test_the_retry_policies_match_the_corrected_node_table() -> None:
@@ -350,6 +379,11 @@ def test_the_retry_policies_match_the_corrected_node_table() -> None:
     (-> `BACKEND_UNAVAILABLE`), and the one exception that does escape it is
     permanent. A second attempt would only pay for a second LLM call before
     failing identically -- see `test_the_plan_node_is_attempted_exactly_once`.
+
+    `behavior_snapshot` and `rule_check` carry none for a third reason again:
+    both swallow every `Exception` internally (Bash's `|| true`), so nothing
+    can reach the boundary for a policy to act on -- and a retry that DID
+    fire would double-file the measurement it exists to record once.
     """
     nodes = build_cycle().compile().nodes
     attempts = {
@@ -364,7 +398,7 @@ def test_the_retry_policies_match_the_corrected_node_table() -> None:
         policies = nodes[name].retry_policy
         assert policies is not None, f"{name} has no retry policy"
         assert [policy.max_attempts for policy in policies] == [expected]
-    for name in (GUARDRAIL, WRITE, LOGOUT):
+    for name in (GUARDRAIL, BEHAVIOR_SNAPSHOT, RULE_CHECK, WRITE, LOGOUT):
         assert nodes[name].retry_policy is None, f"{name} must carry no retry policy"
 
 
