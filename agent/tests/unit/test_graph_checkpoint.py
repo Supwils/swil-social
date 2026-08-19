@@ -11,17 +11,18 @@ registrations, removed, corrupts a distinct field this suite catches.
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 
 import pytest
-from langgraph.checkpoint.serde import _msgpack as lg_msgpack
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from swil_agent.graph.checkpoint import (
     CHECKPOINT_DB_NAME,
     REGISTERED_TYPES,
+    latest_round_id,
     open_checkpointer,
 )
 from swil_agent.graph.state import CycleState
@@ -29,10 +30,14 @@ from swil_agent.models import (
     ActContext,
     Action,
     ActionResult,
+    ActOutcome,
     AspectSims,
+    AspectVectors,
     DreamVerdict,
     Persona,
     Plan,
+    RhythmDecision,
+    RhythmPolicy,
     VetoedAction,
 )
 
@@ -42,11 +47,14 @@ def _persona(tmp_path: Path) -> Persona:
 
 
 def _full_state(tmp_path: Path) -> CycleState:
-    """One value for every field that is itself directly registered -- i.e.
-    every reachable model except `Action` (see the module docstring above).
-    A mutation dropping any ONE of these seven registrations corrupts a
-    distinct field, and the per-field loop in the strict test below names
-    which.
+    """One value for every field that is itself directly registered.
+
+    `Action` joined that list in Task 7 (`actions`, the post-guardrail
+    survivors the `guardrail` node hands the `execute` node) -- until then it
+    was only ever reachable nested inside another model, which is the wrinkle
+    the module docstring above records. A mutation dropping any ONE of these
+    registrations corrupts a distinct field, and the per-field loop in the
+    strict test below names which.
     """
     aspect_sims = AspectSims(values=0.7, style=0.8, topic=0.75)
     return {
@@ -56,10 +64,15 @@ def _full_state(tmp_path: Path) -> CycleState:
         "thread_id": "builtin:zenith:round-1",
         "context": ActContext(context_now="ctx", contacts=["a", "b"]),
         "plan": Plan(actions=[Action(kind="post", text="hello")]),
+        "rhythm": RhythmDecision(
+            policy=RhythmPolicy.NO_POST, prefer_non_post="yes", guidance="今天少发帖"
+        ),
+        "actions": [Action(kind="like", text=None, post_id="a" * 24)],
         "vetoed": [VetoedAction(action=Action(kind="comment", text="no"), reason="rhythm")],
         "results": [
             ActionResult(action=Action(kind="post", text="hi"), landed=True, resource_id="123")
         ],
+        "outcome": ActOutcome.LANDED_ALL,
         "round_index": 1,
         "aspect_sims": aspect_sims,
         "verdict": DreamVerdict(accepted=True, reason="ok", sims=aspect_sims),
@@ -85,30 +98,60 @@ def test_a_state_carrying_a_persona_round_trips(tmp_path: Path) -> None:
     assert snapshot.values["persona"] == persona
 
 
-def test_registration_is_strict_enough_to_survive_strict_msgpack(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The deprecation warning says a future version will refuse unregistered
-    types. Run the round trip under `LANGGRAPH_STRICT_MSGPACK=true` so this
-    suite fails NOW rather than on the upgrade that turns it on.
+def test_the_allowlist_is_explicit_and_closed(tmp_path: Path) -> None:
+    """`open_checkpointer`'s `allowed_msgpack_modules` must be **droppable
+    only by failing this test**, and the previous two attempts to say so both
+    could not.
 
-    `setenv` alone is not load-bearing here, and that is worth recording
-    rather than silently "fixing": `langgraph.checkpoint.serde._msgpack.
-    STRICT_MSGPACK_ENABLED` is read once at import time, long before this
-    test's `monkeypatch.setenv` runs, and `open_checkpointer` never consults
-    it anyway -- it always passes an explicit `allowed_msgpack_modules`,
-    bypassing the sentinel-default branch that constant governs entirely.
-    Verified directly: a deliberately naive pre-registration implementation
-    (a fresh `JsonPlusSerializer()` with no allowlist) still round-trips
-    happily, warning but not blocking, under `setenv` alone; the same naive
-    implementation genuinely blocks the unregistered type, and fails this
-    assertion, once `STRICT_MSGPACK_ENABLED` is patched directly via
-    `monkeypatch.setattr`. Both are set: `setattr` is what makes this test
-    able to fail for the reason it names, `setenv` is kept for fidelity with
-    how an operator would actually flip this in production.
+    History, because the shape matters more than the fix: this assertion was
+    first written as `monkeypatch.setenv("LANGGRAPH_STRICT_MSGPACK", "true")`,
+    which is inert -- the constant is read once at import. It was then
+    "fixed" with `monkeypatch.setattr(lg_msgpack, "STRICT_MSGPACK_ENABLED",
+    True)`, which is ALSO insufficient, for the same structural reason one
+    level up: `BaseCheckpointSaver.serde` is an import-time CLASS ATTRIBUTE
+    (`serde: SerializerProtocol = JsonPlusSerializer()`), so a naive
+    `SqliteSaver(conn)` gets a serializer constructed long before any
+    `setattr` lands, carrying the permissive `allowed_msgpack_modules=True`.
+    Dropping our explicit allowlist entirely left the suite green.
+
+    So this test asserts nothing about WHEN a constant is read. It asserts the
+    OBSERVABLE consequence of the allowlist being explicit and closed: a type
+    that is NOT on it is refused. Measured against langgraph 1.2.11:
+
+      * explicit allowlist -> an unregistered `AspectVectors` comes back as a
+        plain `dict` (logged: "Blocked deserialization ... not in
+        allowed_msgpack_modules");
+      * the library default -> the same value comes back as a real
+        `AspectVectors` (logged: "Deserializing unregistered type ... will be
+        blocked in a future version").
+
+    `AspectVectors` is the right probe precisely because it is NOT reachable
+    from `CycleState` -- `test_the_derived_registration_covers_every_model_
+    reachable_from_cycle_state` is what keeps that true, so the two tests
+    fail together rather than drifting apart.
     """
-    monkeypatch.setenv("LANGGRAPH_STRICT_MSGPACK", "true")
-    monkeypatch.setattr(lg_msgpack, "STRICT_MSGPACK_ENABLED", True)
+    assert AspectVectors not in REGISTERED_TYPES, (
+        "AspectVectors became reachable from CycleState; pick another "
+        "unregistered probe, or this test proves nothing"
+    )
+    saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
+
+    payload = {"probe": AspectVectors(values=[1.0], style=[2.0], topic=[3.0])}
+    restored = saver.serde.loads_typed(saver.serde.dumps_typed(payload))
+
+    assert type(restored["probe"]) is dict, (
+        "the serializer accepted a type outside the allowlist -- "
+        "`allowed_msgpack_modules` is not being passed explicitly"
+    )
+
+
+def test_every_registered_type_survives_the_round_trip_as_itself(tmp_path: Path) -> None:
+    """The positive half, through the SAME serializer instance the saver
+    actually holds. A checkpoint that comes back with the right values in the
+    wrong types is the failure mode §15.1 row 16 records: `ActOutcome` is a
+    `StrEnum`, so every `==` still held while the value was already a plain
+    `str`.
+    """
     saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
     graph = _one_node_graph(saver)
     state = _full_state(tmp_path)
@@ -117,6 +160,7 @@ def test_registration_is_strict_enough_to_survive_strict_msgpack(
     snapshot = graph.get_state(config)  # type: ignore[attr-defined]
     for key, expected in state.items():
         assert snapshot.values[key] == expected, key
+        assert type(snapshot.values[key]) is type(expected), key
 
 
 def test_no_deprecation_warning_is_emitted(
@@ -139,7 +183,7 @@ def test_no_deprecation_warning_is_emitted(
     assert not any("unregistered type" in record.message for record in caplog.records)
 
 
-def _independent_walk(hints: object) -> set[type[BaseModel]]:
+def _independent_walk(hints: object) -> set[type[BaseModel] | type[Enum]]:
     """A second, hand-written traversal of `CycleState`'s resolved type
     hints -- deliberately NOT a call to `checkpoint._discover_registered_
     types` -- so a bug in that function's own recursion (e.g. unwrapping only
@@ -147,7 +191,7 @@ def _independent_walk(hints: object) -> set[type[BaseModel]]:
     fields, which is exactly what would silently drop `Action`) shows up as
     a mismatch here instead of trivially agreeing with itself.
     """
-    found: set[type[BaseModel]] = set()
+    found: set[type[BaseModel] | type[Enum]] = set()
     stack = list(hints)  # type: ignore[arg-type]
     while stack:
         hint = stack.pop()
@@ -155,9 +199,13 @@ def _independent_walk(hints: object) -> set[type[BaseModel]]:
         if origin is not None:
             stack.extend(get_args(hint))
             continue
-        if isinstance(hint, type) and issubclass(hint, BaseModel) and hint not in found:
+        if not isinstance(hint, type) or hint in found:
+            continue
+        if issubclass(hint, BaseModel):
             found.add(hint)
             stack.extend(get_type_hints(hint).values())
+        elif issubclass(hint, Enum):
+            found.add(hint)
     return found
 
 
@@ -172,5 +220,96 @@ def test_the_derived_registration_covers_every_model_reachable_from_cycle_state(
         ActionResult,
         AspectSims,
         DreamVerdict,
+        RhythmDecision,
+        ActOutcome,
+        RhythmPolicy,
     }
     assert expected == REGISTERED_TYPES
+
+
+def test_an_enum_field_survives_as_its_enum_and_not_as_a_lookalike_string(
+    tmp_path: Path,
+) -> None:
+    """`CycleState.outcome` is a bare `ActOutcome`, and an unregistered type
+    is BLOCKED on load when an explicit allowlist is passed -- it comes back
+    as the plain `str` the enum was encoded from.
+
+    `ActOutcome` is a `StrEnum`, so `snapshot.values["outcome"] ==
+    ActOutcome.LANDED_ALL` holds either way and the per-field loop in
+    `test_registration_is_strict_enough_to_survive_strict_msgpack` cannot see
+    the degradation. Only an identity/type assertion can. Mutation this
+    kills: dropping the `Enum` arm from `_discover_registered_types`, which
+    leaves every model field intact and this one field quietly string-shaped
+    -- the shape a non-`StrEnum` field would arrive in as an outright bug.
+    """
+    saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
+    graph = _one_node_graph(saver)
+    config = {"configurable": {"thread_id": "builtin:zenith:round-1"}}
+    graph.invoke(  # type: ignore[attr-defined]
+        {"agent": "zenith", "outcome": ActOutcome.LANDED_ALL}, config
+    )
+    snapshot = graph.get_state(config)  # type: ignore[attr-defined]
+
+    assert isinstance(snapshot.values["outcome"], ActOutcome)
+    assert type(snapshot.values["outcome"]) is not str
+
+
+# ── latest_round_id: what `swil-agent cycle --resume` continues ────────────
+
+
+def _checkpoint(saver: object, thread: str) -> None:
+    graph = _one_node_graph(saver)
+    graph.invoke({"agent": "zenith"}, {"configurable": {"thread_id": thread}})  # type: ignore[attr-defined]
+
+
+def test_the_latest_round_is_the_most_recent_one_not_the_first(tmp_path: Path) -> None:
+    """`--resume` continues the LAST cycle, and "last" is decided by string
+    order over `%Y%m%dT%H%M%S` -- a fixed-width zero-padded stamp whose
+    lexicographic order IS its chronological order, so `max()` does not depend
+    on the saver's own `list()` ordering.
+
+    Three rounds, inserted OUT of chronological order so a version that
+    returned "the first row the saver yielded" is visible too. Resuming the
+    oldest round would re-run a cycle that already finished -- re-posting
+    whatever it landed -- while the interrupted one stays interrupted.
+    """
+    saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
+    for round_id in ("20260817T090000", "20260818T140000", "20260817T235959"):
+        _checkpoint(saver, f"builtin:zenith:{round_id}")
+
+    assert latest_round_id(saver, "builtin", "zenith") == "20260818T140000"
+
+
+def test_the_latest_round_is_scoped_to_one_account_and_one_tenant(tmp_path: Path) -> None:
+    """The thread id is `tenant:agent:round_id` and the database is SHARED by
+    every account, so a lookup that ignored either component would resume one
+    account's cycle under another's name -- with that account's persona
+    already in the checkpoint, which is how a round posts as the wrong
+    agent."""
+    saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
+    _checkpoint(saver, "builtin:zenith:20260817T090000")
+    _checkpoint(saver, "builtin:someone_else:20260818T140000")
+    _checkpoint(saver, "acme:zenith:20260819T140000")
+
+    assert latest_round_id(saver, "builtin", "zenith") == "20260817T090000"
+    assert latest_round_id(saver, "acme", "zenith") == "20260819T140000"
+    assert latest_round_id(saver, "builtin", "nobody") is None
+
+
+def test_a_foreign_thread_id_cannot_break_the_lookup(tmp_path: Path) -> None:
+    """`thread_id()` refuses to BUILD an id that does not split into exactly
+    three components, so any such row was written by something else. A shared
+    database must not let a foreign row turn `--resume` into a crash."""
+    saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
+    _checkpoint(saver, "not-a-cycle-thread")
+    _checkpoint(saver, "builtin:zenith:20260817T090000")
+
+    assert latest_round_id(saver, "builtin", "zenith") == "20260817T090000"
+
+
+def test_an_empty_database_has_no_round_to_resume(tmp_path: Path) -> None:
+    """`None`, not an exception -- the CLI turns it into a SKIP naming the
+    command that creates a checkpoint, where langgraph's own `EmptyInputError`
+    would read as a bug."""
+    saver = open_checkpointer(tmp_path / CHECKPOINT_DB_NAME)
+    assert latest_round_id(saver, "builtin", "zenith") is None

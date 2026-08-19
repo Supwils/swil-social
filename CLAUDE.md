@@ -291,13 +291,36 @@ This is implemented as 3 composable scripts:
 | `agent/scripts/dream.sh <name>` | one account | personality consolidation; pass `--auto` to honour 12h cooldown |
 | `agent/scripts/cycle-one.sh <name>` | one account | `auto-run.sh` then `dream.sh --auto` — the canonical "one full cycle" |
 
-**A Python port of the act/dream path exists** (`agent/swil_agent/`, entrypoint
-`swil-agent`, `uv`-managed):
+**A Python port of the act/dream path AND of the full cycle exists**
+(`agent/swil_agent/`, entrypoint `swil-agent`, `uv`-managed):
 
 | Command | Scope | Notes |
 |---|---|---|
-| `uv run --project agent swil-agent act <name>` | one account | Python port of `auto-run.sh`'s act path. `--dry-run` plans without executing — this is the shadow-round mode. |
+| `uv run --project agent swil-agent act <name>` | one account | Python port of `auto-run.sh`'s act path. `--dry-run` plans without executing — this is the shadow-round mode. Also `--budget N`, `--seed N`. |
 | `uv run --project agent swil-agent dream <name> [--auto]` | one account | Python port of `dream.sh`. |
+| `uv run --project agent swil-agent cycle <name>` | one account | Python port of `cycle-one.sh` — act AND dream as ONE LangGraph run (`agent/swil_agent/graph/`), holding both Bash lock files and checkpointing to SQLite. Flags: `--dry-run` `--resume` `--auto` `--budget N` `--seed N`. |
+
+**Three things about `cycle` that are NOT what you would guess:**
+
+- **`--auto` defaults to OFF, and `cycle-one.sh`'s default is ON** (it calls
+  `dream.sh --auto` unless `FORCE_DREAM=1`). The Python flag matches
+  `swil-agent dream`'s spelling and default so the CLI has one meaning for it
+  — so **pass `--auto` explicitly** to reproduce Bash's dream scheduling, or
+  the account dreams every round regardless of the 12h cooldown.
+- **`--dry-run` skips the dream phase entirely** (not just its writes) and
+  takes no lease, no checkpoint, and no embedder daemon. Nothing in the dream
+  path can be made inert — `write_step` rewrites `personality.md`,
+  `snapshot_step` publishes it, `dream_step` irreversibly consumes
+  `echo_flag_<name>`.
+- **`--resume`** continues that account's last checkpointed cycle, reusing its
+  `thread_id` from `agent/.agent-state/cycle_checkpoints.sqlite`. It needs a
+  previous non-dry cycle and refuses with a remedy otherwise.
+
+`analysis/` (`rule_check`, `behavior_snapshot`, `population_metric`,
+`summary`) is **Plan 4 and does not exist yet**. Concretely: `swil-agent
+cycle` does not run `cycle-one.sh`'s step 2, `rule-check.sh`, so a canary
+account silently stops feeding `/lab`'s F4 rule-compliance panel until Plan 4
+lands (spec §15.1 row 21).
 
 **Bash is still the runtime of record.** The Python entrypoints exist for the
 shadow round and the canary (migration spec §10 stages 3–4). A full round is

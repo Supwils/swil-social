@@ -47,8 +47,8 @@ new turns up. That second level is what finds `Action` -- it is not a
 (in the test module) pins the full closure so that regression cannot land
 quietly.
 
-One measured wrinkle, not obvious from the interface: `Action` never
-independently reaches the msgpack allowlist check at runtime. The
+One measured wrinkle, not obvious from the interface: as of Task 4, `Action`
+never independently reached the msgpack allowlist check at runtime. The
 serializer's pydantic-v2 branch calls `obj.model_dump()` before encoding,
 which flattens `Plan.actions` / `VetoedAction.action` / `ActionResult.action`
 into plain dicts BEFORE the ext-hook ever asks "is this type registered?" --
@@ -56,26 +56,50 @@ reconstruction of the nested `Action` happens through `Plan(**kwargs)`'s own
 pydantic validation, not a second allowlist check. Verified directly:
 round-tripping a `Plan` and a `VetoedAction` through a `JsonPlusSerializer`
 allowlisted for `Plan`/`VetoedAction` but explicitly NOT `Action` reconstructs
-both correctly. Registering `Action` anyway is still correct -- it costs
-nothing, and a future langgraph version (or `Action` ever becoming a direct
-`CycleState` field) could change that -- but it means removing `Action`'s
-registration specifically will not fail either round-trip test below. The
-task report documents this rather than implying otherwise.
+both correctly. Task 4 recorded that registering it anyway was still correct
+because "`Action` ever becoming a direct `CycleState` field" would change
+that -- and Task 7's `actions: list[Action]` (the post-guardrail survivors
+the `guardrail` node hands the `execute` node) is exactly that field, so the
+registration is now load-bearing rather than merely harmless.
+
+The same trap with the opposite outcome, measured on 2026-08-18: an
+UNREGISTERED type is not merely warned about when an explicit
+`allowed_msgpack_modules` is passed -- it is *blocked on load* and comes back
+degraded. A `CycleState` carrying `ActOutcome.LANDED_ALL` and a
+`RhythmDecision` through an allowlist missing both deserialized to the plain
+`str` `'landed_all'` and a plain `dict`, with only a WARNING log to say so.
+`ActOutcome` is a `StrEnum`, so every `==` and `in` comparison against it
+still held and no test would have gone red. Hence `_discover_registered_types`
+collects enums as well as models: a resumed cycle must get its own types back,
+not string-shaped lookalikes that happen to compare equal today.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
-from typing import Final, get_args, get_origin, get_type_hints
+from typing import Any, Final, get_args, get_origin, get_type_hints
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from swil_agent.graph.state import CycleState
+from swil_agent.graph.state import SEPARATOR, CycleState
 
 CHECKPOINT_DB_NAME: Final = "cycle_checkpoints.sqlite"
+_THREAD_ID_PARTS: Final = 3
+
+# The checkpointer's type, re-exported under a name of ours. `cli.py` is the
+# composition root that holds one for the length of a cycle, and the AST
+# architecture test (§5.2) forbids it -- or anything else outside `graph/` --
+# from importing `langgraph` to say so. An alias here is what lets that rule
+# stay absolute instead of gaining a "except for the type annotation"
+# exception.
+type Checkpointer = SqliteSaver
 
 
 def _unwrap(hint: object) -> set[type]:
@@ -97,8 +121,8 @@ def _unwrap(hint: object) -> set[type]:
     return found
 
 
-def _discover_registered_types() -> frozenset[type[BaseModel]]:
-    """Every pydantic model reachable from `CycleState`, transitively.
+def _discover_registered_types() -> frozenset[type[BaseModel] | type[Enum]]:
+    """Every pydantic model AND enum reachable from `CycleState`, transitively.
 
     Level 1: unwrap each of `CycleState`'s own resolved type hints. Level 2+:
     for every pydantic model that surfaces, unwrap ITS OWN resolved type
@@ -107,24 +131,98 @@ def _discover_registered_types() -> frozenset[type[BaseModel]]:
     added by a later task impossible to silently miss: if it is annotated on
     `CycleState` -- directly, inside a generic, or nested inside a model
     already reachable from `CycleState` -- this function finds it.
+
+    Enums are collected too (Task 7, measured). `CycleState.outcome` is a
+    bare `ActOutcome`, and with an explicit `allowed_msgpack_modules` an
+    unregistered type is not merely warned about -- it is BLOCKED on load
+    and silently degrades: `ActOutcome.LANDED_ALL` came back as the plain
+    `str` `'landed_all'`. `ActOutcome` is a `StrEnum`, so every comparison
+    still happened to hold, which is precisely what makes the degradation
+    worth registering away rather than living with -- the next enum field
+    (or the first non-`StrEnum` one) would come back as an unusable string
+    with nothing red. Only models are recursed INTO: an enum's own
+    `get_type_hints` carries no field types to follow.
     """
-    found: set[type[BaseModel]] = set()
+    found: set[type[BaseModel] | type[Enum]] = set()
     queue: list[type] = []
     for hint in get_type_hints(CycleState).values():
         queue.extend(_unwrap(hint))
     while queue:
         candidate = queue.pop()
-        if not (isinstance(candidate, type) and issubclass(candidate, BaseModel)):
+        if not (isinstance(candidate, type) and issubclass(candidate, (BaseModel, Enum))):
             continue
         if candidate in found:
             continue
         found.add(candidate)
-        for hint in get_type_hints(candidate).values():
-            queue.extend(_unwrap(hint))
+        if issubclass(candidate, BaseModel):
+            for hint in get_type_hints(candidate).values():
+                queue.extend(_unwrap(hint))
     return frozenset(found)
 
 
-REGISTERED_TYPES: Final[frozenset[type[BaseModel]]] = _discover_registered_types()
+REGISTERED_TYPES: Final[frozenset[type[BaseModel] | type[Enum]]] = _discover_registered_types()
+
+
+@contextmanager
+def checkpointer_at(db_path: Path) -> Iterator[Checkpointer]:
+    """`open_checkpointer`, plus closing the connection it opened.
+
+    `open_checkpointer` deliberately leaves the connection's lifetime to its
+    caller (its own docstring), which is right for a test that wants to read
+    the database back afterwards and wrong for a long-lived process that runs
+    many cycles: `SqliteSaver` holds a `sqlite3.Connection` and nothing else
+    ever closes it. This is the composition-root shape, so `cli.py` does not
+    have to reach for `.conn` -- which would also mean importing `langgraph`
+    outside `graph/`.
+    """
+    saver = open_checkpointer(db_path)
+    try:
+        yield saver
+    finally:
+        saver.conn.close()
+
+
+def latest_round_id(saver: BaseCheckpointSaver[Any], tenant: str, agent: str) -> str | None:
+    """The most recent checkpointed `round_id` for one account, or `None`.
+
+    This is what `swil-agent cycle --resume` resolves: the thread id is the
+    checkpoint's ONLY key, and a resuming process cannot rebuild it from
+    `deps.now` because that is a different moment. Rather than persisting a
+    "last round" marker of our own -- one more file under `.agent-state/`, one
+    more thing that can be stale or orphaned -- the answer is read back out of
+    the checkpoint database, which is the only place that can actually say
+    whether there is anything to resume.
+
+    Ordering is by `round_id` STRING comparison, and that is sound rather than
+    lucky: `graph/cycle.py` formats it `%Y%m%dT%H%M%S`, a fixed-width
+    zero-padded stamp whose lexicographic order IS its chronological order.
+    Taking `max()` therefore does not depend on the saver's own `list()`
+    ordering, which is not part of its documented interface.
+
+    A malformed thread id (one that does not split into exactly three
+    components) is skipped rather than raising: `thread_id()` refuses to BUILD
+    one, so any such row was written by something else, and a foreign row in a
+    shared database must not be able to break `--resume`.
+    """
+    rounds: list[str] = []
+    for tup in saver.list(None):
+        raw = tup.config.get("configurable", {}).get("thread_id")
+        if not isinstance(raw, str):
+            # UNTESTED and deliberately so: `RunnableConfig["configurable"]`
+            # is `dict[str, Any]`, so a non-str `thread_id` is well-typed but
+            # is not something `SqliteSaver` can produce -- every row it
+            # yields was written from a string key. Reaching it through the
+            # real saver would mean corrupting the database by hand, which
+            # would test the fixture rather than the guard. Kept because the
+            # alternative to skipping is a `TypeError` from `.split()` that
+            # takes `--resume` down for one bad row in a shared database.
+            continue
+        parts = raw.split(SEPARATOR)
+        if len(parts) != _THREAD_ID_PARTS:
+            continue
+        if parts[0] == tenant and parts[1] == agent:
+            rounds.append(parts[2])
+    return max(rounds) if rounds else None
 
 
 def open_checkpointer(db_path: Path) -> SqliteSaver:

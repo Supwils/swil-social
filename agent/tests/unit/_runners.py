@@ -142,9 +142,19 @@ class FakeEmbedder:
         self._fail_on_call = fail_on_call
         self._fail_always = fail_always
         self.call_count = 0
+        # Every batch this fake was ASKED to embed, in call order, recorded
+        # BEFORE the failure check so a raising call still shows its input.
+        # Without it this double answers the same vector whatever it is
+        # given, which lets "embed the wrong document" pass a test that
+        # asserts only on the vector it handed back (task-6 review, item 2):
+        # `/lab`'s drift vector would then describe the version being
+        # REPLACED while `contentHash` still looked right. Assert on
+        # `embedded` when WHAT was embedded is the property under test.
+        self.embedded: list[list[str]] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.call_count += 1
+        self.embedded.append(list(texts))
         if self._fail_always or self._fail_on_call == self.call_count:
             raise EmbedderUnavailable(f"fake embedder failing on call {self.call_count}")
         index = self.call_count - 1
@@ -204,6 +214,32 @@ class ExplodingBackend:
 
     def complete(self, req: CompletionRequest) -> str:
         raise RuntimeError("exploding backend: boom")
+
+
+class ScriptedBackend:
+    """Answers each `complete` call from a fixed script, in call order.
+
+    A whole CYCLE spends up to three backend calls on ONE backend object --
+    the plan, the dream's rewrite candidate, and an accepted dream's diff
+    narrative -- so neither `StubBackend` (one fixed answer for everything)
+    nor `TwoCallBackend` (candidate then narrative, with no plan before them)
+    can drive one. Calls past the end of the script repeat its last entry,
+    which is what makes a cycle whose dream is retried (loop 2) or whose act
+    phase runs twice (loop 3) expressible without padding the script.
+    """
+
+    name = "scripted"
+
+    def __init__(self, *responses: str) -> None:
+        self._responses = list(responses)
+        self.calls: list[CompletionRequest] = []
+
+    def complete(self, req: CompletionRequest) -> str:
+        self.calls.append(req)
+        index = len(self.calls) - 1
+        if index < len(self._responses):
+            return self._responses[index]
+        return self._responses[-1] if self._responses else ""
 
 
 class TwoCallBackend:

@@ -10,8 +10,10 @@ docs alone are not trusted here) and `agent/scripts/snapshot.sh` for
 not assumed from the contract doc's transcription.
 
 WRITE ORDERING IS THE CONTRACT (contract `03` §4, `dream.sh:828-882`), and it
-is the reason this function exists rather than being three separately
-callable pieces:
+is the reason steps 1-6 below live INSIDE `write_step` rather than being six
+separately callable pieces a caller sequences for itself (step 7 is
+`snapshot_step`, deliberately outside that atomic group -- see its own
+docstring for why a failure there is a WARN, not a rollback):
 
   1. diff narrative                 -- computed FIRST, using `original` and
                                         `candidate` as the two in-memory
@@ -40,8 +42,12 @@ callable pieces:
 Two collaborators each bundle two of Bash's seven numbered steps into one
 call because they already carry their own correctness invariant about the
 pair's internal order (an atomic temp-file swap; two related on-disk
-markers) -- see their own docstrings. `run_dream`'s job is the ordering
-BETWEEN those bundles, not within them, and guarding the whole sequence with
+markers) -- see their own docstrings. `write_step`'s job is the ordering
+BETWEEN those bundles, not within them. `run_dream`'s own job is the
+ordering between the five STEPS (`cooldown_step`, `dream_step`, `gate_step`,
+`write_step`, `snapshot_step` -- each separately callable so Task 7's graph
+nodes drive the same implementations this path does, ruling R4), and
+guarding the whole sequence with
 `FileLock(dream_lock_path(...))` so a held lock raises `LockBusy` OUT of this
 function (ruling R6) rather than being folded into `DreamResult` -- the
 lock's release-on-exception behaviour (a plain `with` block) is what stops
@@ -113,7 +119,7 @@ import hashlib
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from swil_agent.api.client import ApiError
 from swil_agent.api.dto import LabEvent
@@ -192,6 +198,11 @@ _ASPECT_PROMPT_VERSION: Final = 2
 # "skipping"; the event uses "skipped"). Both are transcribed verbatim from
 # the script, not assumed to be the same string.
 _EMBEDDER_UNREACHABLE_EVENT_SUMMARY: Final = "embedder unreachable, skipped drift check"
+
+# dream.sh:647-648's own log line and lab-event summary for a backend that
+# produced nothing -- ONE string used by both, and by `DreamResult.reason`,
+# so a caller never has to re-spell it.
+_LLM_EMPTY_REASON: Final = "LLM returned empty"
 
 
 def _emit(resources: Resources, username: str, event: LabEvent) -> None:
@@ -403,6 +414,406 @@ def _aspect_drift_payload(verdict: DreamVerdict, settings: Settings) -> dict[str
     }
 
 
+class CooldownStep(NamedTuple):
+    """The scheduling gate's decision, plus the ONE read of `memory.md` the
+    rest of the round is built on.
+
+    `memory_text` and `memory_lines` come back from here rather than being
+    re-read downstream because both are load-bearing and both must describe
+    the file as it stood BEFORE this dream appends its own "personality
+    consolidated" line:
+
+      * `memory_lines` is what `write_step` records into
+        `last_dream_memlines_<name>` (contract `03` §4 steps 4-5). Counting
+        it after the append records 101 where Bash records 100, and the next
+        round's cooldown-override tally is off by one forever after --
+        pinned by `test_the_memlines_marker_is_written_before_the_memory_
+        append`.
+      * `memory_text` is the same text `dream_step` slices its last-60-line
+        prompt block out of, so the count that decided the cooldown and the
+        memory the model is shown can never come from two different reads.
+    """
+
+    proceed: bool
+    reason: str
+    memory_text: str
+    memory_lines: int
+
+
+def cooldown_step(
+    *,
+    persona: Persona,
+    persona_source: PersonaSource,
+    state: DreamState,
+    settings: Settings,
+    now: datetime,
+    auto: bool = False,
+) -> CooldownStep:
+    """Step 1 of the dream path: read `memory.md`, then decide whether this
+    account may dream at all (`dream.sh:479-510`).
+
+    Both of Bash's log lines live HERE, not in the caller: the SKIP line is
+    the only record that a round happened and declined, and the "cooldown
+    override" line is the only record that the 12h floor was deliberately
+    broken. A second caller that branched on `proceed` without logging would
+    make an account's absence from `dream.log` mean two different things.
+
+    `auto=False` ("force" mode) always proceeds -- `check_cooldown` returns
+    before `state` is consulted at all, so a forced dream costs no marker
+    reads.
+    """
+    name = persona.directory.name
+    memory_text = persona_source.read_memory(name)
+    memory_lines = memory_text.count("\n")
+
+    cooldown = check_cooldown(
+        state,
+        name,
+        auto=auto,
+        memory_lines=memory_lines,
+        now=int(now.timestamp()),
+        cooldown_hours=settings.dream_cooldown_hours,
+        min_new_memories=settings.dream_min_new_memories,
+    )
+    if not cooldown.proceed:
+        logger.info("SKIP %s — %s", name, cooldown.reason)
+    elif cooldown.reason:
+        logger.info("%s — %s", name, cooldown.reason)
+    return CooldownStep(
+        proceed=cooldown.proceed,
+        reason=cooldown.reason,
+        memory_text=memory_text,
+        memory_lines=memory_lines,
+    )
+
+
+class DreamStep(NamedTuple):
+    """The rewrite candidate, or the reason there is none.
+
+    `failure_reason` is `None` whenever `candidate` is non-empty, and
+    otherwise carries Bash's own `LLM returned empty` string -- the single
+    way this step can fail. Carrying it here rather than leaving each caller
+    to re-derive it from `candidate`'s emptiness keeps the reason that
+    reaches `DreamResult` identical to the one already logged and posted as
+    a lab event by this step.
+    """
+
+    candidate: str
+    failure_reason: str | None
+
+
+def dream_step(
+    *,
+    persona: Persona,
+    resources: Resources,
+    backend: Backend,
+    agent_root: Path,
+    memory_text: str,
+) -> DreamStep:
+    """Step 2 of the dream path: announce the dream, assemble its four
+    prompt blocks, and make the ONE rewrite call (`dream.sh:512-661`).
+
+    The `dream/dream/started` lab event is the FIRST thing this step does,
+    which is what puts it where Bash has it -- after the cooldown gate
+    (`dream.sh:513`, inside the block a SKIP already returned from) and
+    before the `GET /notifications` the group-memory digest makes. A caller
+    that emitted it itself could not preserve both halves of that at once;
+    here the account cannot generate a candidate without first being on
+    record as having started.
+
+    Everything else in this step is READ, with one exception:
+    `read_echo_hint` CONSUMES the `echo_flag_<name>` marker (deletes it --
+    "only nudge once per dream", `dream.sh:533`). That is why this step is
+    not re-runnable and why the cooldown gate has to have decided before it
+    is entered: a second call spends the flag on a prompt nobody asked for.
+
+    `memory_text` is the caller's, not a fresh read -- see `CooldownStep`
+    for why the round reads `memory.md` exactly once.
+    """
+    name = persona.directory.name
+    _emit(
+        resources,
+        persona.username,
+        LabEvent(type="dream", phase="dream", outcome="started", summary="dream started"),
+    )
+
+    recent_memory = "\n".join(memory_text.splitlines()[-_RECENT_MEMORY_LINES:])
+    archive_tail = _read_memory_archive_tail(persona.directory)
+    group_memory = _group_memory(resources, name)
+    echo_hint = read_echo_hint(agent_root / ".agent-state", name)
+
+    system_prompt, user_prompt = render_dream_prompt(
+        persona_text=persona.raw,
+        recent_memory=recent_memory,
+        archive_tail=archive_tail,
+        group_memory=group_memory,
+        echo_hint=echo_hint,
+    )
+
+    raw = _generate_candidate(backend, system_prompt, user_prompt, persona.model)
+    candidate_text = clean_candidate(raw)
+    if not candidate_text:
+        logger.warning("FAIL %s — %s", name, _LLM_EMPTY_REASON)
+        _emit(
+            resources,
+            persona.username,
+            LabEvent(type="dream", phase="dream", outcome="fail", summary=_LLM_EMPTY_REASON),
+        )
+        return DreamStep(candidate="", failure_reason=_LLM_EMPTY_REASON)
+    return DreamStep(candidate=candidate_text, failure_reason=None)
+
+
+def gate_step(
+    *,
+    persona: Persona,
+    candidate_text: str,
+    resources: Resources,
+    embedder: Embedder,
+    runner: Runner,
+    settings: Settings,
+) -> DreamVerdict:
+    """Step 3 of the dream path: the constitution layer -- six structural
+    validators, then the drift gate (`dream.sh:668-826`) -- plus the two
+    lab events that are the only external record of what it decided.
+
+    PURE with respect to the account's files: nothing here writes anything
+    (the candidate lives in memory, not in a temp file as under Bash), which
+    is what makes it safe for a Task 7 node to run before any write node
+    exists.
+
+    Both events belong to this step because both describe the GATE, not the
+    round:
+
+      * `warn` -- accepted, but `embedder_unreachable`: the drift check
+        could not run at all and the dream landed UNGATED. Losing this
+        event is worse than the outage it reports, since a fail-open is
+        otherwise indistinguishable from a healthy accept.
+      * `fail` + `_drift_fail_metrics` -- rejected. `run_dream` no longer
+        needs to know how to spell either.
+
+    The reason a caller must NOT re-derive the accept decision from
+    `verdict.reason`: `dream/gate.py` COMPOSES that string, and in the
+    deployed `DRIFT_MODE=aspect` a non-empty `aspect_note` prefix is
+    routine. The typed fields (`accepted`, `embedder_unreachable`) are the
+    contract; the text is for operators.
+
+    `persona.raw` is the ORIGINAL side of every comparison -- the text the
+    prompt was built from, not a fresh read of `personality.md`. Re-reading
+    would compare the candidate against whatever is on disk NOW, which for a
+    concurrent Bash round is a different document.
+    """
+    verdict = evaluate_candidate(
+        persona.raw,
+        candidate_text,
+        directory=persona.directory,
+        embedder=embedder,
+        runner=runner,
+        settings=settings,
+    )
+    # `DreamVerdict.embedder_unreachable`, NOT a comparison against
+    # `verdict.reason` -- see this function's docstring, and
+    # `test_embedder_unreachable_still_warns_in_the_deployed_aspect_mode`
+    # for the case an `==` silently stopped matching. Bash fires this event
+    # on the condition itself (dream.sh:804-805), not on the text of its own
+    # log line.
+    if verdict.accepted and verdict.embedder_unreachable:
+        _emit(
+            resources,
+            persona.username,
+            LabEvent(
+                type="dream",
+                phase="dream",
+                outcome="warn",
+                summary=_EMBEDDER_UNREACHABLE_EVENT_SUMMARY,
+            ),
+        )
+
+    if not verdict.accepted:
+        logger.warning("FAIL %s — %s; keeping original", persona.directory.name, verdict.reason)
+        _emit(
+            resources,
+            persona.username,
+            LabEvent(
+                type="dream",
+                phase="dream",
+                outcome="fail",
+                summary=verdict.reason,
+                metrics=_drift_fail_metrics(verdict, settings),
+            ),
+        )
+    return verdict
+
+
+class WriteStep(NamedTuple):
+    """Whether `personality.md` actually changed, and the diff narrative
+    computed while it had not yet.
+
+    `written` is the round's single source of truth for "the candidate is
+    now this account's personality": every later step keys off it rather
+    than re-deriving the same answer from `verdict.accepted` (see
+    `snapshot_step`, whose upload is only meaningful once the file it
+    describes is live).
+    """
+
+    written: bool
+    narrative: str
+
+
+def write_step(
+    *,
+    persona: Persona,
+    persona_source: PersonaSource,
+    state: DreamState,
+    resources: Resources,
+    backend: Backend,
+    verdict: DreamVerdict,
+    candidate_text: str,
+    memory_lines: int,
+    now: datetime,
+) -> WriteStep:
+    """Step 4 of the dream path: steps 1-6 of the write-ordering contract
+    (module docstring; contract `03` §4, `dream.sh:828-859`), in that order,
+    then the DONE line and the `dream/dream/success` event.
+
+    `verdict.accepted` GATES the whole step, and the guard lives here rather
+    than only in whichever caller sequences the steps. This function is
+    where a rejected candidate would become the account's personality --
+    silently defeating the constitution layer, with `personality.archive.md`
+    already prepended and the old text recoverable only by hand. `run_dream`
+    THREADS the verdict in and branches on the `written` flag that comes
+    back, so the guard is the load-bearing one; a Task 7 node that reached
+    this function with a rejected verdict (an unconditional edge out of the
+    gate node) writes nothing instead of writing the wrong thing.
+
+    Two orderings inside are contracts rather than preferences:
+
+      * The diff narrative is computed FIRST, from `persona.raw` and
+        `candidate_text` as the two in-memory strings they already are --
+        equivalently, while `personality.md` on disk still holds the OLD
+        text (`dream.sh:829-832`'s own comment says exactly that).
+      * `record_dream`'s memlines marker is written BEFORE `append_memory`,
+        so the "personality consolidated" housekeeping line self-counts
+        toward the NEXT round's cooldown-override tally.
+
+    `memory_lines` is the caller's pre-append count for that same reason:
+    counting here, after the append, records 101 where Bash records 100.
+    """
+    if not verdict.accepted:
+        return WriteStep(written=False, narrative="")
+
+    name = persona.directory.name
+    narrative = _diff_narrative(persona.raw, candidate_text, backend)  # 1
+    persona_source.archive_and_write(name, candidate_text, now)  # 2 + 3
+    state.record_dream(name, at=int(now.timestamp()), memlines=memory_lines)  # 4 + 5
+    persona_source.append_memory(name, f"{now:%Y-%m-%d} | dream | personality consolidated")  # 6
+    logger.info("DONE %s dreamed — personality updated (old → personality.archive.md)", name)
+    _emit(
+        resources,
+        persona.username,
+        LabEvent(type="dream", phase="dream", outcome="success", summary="personality updated"),
+    )
+    return WriteStep(written=True, narrative=narrative)
+
+
+class SnapshotStep(NamedTuple):
+    """Whether the personality snapshot reached the server, and if not, the
+    failure's OWN message.
+
+    `ok=False, reason=None` is the "no snapshot was owed" shape a skipped
+    step returns -- the same pair `DreamResult`'s defaults already carry for
+    every round that never reached an accepted write, so a caller cannot
+    accidentally report a rejected dream as having uploaded one.
+    """
+
+    ok: bool
+    reason: str | None
+
+
+def snapshot_step(
+    *,
+    persona: Persona,
+    resources: Resources,
+    embedder: Embedder,
+    settings: Settings,
+    verdict: DreamVerdict,
+    candidate_text: str,
+    narrative: str,
+    agent_root: Path,
+    captured_at: datetime,
+    written: bool,
+) -> SnapshotStep:
+    """Step 5 of the dream path: step 7 of the write-ordering contract --
+    embed the new personality and POST it to `/agents/.../snapshots`
+    (`dream.sh:861-882`, `snapshot.sh`).
+
+    `written` GATES the step, and the guard lives here rather than only in
+    the caller. A snapshot is a CLAIM about what this account's
+    `personality.md` now says: uploading one for a candidate that the gate
+    rejected puts a row in `personalitysnapshots` for a document that never
+    existed, and `/lab`'s drift trajectory -- the in-flight experiment's
+    primary readout -- would then plot versions the roster never ran under.
+    `run_dream` threads `write.written` in rather than branching above the
+    step, so the guard is load-bearing (removing it reddens the oracle's
+    `test_a_rejected_dream_touches_nothing`).
+
+    NEVER a rollback (contract `03` §4.9): by the time this runs,
+    `personality.md` has already been swapped and archived. Every failure
+    mode -- embedder down (`EmbedderUnavailable`), server refusing the write
+    (`WriteNotVerifiedError`), HTTP failure (`ApiError`) -- is a WARN plus a
+    `snapshot/snapshot/warn` lab event, and the round still reports
+    `accepted=True`.
+
+    `reason` is the exception's OWN message, never a hardcoded guess: the
+    2026-07-31 incident cost two investigations chasing a healthy server and
+    a healthy embedder while the real cause ("no api_key.txt for <name>")
+    was already printed one line above.
+    """
+    if not written:
+        return SnapshotStep(ok=False, reason=None)
+
+    name = persona.directory.name
+    try:
+        vector = embedder.embed([candidate_text])[0]
+        payload = build_snapshot_payload(
+            text=candidate_text,
+            directory=persona.directory,
+            agent_root=agent_root,
+            embedding=vector,
+            captured_at=captured_at,
+            narrative=narrative,
+            aspect_drift=_aspect_drift_payload(verdict, settings),
+        )
+        resources.create_snapshot(persona.username, payload)  # 7
+    except (EmbedderUnavailable, WriteNotVerifiedError, ApiError) as exc:
+        reason = str(exc)
+        logger.warning("WARN %s — snapshot upload failed: %s", name, reason)
+        _emit(
+            resources,
+            persona.username,
+            LabEvent(
+                type="snapshot",
+                phase="snapshot",
+                outcome="warn",
+                summary="snapshot upload failed",
+                reason=reason,
+            ),
+        )
+        return SnapshotStep(ok=False, reason=reason)
+
+    logger.info("%s — snapshot uploaded", name)
+    _emit(
+        resources,
+        persona.username,
+        LabEvent(
+            type="snapshot",
+            phase="snapshot",
+            outcome="success",
+            summary="snapshot uploaded",
+        ),
+    )
+    return SnapshotStep(ok=True, reason=None)
+
+
 def run_dream(
     *,
     persona: Persona,
@@ -425,6 +836,43 @@ def run_dream(
     the two pieces (echo-chamber detection's write side, embedder-guard
     probing) deliberately left to a later task.
 
+    Sequence, as the five separately-callable steps this function is now
+    the composition of:
+
+      1. Acquire `FileLock(dream_lock_path(agent_root, name))` around
+         EVERYTHING. Ruling R6: a held lock raises `LockBusy` OUT of this
+         function -- "there was no round at all" is a different question
+         from "what did this round decide", and `DreamResult` only answers
+         the second. A plain `with` block is also the fix for the orphan
+         dream lock: any exception between here and the return releases it,
+         where Bash's accepted dreams exit 141 and leak theirs.
+      2. `cooldown_step` -- the one `memory.md` read, its line count, and
+         the auto-mode cooldown gate. `proceed=False` returns
+         `proceeded=False` with nothing else populated.
+      3. `dream_step` -- the `started` event, the four prompt blocks, the
+         rewrite call. A `failure_reason` (only ever "LLM returned empty")
+         returns `proceeded=True, accepted=False`.
+      4. `gate_step` -- validators + drift, and the gate's own two events.
+      5. `write_step` -- steps 1-6 of the write contract, gated on
+         `verdict.accepted` INSIDE the step.
+      6. `snapshot_step` -- step 7, gated on `written` INSIDE the step.
+      7. Assemble the `DreamResult`.
+
+    The gate's rejection is NOT an early return above steps 5-6: `verdict`
+    and `written` are THREADED into them and this function branches on the
+    `written` flag that comes back. Both spellings produce the identical
+    `DreamResult` -- a rejected `write_step` is `(False, "")` and a skipped
+    `snapshot_step` is `(False, None)`, which are `DreamResult`'s own
+    defaults for a round that wrote nothing -- but only this one puts each
+    guard where its write is. That matters because `run_dream` is not the
+    only caller: Task 7's graph nodes call these same functions, and an
+    unconditional edge out of a gate node would otherwise land a rejected
+    candidate on disk and publish a snapshot of a personality that never
+    existed. This is the same shape `run_act` uses for `dry_run`
+    (`act/round.py`), and for the same reason (ruling R4): a block of logic
+    that exists only inside the composition is a block the graph has to
+    copy, and a copy is free to drift.
+
     Account/file resolution (`dir` not found, no `personality.md`, no
     `memory.md` -- contract `03` §1.2) is NOT this function's job:
     `persona: Persona` arriving here already implies a successful
@@ -446,166 +894,80 @@ def run_dream(
     """
     name = persona.directory.name
     with FileLock(dream_lock_path(agent_root, name)):
-        state_dir = agent_root / ".agent-state"
-        memory_text = persona_source.read_memory(name)
-        memory_lines = memory_text.count("\n")
-
-        cooldown = check_cooldown(
-            state,
-            name,
+        cooldown = cooldown_step(
+            persona=persona,
+            persona_source=persona_source,
+            state=state,
+            settings=settings,
+            now=now,
             auto=auto,
-            memory_lines=memory_lines,
-            now=int(now.timestamp()),
-            cooldown_hours=settings.dream_cooldown_hours,
-            min_new_memories=settings.dream_min_new_memories,
         )
         if not cooldown.proceed:
-            logger.info("SKIP %s — %s", name, cooldown.reason)
             return DreamResult(proceeded=False, reason=cooldown.reason)
-        if cooldown.reason:
-            logger.info("%s — %s", name, cooldown.reason)
+        memory_lines = cooldown.memory_lines
 
-        _emit(
-            resources,
-            persona.username,
-            LabEvent(type="dream", phase="dream", outcome="started", summary="dream started"),
+        dreamt = dream_step(
+            persona=persona,
+            resources=resources,
+            backend=backend,
+            agent_root=agent_root,
+            memory_text=cooldown.memory_text,
         )
+        if dreamt.failure_reason is not None:
+            return DreamResult(proceeded=True, reason=dreamt.failure_reason)
+        candidate_text = dreamt.candidate
 
-        recent_memory = "\n".join(memory_text.splitlines()[-_RECENT_MEMORY_LINES:])
-        archive_tail = _read_memory_archive_tail(persona.directory)
-        group_memory = _group_memory(resources, name)
-        echo_hint = read_echo_hint(state_dir, name)
-
-        system_prompt, user_prompt = render_dream_prompt(
-            persona_text=persona.raw,
-            recent_memory=recent_memory,
-            archive_tail=archive_tail,
-            group_memory=group_memory,
-            echo_hint=echo_hint,
-        )
-
-        raw = _generate_candidate(backend, system_prompt, user_prompt, persona.model)
-        candidate_text = clean_candidate(raw)
-        if not candidate_text:
-            logger.warning("FAIL %s — LLM returned empty", name)
-            _emit(
-                resources,
-                persona.username,
-                LabEvent(type="dream", phase="dream", outcome="fail", summary="LLM returned empty"),
-            )
-            return DreamResult(proceeded=True, reason="LLM returned empty")
-
-        verdict = evaluate_candidate(
-            persona.raw,
-            candidate_text,
-            directory=persona.directory,
+        verdict = gate_step(
+            persona=persona,
+            candidate_text=candidate_text,
+            resources=resources,
             embedder=embedder,
             runner=runner,
             settings=settings,
         )
-        # `DreamVerdict.embedder_unreachable`, NOT a comparison against
-        # `verdict.reason`. `dream/gate.py` COMPOSES that string
-        # (`f"{aspect_note}; {base_reason}"`), and in the deployed
-        # `DRIFT_MODE=aspect` a non-empty `aspect_note` is routine -- so an
-        # `==` here silently stopped matching in exactly the case that
-        # matters most: the aspect pipeline degraded AND the embedder gone,
-        # i.e. the dream landing completely ungated with no WARN to say so.
-        # Bash fires this event on the condition itself (dream.sh:804-805),
-        # not on the text of its own log line.
-        if verdict.accepted and verdict.embedder_unreachable:
-            _emit(
-                resources,
-                persona.username,
-                LabEvent(
-                    type="dream",
-                    phase="dream",
-                    outcome="warn",
-                    summary=_EMBEDDER_UNREACHABLE_EVENT_SUMMARY,
-                ),
-            )
-
-        if not verdict.accepted:
-            logger.warning("FAIL %s — %s; keeping original", name, verdict.reason)
-            _emit(
-                resources,
-                persona.username,
-                LabEvent(
-                    type="dream",
-                    phase="dream",
-                    outcome="fail",
-                    summary=verdict.reason,
-                    metrics=_drift_fail_metrics(verdict, settings),
-                ),
-            )
-            return DreamResult(proceeded=True, reason=verdict.reason, verdict=verdict)
-
         # ── Accept sequence -- write ordering is the contract (module docstring) ──
-        narrative = _diff_narrative(persona.raw, candidate_text, backend)  # 1
-        persona_source.archive_and_write(name, candidate_text, now)  # 2 + 3
-        state.record_dream(name, at=int(now.timestamp()), memlines=memory_lines)  # 4 + 5
-        persona_source.append_memory(
-            name, f"{now:%Y-%m-%d} | dream | personality consolidated"
-        )  # 6
-        logger.info("DONE %s dreamed — personality updated (old → personality.archive.md)", name)
-        _emit(
-            resources,
-            persona.username,
-            LabEvent(type="dream", phase="dream", outcome="success", summary="personality updated"),
+        # `verdict` is THREADED into the step that writes rather than
+        # short-circuited above it: the reject branch below reads
+        # `write.written`, so `write_step`'s own guard is the load-bearing
+        # one and a caller that is not `run_dream` cannot get a rejected
+        # candidate onto disk.
+        write = write_step(
+            persona=persona,
+            persona_source=persona_source,
+            state=state,
+            resources=resources,
+            backend=backend,
+            verdict=verdict,
+            candidate_text=candidate_text,
+            memory_lines=memory_lines,
+            now=now,
         )
-
-        snapshot_ok = True
-        snapshot_reason: str | None = None
-        try:
-            vector = embedder.embed([candidate_text])[0]
-            payload = build_snapshot_payload(
-                text=candidate_text,
-                directory=persona.directory,
-                agent_root=agent_root,
-                embedding=vector,
-                captured_at=captured_at,
-                narrative=narrative,
-                aspect_drift=_aspect_drift_payload(verdict, settings),
-            )
-            resources.create_snapshot(persona.username, payload)  # 7
-        except (EmbedderUnavailable, WriteNotVerifiedError, ApiError) as exc:
-            snapshot_ok = False
-            snapshot_reason = str(exc)
-            logger.warning("WARN %s — snapshot upload failed: %s", name, snapshot_reason)
-            _emit(
-                resources,
-                persona.username,
-                LabEvent(
-                    type="snapshot",
-                    phase="snapshot",
-                    outcome="warn",
-                    summary="snapshot upload failed",
-                    reason=snapshot_reason,
-                ),
-            )
-        else:
-            logger.info("%s — snapshot uploaded", name)
-            _emit(
-                resources,
-                persona.username,
-                LabEvent(
-                    type="snapshot",
-                    phase="snapshot",
-                    outcome="success",
-                    summary="snapshot uploaded",
-                ),
-            )
+        snapshot = snapshot_step(
+            persona=persona,
+            resources=resources,
+            embedder=embedder,
+            settings=settings,
+            verdict=verdict,
+            candidate_text=candidate_text,
+            narrative=write.narrative,
+            agent_root=agent_root,
+            captured_at=captured_at,
+            written=write.written,
+        )
+        if not write.written:
+            return DreamResult(proceeded=True, reason=verdict.reason, verdict=verdict)
 
         # Echo-chamber DETECTION stops here -- see the module docstring's
         # "deliberately NOT implemented" note. The read/consume side
-        # (`read_echo_hint`) already ran above, unconditionally.
+        # (`read_echo_hint`) already ran inside `dream_step`, unconditionally.
 
         return DreamResult(
             proceeded=True,
             accepted=True,
             reason=verdict.reason,
             verdict=verdict,
-            narrative=narrative,
+            narrative=write.narrative,
             recorded_memlines=memory_lines,
-            snapshot_ok=snapshot_ok,
-            snapshot_reason=snapshot_reason,
+            snapshot_ok=snapshot.ok,
+            snapshot_reason=snapshot.reason,
         )

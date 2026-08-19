@@ -757,9 +757,21 @@ def execute_step(
     agent_name: str,
     now: datetime,
     access_key: str | None = None,
+    dry_run: bool = False,
 ) -> ExecuteStep:
     """Step 6 of the act path: execute every surviving action in order and
     append its `memory.md` line.
+
+    `dry_run` short-circuits the WHOLE step -- no board lookup, no write, no
+    memory line, no lab event -- and the guard lives HERE, not only in the
+    caller that happens to sequence the steps. This function performs 100%
+    of a round's writes, and Stage 3 of the migration is a `--dry-run`
+    shadow round over 23 live accounts: a caller that threaded `dry_run`
+    into every step that accepted one, but found this one did not, would
+    post for real. The zero-valued `ExecuteStep` it returns is exactly what
+    `run_act`'s dry-run `ActResult` reports (`results == []`,
+    `attempted == 0`), which is how a caller tells "nothing ran" from "an
+    empty plan ran".
 
     The memory write is INSIDE this loop, not a later phase, and that is a
     behavioural constraint rather than a layout preference: Bash's
@@ -781,6 +793,9 @@ def execute_step(
     `access_key: str = ""` default -- a bare `None` would be a `str | None`
     where its signature demands `str`.
     """
+    if dry_run:
+        return ExecuteStep(results=[], attempted=0, landed=0)
+
     board_id = _resolve_board_id(resources, persona)
 
     results: list[ActionResult] = []
@@ -816,15 +831,33 @@ def finalize_step(
     attempted: int,
     landed: int,
     solo_nothing: bool,
+    dry_run: bool = False,
 ) -> ActOutcome:
     """Step 7 of the act path: the post-execution tail -- smart mark-read,
     then the round's `ActOutcome`.
+
+    `dry_run` skips the mark-read (its only write, and one that mutates what
+    the NEXT real round sees) and returns the shadow round's label directly:
+    `PLANNER_EMPTY` for a solo-`nothing` plan, `LANDED_ALL` otherwise. That
+    is a label, not a prediction -- a dry run never executed anything, so
+    `results == []` / `attempted == 0` are the fields that tell a caller
+    nothing ran (see `run_act`'s docstring). Falling through to the normal
+    classification instead would log Bash's FAIL line at every shadow round,
+    since a dry run's `landed` is always 0.
 
     F3: Bash's smart mark-read (`auto-run.sh:768-803`) sits AFTER the
     `landed == 0` early return (`auto-run.sh:762-765`), so a round where
     nothing landed marks nothing -- those notifications must survive to the
     next round. `landed > 0` reproduces that placement without an early
     return of our own, since this step still has an `ActOutcome` to decide.
+
+    The mark-read is placed BEFORE the outcome branch here, where Bash has
+    it after its own `landed == 0` return. The two are equivalent and it is
+    worth recording why, so nobody "corrects" it later: the mark-read is
+    gated on `landed > 0` and the FAIL branch on `landed == 0`, so no round
+    can take both, and mark-read reads/writes nothing the outcome decision
+    consults. Moving it below the branch is a no-op -- unlike moving it
+    above the `landed > 0` gate, which is not.
 
     The outcome, in Bash's own order of precedence:
 
@@ -850,6 +883,9 @@ def finalize_step(
     `persona.username`, which an earlier version of that one call used
     inconsistently with every other identifier in the round.
     """
+    if dry_run:
+        return ActOutcome.PLANNER_EMPTY if solo_nothing else ActOutcome.LANDED_ALL
+
     if landed > 0:
         _mark_notifications_read(resources, actions)
 
@@ -916,36 +952,47 @@ def run_act(
       7. An empty plan returns that `empty_outcome` here, executing nothing.
          The classification does not depend on `dry_run`, since there is
          nothing to execute regardless.
-      8. `dry_run` stops here, before any execution: it returns `plan` and
-         `guarded.vetoed` with `results`/`attempted`/`landed` at their zero
-         defaults. This is the shadow-round mode (design spec §9.4) the
-         cutover depends on being genuinely inert -- no API writes, no
-         memory.md lines, no lab events. For a plan that survives guardrails
-         with real (non-`nothing`) actions, dry_run cannot know whether they
-         would have landed without executing them, so the outcome is
-         `ActOutcome.LANDED_ALL` -- a label, not a prediction: `results == []`
-         and `attempted == 0` are the fields a caller must check to know
-         nothing actually ran; see `test_dry_run_never_calls_the_api_or_writes_memory`.
-      9. `execute_step` -- otherwise, execute every surviving action in
-         order, tally `landed`/`attempted`, and append a memory.md line per
-         landed action (`nothing` never gets one).
-      10. `finalize_step` -- smart mark-read, then the outcome:
-          `landed == attempted` (with `attempted > 0`) -> `LANDED_ALL`,
-          otherwise `LANDED_PARTIAL`, INCLUDING when `landed == 0` (which
-          also logs Bash's FAIL line). The ruling behind that last case --
-          the spec's dream-granting rule overriding Bash's rc=75 -- is
-          recorded on `finalize_step` itself.
+      8. `execute_step` -- execute every surviving action in order, tally
+         `landed`/`attempted`, and append a memory.md line per landed action
+         (`nothing` never gets one).
+      9. `finalize_step` -- smart mark-read, then the outcome:
+         `landed == attempted` (with `attempted > 0`) -> `LANDED_ALL`,
+         otherwise `LANDED_PARTIAL`, INCLUDING when `landed == 0` (which
+         also logs Bash's FAIL line). The ruling behind that last case --
+         the spec's dream-granting rule overriding Bash's rc=75 -- is
+         recorded on `finalize_step` itself.
 
-    Every numbered item above is a separately callable function in this
-    module, and this function's body is nothing but their sequence, the
-    early returns between them, and the `ActResult` assembly. That is the
-    point (ruling R4): `graph/nodes.py` adapts `CycleState` to these SAME
-    functions, so the graph path and the direct path cannot drift into two
-    behaviours. A block of logic that exists only inside `run_act` is a
-    block the graph would have to copy.
+    `dry_run` is not a step of its own and not an early return: it is passed
+    THROUGH steps 3, 8 and 9, each of which is inert under it. The round
+    still plans and still applies guardrails (that is the point of a shadow
+    round -- design spec §9.4 -- and neither writes anything), then returns
+    `plan` and `guarded.vetoed` with `results`/`attempted`/`landed` at their
+    zero defaults. For a plan that survives guardrails with real
+    (non-`nothing`) actions, a dry run cannot know whether they would have
+    landed without executing them, so the outcome is
+    `ActOutcome.LANDED_ALL` -- a label, not a prediction: `results == []`
+    and `attempted == 0` are the fields a caller must check to know nothing
+    actually ran; see `test_dry_run_never_calls_the_api_or_writes_memory`.
+    The guard lives in the steps rather than here because `run_act` is not
+    the only caller: Stage 3's shadow round drives 23 live accounts, and a
+    graph node that threaded `dry_run` into every step that took one would
+    otherwise still post.
 
-    Two things this function decides that the brief left open, recorded here
-    and in task-7-report.md:
+    The mapping from that list to the functions is not one-to-one, so read
+    it as: items 1-2 are ONE function (`login_step` -- the probe and the
+    CHOICE of lock; entering it, and letting `LockBusy` propagate, is
+    `run_act`'s own control flow, ruling R6); items 3, 4, 5, 6, 8 and 9 are
+    one function each; item 7 is an early return, not a step. Everything
+    this function's body does beyond that sequence is those early returns
+    and the `ActResult` assembly.
+
+    That is the point (ruling R4): `graph/nodes.py` adapts `CycleState` to
+    these SAME functions, so the graph path and the direct path cannot drift
+    into two behaviours. A block of logic that exists only inside `run_act`
+    is a block the graph would have to copy.
+
+    Four things this function decides that the brief left open, recorded
+    here and in task-7-report.md:
 
       * `health_check: Callable[[], bool]` is a required, injected
         parameter, not a Settings-driven default. No Python code anywhere in
@@ -1036,16 +1083,13 @@ def run_act(
                 context=ctx,
             )
 
-        if dry_run:
-            outcome = ActOutcome.PLANNER_EMPTY if guarded.solo_nothing else ActOutcome.LANDED_ALL
-            return ActResult(
-                outcome=outcome,
-                vetoed=guarded.vetoed,
-                rhythm=rhythm,
-                plan=plan,
-                context=ctx,
-            )
-
+        # `dry_run` is THREADED into the two steps that write rather than
+        # short-circuited here. Both spellings return the identical
+        # `ActResult` -- a dry `execute_step` is `([], 0, 0)` and a dry
+        # `finalize_step` is the label this branch used to compute inline --
+        # but only this one puts the guard where the writes are, so a caller
+        # that is not `run_act` (a graph node, Stage 3's shadow round)
+        # cannot get a "dry" round that posts.
         results, attempted, landed = execute_step(
             resources=resources,
             persona=persona,
@@ -1053,6 +1097,7 @@ def run_act(
             agent_name=agent_name,
             now=now,
             access_key=access_key,
+            dry_run=dry_run,
         )
 
         outcome = finalize_step(
@@ -1062,6 +1107,7 @@ def run_act(
             attempted=attempted,
             landed=landed,
             solo_nothing=guarded.solo_nothing,
+            dry_run=dry_run,
         )
 
         return ActResult(

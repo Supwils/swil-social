@@ -73,11 +73,13 @@ from __future__ import annotations
 
 import logging
 import random
+import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, closing, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 import httpx
 import typer
@@ -92,6 +94,16 @@ from swil_agent.dream.candidate import DreamState, FilesystemDreamState
 from swil_agent.dream.round import run_dream
 from swil_agent.embedder.client import EmbedderClient, EmbedderUnavailable
 from swil_agent.embedder.guard import EmbedderGuard
+from swil_agent.graph.checkpoint import (
+    CHECKPOINT_DB_NAME,
+    Checkpointer,
+    checkpointer_at,
+    latest_round_id,
+)
+from swil_agent.graph.cycle import run_cycle
+from swil_agent.graph.leases import LEASE_DB_NAME, LeaseBusy
+from swil_agent.graph.nodes import CycleDeps, agent_dir_name
+from swil_agent.graph.state import BUILTIN_TENANT, CycleState
 from swil_agent.llm.base import (
     Backend,
     BackendBinaryMissingError,
@@ -105,6 +117,14 @@ from swil_agent.models import ActResult, DreamResult, Persona
 from swil_agent.persona.source import GitPersonaSource, PersonaSource
 
 logger = logging.getLogger(__name__)
+
+# This module's DREAM-PHASE channel. Only the round-level embedder-down ERROR
+# uses it, and it exists so that record lands in `dream.log` from `cycle` as
+# well as from `dream` -- under `dream` the whole invocation goes to that file
+# anyway, and a probe that changed file depending on which command ran it is
+# the kind of inconsistency nobody notices until they grep for it. See
+# `_DREAM_LOG_SOURCES`.
+dream_logger = logging.getLogger(f"{__name__}.dream")
 
 EXIT_OK = 0
 EXIT_NO_SUCH_ACCOUNT = 66
@@ -152,11 +172,57 @@ def _main() -> None:
 
 _ROUND_LOG_FORMAT: Final = "[%(asctime)s] %(message)s"
 _ROUND_LOG_DATE_FORMAT: Final = "%Y-%m-%d %H:%M:%S"
-_round_log_handler: logging.FileHandler | None = None
+_round_log_handlers: list[logging.Handler] = []
+_round_log_key: tuple[tuple[str, tuple[str, ...] | None], ...] = ()
 
 
 ACT_LOG_FILENAME: Final = "auto-run.log"
 DREAM_LOG_FILENAME: Final = "dream.log"
+
+# Which loggers emit DREAM-phase records. Used ONLY by `cycle`, which is the
+# one command that produces both phases in a single process and therefore
+# needs the two files' contents decided per record rather than per command.
+#
+# `act` and `dream` still attach one unfiltered handler each -- a `dream`
+# invocation emits only dream-phase records, an `act` invocation only
+# act-phase ones, so filtering there would be machinery with no failure mode
+# to prevent.
+#
+# Matching is by dotted-prefix, so `swil_agent.graph.nodes.dream` (the dream
+# node's deadline FAIL) routes to `dream.log` while its parent
+# `swil_agent.graph.nodes` (the cycle's own logout record) does not.
+# `swil_agent.cli.dream` is this module's own dream-phase channel -- the
+# round-level embedder-down ERROR, which `swil-agent dream` already writes to
+# `dream.log` and which must not change file just because the same probe ran
+# inside a cycle.
+_DREAM_LOG_SOURCES: Final[tuple[str, ...]] = (
+    "swil_agent.dream",
+    "swil_agent.embedder",
+    "swil_agent.graph.nodes.dream",
+    "swil_agent.cli.dream",
+)
+
+
+class _PhaseFilter(logging.Filter):
+    """Keep (or drop) records emitted by one phase's loggers.
+
+    One class, two instances, one source list: `keep=True` for `dream.log`
+    and `keep=False` for `auto-run.log`. Two independent lists would be two
+    things to keep in sync, and a record matching neither would silently land
+    in no file at all -- which reads exactly like a round that never ran.
+    """
+
+    def __init__(self, sources: tuple[str, ...], *, keep: bool) -> None:
+        super().__init__()
+        self._sources = sources
+        self._keep = keep
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        matched = any(
+            record.name == source or record.name.startswith(f"{source}.")
+            for source in self._sources
+        )
+        return matched is self._keep
 
 
 def _attach_round_log(settings: Settings, filename: str) -> logging.Handler | None:
@@ -195,39 +261,99 @@ def _attach_round_log(settings: Settings, filename: str) -> logging.Handler | No
     capture `httpx`'s own INFO-level "HTTP Request: ..." line for every API
     call, which `auto-run.log` has never contained.
 
-    At most ONE round-log handler exists at a time. Re-attaching the same
-    path is a no-op (a `CliRunner`-driven test invokes the app many times in
-    one process, and a second handler would double every line); attaching a
-    DIFFERENT path -- including the other command's -- closes and replaces
-    the old one rather than accumulating open files across a session.
+    At most ONE round-log ATTACHMENT exists at a time (one handler for
+    `act`/`dream`, two for `cycle`). Re-attaching the same one is a no-op (a
+    `CliRunner`-driven test invokes the app many times in one process, and a
+    second handler would double every line); attaching a DIFFERENT one --
+    including the other command's -- closes and replaces the previous
+    attachment rather than accumulating open files across a session.
 
     Returns the handler, or `None` if the file could not be opened -- a
     round must not die because a log file could not be opened.
     """
-    global _round_log_handler
-    path = settings.agent_root / "logs" / filename
+    handlers = _attach_round_logs(settings, ((filename, None),))
+    return handlers[0] if handlers else None
+
+
+def _attach_cycle_logs(settings: Settings) -> list[logging.Handler]:
+    """`cycle`'s TWO round logs, split by phase.
+
+    A cycle acts AND dreams inside one process, so "which file does this line
+    belong in" cannot be answered per command the way it is for `act` and
+    `dream` -- it has to be answered per RECORD. `_DREAM_LOG_SOURCES` is that
+    answer, and the two filters are complementary halves of one list so no
+    record can fall through into neither file.
+
+    The failure this prevents is silent in exactly the way ruling R20's was:
+    a cycle that sent both phases to `auto-run.log` leaves `dream.log` empty,
+    and every straggler-reconciliation grep for a dream verdict comes back
+    with nothing while the act log's line counts are quietly inflated.
+    """
+    return _attach_round_logs(
+        settings,
+        (
+            (ACT_LOG_FILENAME, None),
+            (DREAM_LOG_FILENAME, _DREAM_LOG_SOURCES),
+        ),
+    )
+
+
+def _attach_round_logs(
+    settings: Settings, specs: tuple[tuple[str, tuple[str, ...] | None], ...]
+) -> list[logging.Handler]:
+    """Install exactly the round-log handlers `specs` describes, replacing
+    whatever was installed before.
+
+    Each spec is `(filename, dream_sources)`. `dream_sources=None` means "no
+    filter, take every `swil_agent` record" -- what `act` and `dream` use.
+    A non-`None` value installs the DREAM half of the split on that file and
+    the ACT half (its complement) on every other file in the same
+    attachment, which is how one list drives both filters.
+
+    The key includes the resolved paths AND the source tuples, so switching
+    between `act`'s single unfiltered `auto-run.log` and `cycle`'s filtered
+    pair is detected as a different attachment even though both include a
+    handler on the same path.
+    """
+    global _round_log_handlers, _round_log_key
     package_logger = logging.getLogger("swil_agent")
-    if _round_log_handler is not None:
-        if _round_log_handler.baseFilename == str(path):
-            return _round_log_handler
-        package_logger.removeHandler(_round_log_handler)
-        _round_log_handler.close()
-        _round_log_handler = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(path, mode="a", encoding="utf-8")
-    except OSError as exc:
-        logger.warning("could not open %s for the round log: %s", path, exc)
-        return None
-    handler.setFormatter(logging.Formatter(_ROUND_LOG_FORMAT, datefmt=_ROUND_LOG_DATE_FORMAT))
-    # Level on the HANDLER, never on the logger: `_skip_for_exception` logs
-    # its traceback at DEBUG, and raising the LOGGER's level would discard
-    # that record before any handler (including pytest's caplog) saw it.
-    # Bash's `auto-run.log` has no debug tier, so the file takes INFO and up.
-    handler.setLevel(logging.INFO)
-    package_logger.addHandler(handler)
-    _round_log_handler = handler
-    return handler
+    key = tuple((str(settings.agent_root / "logs" / name), sources) for name, sources in specs)
+    if key == _round_log_key:
+        return _round_log_handlers
+
+    for existing in _round_log_handlers:
+        package_logger.removeHandler(existing)
+        existing.close()
+    _round_log_handlers = []
+    _round_log_key = ()
+
+    installed: list[logging.Handler] = []
+    dream_sources = next((sources for _, sources in specs if sources is not None), None)
+    for filename, sources in specs:
+        path = settings.agent_root / "logs" / filename
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("could not open %s for the round log: %s", path, exc)
+            continue
+        handler.setFormatter(logging.Formatter(_ROUND_LOG_FORMAT, datefmt=_ROUND_LOG_DATE_FORMAT))
+        # Level on the HANDLER, never on the logger: `_skip_for_exception`
+        # logs its traceback at DEBUG, and raising the LOGGER's level would
+        # discard that record before any handler (including pytest's caplog)
+        # saw it. Bash's `auto-run.log` has no debug tier, so the file takes
+        # INFO and up.
+        handler.setLevel(logging.INFO)
+        if dream_sources is not None:
+            handler.addFilter(_PhaseFilter(dream_sources, keep=sources is not None))
+        package_logger.addHandler(handler)
+        installed.append(handler)
+    _round_log_handlers = installed
+    # Only remember the attachment if EVERY file opened. A partial (or empty)
+    # install must stay retryable, matching the previous single-handler
+    # behaviour where a failed open left the module global at `None`.
+    _round_log_key = key if len(installed) == len(specs) else ()
+    return installed
 
 
 # ── composition helpers (the seams CLI tests monkeypatch or call directly) ─
@@ -378,6 +504,39 @@ def _guard_for(settings: Settings) -> EmbedderGuard:
     return EmbedderGuard(settings.agent_root, runner=SubprocessRunner())
 
 
+class _Guard(Protocol):
+    """The two calls a command makes on the embedder daemon's lifecycle.
+
+    Named as a Protocol so `cycle` can hold either the real `EmbedderGuard` or
+    the dry-run no-op below in ONE variable, and keep `guard.up()` /
+    `finally: guard.down()` unconditional. A `if not dry_run: guard.up()` pair
+    with a matching `finally` is the shape that eventually leaks a started
+    daemon on some third branch.
+    """
+
+    def up(self) -> None: ...
+
+    def down(self) -> None: ...
+
+
+class _DryRunGuard:
+    """The embedder guard a shadow round gets: nothing at all.
+
+    A dry cycle is routed away from the dream phase entirely, so it reaches no
+    `gate` node and needs no vectors. Running the real guard is not merely
+    redundant -- `embedder-guard.sh` writes `.agent-state/embedder_guard/*`
+    and `logs/embedder.log`, and boots the bge-m3 daemon (up to 150s of
+    startup) if nothing is serving. Spec §10 stage 3's exit criterion is
+    "nothing to revert; Python never wrote".
+    """
+
+    def up(self) -> None:
+        return
+
+    def down(self) -> None:
+        return
+
+
 def _state_for(settings: Settings) -> DreamState:
     return FilesystemDreamState(settings.agent_root / ".agent-state")
 
@@ -435,7 +594,7 @@ def _probe_embedder(embedder: EmbedderClient, settings: Settings) -> None:
     try:
         embedder.health()
     except EmbedderUnavailable:
-        logger.error(_EMBEDDER_DOWN_AFTER_GUARD_UP, settings.embedder_url)
+        dream_logger.error(_EMBEDDER_DOWN_AFTER_GUARD_UP, settings.embedder_url)
 
 
 def _do_dream(
@@ -458,6 +617,174 @@ def _do_dream(
         captured_at=datetime.now(UTC),
         auto=auto,
     )
+
+
+# ── the cycle's own composition seams ────────────────────────────────────
+
+
+@dataclass
+class _CycleStores:
+    """The two databases a cycle needs, and the one thing they have in common:
+    a dry run gets neither on disk."""
+
+    lease_db: sqlite3.Connection
+    checkpointer: Checkpointer | None
+
+
+@contextmanager
+def _cycle_stores(settings: Settings, *, dry_run: bool) -> Iterator[_CycleStores]:
+    """Open (and always close) the lease and checkpoint databases.
+
+    Both live in `agent/.agent-state/`, next to `lock_<name>` and the dream
+    cooldown markers -- one directory for the Python runtime's local
+    per-account state, matching `_state_for` above. The two modules own their
+    FILENAMES (`LEASE_DB_NAME`, `CHECKPOINT_DB_NAME`) and this composition
+    root owns the directory.
+
+    **A dry run gets an in-memory lease DB and no checkpointer at all.**
+    `run_cycle` already takes no lease when `deps.dry_run` is set, so the
+    connection is never used -- but `sqlite3.connect(<path>)` CREATES the file
+    regardless, and a shadow round that leaves two new databases in
+    `.agent-state/` has written to disk during the round whose exit criterion
+    is "nothing to revert; Python never wrote" (spec §10 stage 3). Resuming a
+    shadow round is meaningless for the same reason there is nothing to
+    resume from.
+    """
+    with ExitStack() as stack:
+        target = ":memory:"
+        if not dry_run:
+            # `sqlite3.connect` does not create missing parents -- it raises
+            # `OperationalError: unable to open database file`, which reads as
+            # a bug rather than as "this account has never had local state".
+            # `open_checkpointer` already mkdirs its own; this is the same
+            # directory, and the lease DB is opened first.
+            lease_path = _lease_db_path(settings)
+            lease_path.parent.mkdir(parents=True, exist_ok=True)
+            target = str(lease_path)
+        lease_db = stack.enter_context(closing(sqlite3.connect(target)))
+        checkpointer = (
+            None if dry_run else stack.enter_context(checkpointer_at(_checkpoint_db_path(settings)))
+        )
+        yield _CycleStores(lease_db=lease_db, checkpointer=checkpointer)
+
+
+def _lease_db_path(settings: Settings) -> Path:
+    return settings.agent_root / ".agent-state" / LEASE_DB_NAME
+
+
+def _checkpoint_db_path(settings: Settings) -> Path:
+    return settings.agent_root / ".agent-state" / CHECKPOINT_DB_NAME
+
+
+@contextmanager
+def _lease_busy_guard(name: str) -> Iterator[None]:
+    """Turn `LeaseBusy` into an `AccountSetupError` carrying a REMEDY.
+
+    `LeaseBusy`'s own message is a cause ("... act lease busy (lock_zenith
+    held (12s))") and ruling R17 wants the SKIP line to name the remedy too.
+    It has one, and this project has already needed it: an accepted Bash dream
+    exits 141 after "snapshot uploaded" and orphans `dream_lock_<name>`, so
+    "another run holds it" and "a dead run left it behind" look identical
+    until someone checks the pid inside the file (CLAUDE.md, "Accepted-dream
+    SIGPIPE orphan lock"). Bash itself only logs `SKIP <name> — locked` and
+    moves on, which is why those orphans went unnoticed for whole rounds.
+    """
+
+    try:
+        yield
+    except LeaseBusy as exc:
+        raise AccountSetupError(
+            f"{name}: {exc} -- another run holds this account. Wait for it, or "
+            f"if it is an orphan (`cat agent/.agent-state/*lock_{name}` names a "
+            "pid that is no longer alive) remove that lock file; leases older "
+            "than 1800s are reclaimed automatically"
+        ) from exc
+
+
+def _cycle_deps_for(
+    persona: Persona,
+    persona_source: PersonaSource,
+    settings: Settings,
+    *,
+    dry_run: bool,
+    auto: bool,
+    budget: int,
+    seed: int | None,
+) -> CycleDeps:
+    """Everything the nine nodes need, built once per cycle.
+
+    Deliberately the SAME collaborators, read from the same places, that
+    `act` hands `run_act` and `dream` hands `run_dream` -- that is what makes
+    the parity oracle (`test_cycle_parity.py`) a comparison of the two paths
+    rather than of two compositions.
+
+    One real difference, recorded on `CycleDeps` itself: `now` and
+    `captured_at` are frozen ONCE here, where `act` and `dream` are two
+    processes taking a fresh `datetime.now()` each. Within one cycle that is
+    minutes in an archive stamp.
+
+    `_probe_embedder` runs here for the same reason `_do_dream` runs it: once
+    per invocation, right after `guard.up()`, before any account work --
+    `EmbedderGuard.up()` cannot fail loudly (R10). **Except under `dry_run`**:
+    a shadow round never reaches the gate, so the drift check it would warn
+    about was never going to happen. Probing anyway emits one ERROR per
+    account -- 23 "the drift gate is OFF for every dream this invocation runs"
+    lines into `dream.log`, for dreams that do not run, in the very log stage 3
+    is read from.
+    """
+    embedder = _embedder_for(settings)
+    if not dry_run:
+        _probe_embedder(embedder, settings)
+    return CycleDeps(
+        resources=_resources_for(persona, settings),
+        backend=_backend_for(persona, settings),
+        persona_source=persona_source,
+        runner=_runner_for(settings),
+        embedder=embedder,
+        dream_state=_state_for(settings),
+        settings=settings,
+        agent_root=settings.agent_root,
+        health_check=lambda: _health_check(settings),
+        memory_text=persona_source.read_memory(agent_dir_name(persona)),
+        context_now=_context_now_for(settings),
+        feed_context=_feed_context_for(settings, persona.username),
+        budget=budget,
+        access_key=settings.unsplash_access_key,
+        dry_run=dry_run,
+        auto=auto,
+        rng=random.Random(seed),
+        now=datetime.now(),
+        captured_at=datetime.now(UTC),
+    )
+
+
+def _resume_round_id(stores: _CycleStores, agent: str) -> str:
+    """The round id `--resume` continues, read back out of the checkpoint
+    database.
+
+    Recomputing it from the clock (`run_cycle`'s own default) would build a
+    DIFFERENT `thread_id` and silently start a brand-new cycle instead of
+    continuing the interrupted one -- the failure mode where `--resume`
+    appears to work and quietly re-runs the act phase, re-posting whatever
+    already landed.
+    """
+    if stores.checkpointer is None:
+        raise AccountSetupError(
+            f"{agent}: --resume and --dry-run are mutually exclusive -- a shadow "
+            "round writes no checkpoint, so there is nothing to continue from"
+        )
+    found = latest_round_id(stores.checkpointer, BUILTIN_TENANT, agent)
+    if found is None:
+        raise AccountSetupError(
+            f"{agent}: no checkpointed cycle to resume -- run "
+            f"`swil-agent cycle {agent}` (without --resume) first, or check that "
+            f"{_checkpoint_db_path_hint()} still exists"
+        )
+    return found
+
+
+def _checkpoint_db_path_hint() -> str:
+    return f"agent/.agent-state/{CHECKPOINT_DB_NAME}"
 
 
 # ── reporting ────────────────────────────────────────────────────────────
@@ -495,6 +822,98 @@ def _report_dream_result(name: str, result: DreamResult) -> None:
         typer.echo(f"{name}: dream accepted -- personality updated ({result.reason})")
     else:
         typer.echo(f"{name}: dream rejected -- {result.reason}")
+
+
+def _act_result_of(state: CycleState) -> ActResult | None:
+    """Project the act half of a final `CycleState` back onto `ActResult`.
+
+    Projected rather than re-formatted so `cycle` and `act` print the same
+    line for the same round: `_report_act_result` is the ONE renderer, and a
+    second copy of that format is a second thing to keep in step with
+    whatever a shadow-round comparison greps for.
+
+    `None` when the cycle never reached an outcome at all -- a resumed thread
+    with nothing left to run, say -- because `ActResult.outcome` is required
+    and inventing one would report a round that did not happen.
+    """
+    outcome = state.get("outcome")
+    if outcome is None:
+        return None
+    return ActResult(
+        outcome=outcome,
+        results=state.get("results", []),
+        vetoed=state.get("vetoed", []),
+        plan=state.get("plan"),
+        context=state.get("context"),
+        rhythm=state.get("rhythm"),
+        attempted=state.get("attempted", 0),
+        landed=state.get("landed", 0),
+    )
+
+
+def _dream_result_of(state: CycleState) -> DreamResult:
+    """The dream half, same idea.
+
+    `accepted` is `written` -- the flag that answers "did `personality.md`
+    actually change" -- never `verdict.accepted`, which is a claim about the
+    gate and not about the file (`dream/round.py`'s `WriteStep`). The reason
+    prefers `dream_reason` (a cooldown SKIP, an empty rewrite, a blown
+    deadline: the reasons a dream never reached the gate) and falls back to
+    the verdict's, which is the only place a REJECTION's reason lives.
+
+    `narrative` and `snapshot_reason` are projected for completeness and have
+    NO reader: `_report_dream_result` prints neither. That is deliberate and
+    is recorded rather than pinned — the load-bearing hand-off those fields
+    belong to is `write` -> `snapshot` INSIDE the graph, which
+    `test_graph_nodes.py` already pins at both ends (a dropped `narrative`
+    empties `diffNarrative` on every uploaded snapshot). A test asserting
+    that this projection copies a field nothing reads would defend the copy,
+    not the property; if a future reporter starts printing the narrative, its
+    own test is what should pin it.
+    """
+    verdict = state.get("verdict")
+    reason = state.get("dream_reason") or (verdict.reason if verdict is not None else "")
+    return DreamResult(
+        proceeded=state.get("proceeded", False),
+        accepted=state.get("written", False),
+        reason=reason,
+        verdict=verdict,
+        narrative=state.get("narrative", ""),
+        snapshot_ok=state.get("snapshot_ok", False),
+        snapshot_reason=state.get("snapshot_reason"),
+    )
+
+
+def _cycle_granted_dream(state: CycleState) -> bool:
+    """The cycle's 0-vs-75 decision, taken through `ActResult.grants_dream`
+    -- design spec §7.1's ONE implementation, the same one `act` exits on and
+    the same one `graph/cycle.py` routes on. Three copies of that rule is how
+    the CLI and the graph come to disagree about whether a round counted.
+
+    An outcome that was never decided is not a failure: `run_cycle` returns
+    the accumulated state, and a resumed thread with nothing left to run
+    carries whatever the interrupted run had already recorded.
+    """
+    outcome = state.get("outcome")
+    if outcome is None:
+        return True
+    return ActResult(outcome=outcome).grants_dream
+
+
+def _report_cycle_result(name: str, state: CycleState, *, dry_run: bool) -> None:
+    """Both halves, in the order they happened, through the two renderers
+    `act` and `dream` already use.
+
+    The dream line is printed only when the dream phase actually ran --
+    `proceeded` is absent entirely for an offline round, a dead backend, and
+    a dry run, and printing `SKIP <name> -- ` with an empty reason for those
+    would make three quite different rounds read identically.
+    """
+    act_result = _act_result_of(state)
+    if act_result is not None:
+        _report_act_result(name, act_result, dry_run=dry_run)
+    if "proceeded" in state:
+        _report_dream_result(name, _dream_result_of(state))
 
 
 def _load_persona_or_raise_setup_error(persona_source: PersonaSource, name: str) -> Persona:
@@ -650,6 +1069,100 @@ def dream(
 
     _report_dream_result(name, result)
     raise typer.Exit(EXIT_OK if result.proceeded else EXIT_NO_ACTION)
+
+
+@app.command()
+def cycle(
+    name: str,
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan only; execute and write nothing."),
+    resume: bool = typer.Option(
+        False, "--resume", help="Continue this account's last checkpointed cycle."
+    ),
+    auto: bool = typer.Option(False, "--auto", help="Honour the 12h dream cooldown."),
+    budget: int = typer.Option(5, "--budget"),
+    seed: int | None = typer.Option(
+        None, "--seed", help="Seed the rhythm roll for reproducibility."
+    ),
+) -> None:
+    """Python port of `cycle-one.sh`: login -> act -> dream -> logout, for one
+    account, as ONE LangGraph run.
+
+    Exit codes are `act`'s and `dream`'s (ruling R17), because `cycle-one.sh`
+    and the heartbeat branch on exactly those three: `0` the cycle ran, `66`
+    no such account, `75` a setup failure or a busy lease. `0` vs `75` is
+    `ActResult.grants_dream` over the final state's outcome -- the same
+    decision `act` exits on and the same one `cycle-one.sh` propagates when it
+    forwards `auto-run.sh`'s rc.
+
+    **`--auto` defaults to OFF, which is NOT `cycle-one.sh`'s default.** That
+    script calls `dream.sh --auto "$NAME"` unless `FORCE_DREAM=1`, so a
+    canary invocation that wants Bash's scheduling must pass `--auto` here
+    too. The flag is spelled and defaulted exactly like `swil-agent dream`'s,
+    so the CLI has one meaning for `--auto` rather than two; the difference is
+    stated here instead of being absorbed silently.
+
+    **`--dry-run` takes NO lease and NO checkpoint.** A shadow round executes
+    nothing and writes nothing, so it needs no mutual exclusion -- and taking
+    the lock costs a concurrent real Bash round its whole turn (F4). It also
+    does not dream: `write_step`/`snapshot_step` have no `dry_run` to be inert
+    under, so `graph/cycle.py` routes a dry cycle from the act phase straight
+    to logout (design spec §9.4, "executes nothing and writes nothing").
+
+    **`--resume`** continues the last checkpointed cycle for this account,
+    reusing its `thread_id`. The round id is read back out of the checkpoint
+    database (`latest_round_id`) rather than recomputed from the clock, which
+    would produce a different thread and silently start a fresh cycle.
+    """
+    settings = load_settings()
+    _attach_cycle_logs(settings)
+    persona_source = _persona_source_for(settings)
+    try:
+        persona = _load_persona_or_raise_setup_error(persona_source, name)
+    except FileNotFoundError as exc:
+        typer.echo(f"no such account: {name}", err=True)
+        raise typer.Exit(EXIT_NO_SUCH_ACCOUNT) from exc
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    # A shadow round never reaches the `gate` node, so it needs no embedder --
+    # and starting one is not free: `EmbedderGuard.up()` writes
+    # `.agent-state/embedder_guard/*` and `logs/embedder.log`, and can `nohup`
+    # the bge-m3 daemon for up to 150s. `_dry_run_guard` is the no-op that
+    # keeps `guard.up()`/`guard.down()` unconditional in the control flow (the
+    # `finally` below must not have to know which kind it holds).
+    guard: _Guard = _DryRunGuard() if dry_run else _guard_for(settings)
+    try:
+        guard.up()
+        with (
+            _cycle_stores(settings, dry_run=dry_run) as stores,
+            _backend_setup_guard(persona),
+            _lease_busy_guard(name),
+        ):
+            final = run_cycle(
+                persona=persona,
+                deps=_cycle_deps_for(
+                    persona,
+                    persona_source,
+                    settings,
+                    dry_run=dry_run,
+                    auto=auto,
+                    budget=budget,
+                    seed=seed,
+                ),
+                lease_db=stores.lease_db,
+                checkpointer=stores.checkpointer,
+                round_id=(_resume_round_id(stores, agent_dir_name(persona)) if resume else None),
+                resume=resume,
+            )
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+    finally:
+        guard.down()
+
+    _report_cycle_result(name, final, dry_run=dry_run)
+    raise typer.Exit(EXIT_OK if _cycle_granted_dream(final) else EXIT_NO_ACTION)
 
 
 @app.command()

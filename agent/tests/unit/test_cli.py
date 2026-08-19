@@ -34,6 +34,7 @@ from typer.testing import CliRunner
 
 from swil_agent import cli
 from swil_agent.api.auth import PasswordAuth
+from swil_agent.api.client import ApiError
 from swil_agent.config import Settings
 from swil_agent.embedder.client import EmbedderClient, EmbedderUnavailable
 from swil_agent.embedder.guard import EmbedderGuard
@@ -46,7 +47,13 @@ from swil_agent.locks import act_lock_path
 from swil_agent.models import Persona
 from swil_agent.persona.source import GitPersonaSource
 
-from ._runners import FakeResources, StubBackend, TwoCallBackend
+from ._runners import (
+    FakeResources,
+    RecordingRunner,
+    ScriptedBackend,
+    StubBackend,
+    TwoCallBackend,
+)
 
 runner = CliRunner()
 
@@ -656,6 +663,828 @@ def test_dream_does_not_log_when_embedder_is_healthy(
     with caplog.at_level("ERROR"):
         runner.invoke(cli.app, ["dream", "zenith", "--auto"])
     assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+# ── cycle ────────────────────────────────────────────────────────────────
+
+
+def _cycle_backend() -> ScriptedBackend:
+    """One backend object for a whole cycle: plan, rewrite candidate, diff
+    narrative -- in the order `run_cycle` spends them."""
+    return ScriptedBackend(_POST_PLAN, _valid_dream_candidate(), "梦把语气放软了")
+
+
+@pytest.fixture
+def tmp_cycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`tmp_agent`'s sibling for the `cycle` command.
+
+    Separate rather than a parameter on `tmp_agent` because a cycle needs a
+    backend that answers THREE different prompts in order (`StubBackend`
+    answers every prompt identically, which would feed the plan JSON to the
+    dream) and `drift_mode="scalar"`, so the constant-vector fake embedder
+    produces a cosine similarity of 1.0 and the gate accepts without a real
+    aspect distiller.
+    """
+    _write_zenith(tmp_path)
+    _patch_cycle_seams(monkeypatch, tmp_path)
+    return tmp_path
+
+
+def _patch_cycle_seams(monkeypatch: pytest.MonkeyPatch, agent_root: Path) -> None:
+    """Every network-, subprocess- and clock-facing seam a cycle reaches.
+
+    `_runner_for` is patched too, unlike in `tmp_agent`: the cycle's `gate`
+    node runs the aspect distiller under any `drift_mode` other than
+    `"scalar"`, and that distiller shells out through a REAL
+    `SubprocessRunner` -- three `claude` invocations at a 300s timeout each.
+    A test that forgets `drift_mode="scalar"` therefore hangs for minutes
+    instead of failing, which is how a five-second suite becomes a five-minute
+    one nobody can bisect. Belt as well as braces.
+    """
+    settings = Settings(agent_root=agent_root, drift_mode="scalar")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: FakeResources())
+    monkeypatch.setattr(cli, "_backend_for", lambda persona, settings: _cycle_backend())
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient())
+    monkeypatch.setattr(cli, "_guard_for", lambda settings: _FakeGuard())
+    monkeypatch.setattr(cli, "_health_check", lambda settings: True)
+    monkeypatch.setattr(cli, "_runner_for", lambda settings: RecordingRunner())
+
+
+def test_cycle_runs_the_act_and_the_dream_in_one_process_and_exits_0(tmp_cycle: Path) -> None:
+    """The whole point of the command: `cycle-one.sh`'s two processes become
+    one graph run. Asserted on EFFECTS -- the act's memory line and the
+    dream's rewritten `personality.md` -- because both halves reporting
+    "success" on stdout is exactly what a cycle that silently skipped its
+    dream would also print."""
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 0
+    assert "landed_all" in result.stdout
+    assert "dream accepted" in result.stdout
+    assert not _memory_unchanged(tmp_cycle)
+    personality = (tmp_cycle / "agents" / "zenith" / "personality.md").read_text(encoding="utf-8")
+    assert "改写后的简介" in personality
+    assert (tmp_cycle / "agents" / "zenith" / "personality.archive.md").exists()
+
+
+def test_cycle_an_unknown_account_exits_66(tmp_cycle: Path) -> None:
+    """66 keeps meaning exactly one thing across all three commands --
+    `cycle-one.sh` and the heartbeat branch on the code, not on the text."""
+    result = runner.invoke(cli.app, ["cycle", "nosuchagent"])
+    assert result.exit_code == 66
+    assert "no such account: nosuchagent" in result.output
+
+
+def test_cycle_exits_75_when_the_platform_is_unreachable(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0-vs-75 is `ActResult.grants_dream` over the final outcome -- the same
+    decision `act` exits on. `OFFLINE` is one of the two outcomes that deny
+    the round, so `cycle-one.sh`'s "act did not land, skip the dream" branch
+    sees the code it expects."""
+    monkeypatch.setattr(cli, "_health_check", lambda settings: False)
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert result.exit_code == 75
+    assert "offline" in result.stdout
+
+
+def test_cycle_a_busy_lease_skips_with_a_cause_and_a_remedy_and_exits_75(
+    tmp_cycle: Path,
+) -> None:
+    """`LeaseBusy` is a `RuntimeError` and not in `_KNOWN_SETUP_FAILURES`, so
+    without `_lease_busy_guard` a locked account reads as `UNEXPECTED
+    LeaseBusy` -- a programming error -- when it is the most ordinary thing
+    that happens to a parallel round.
+
+    The remedy is the one this project has actually needed: an accepted Bash
+    dream exits 141 after "snapshot uploaded" and orphans its lock, so "held"
+    and "orphaned" look identical until someone checks the pid.
+    """
+    _hold_lock(tmp_cycle, "zenith")
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 75
+    assert "SKIP zenith" in result.stdout
+    assert "lease busy" in result.stdout
+    assert "pid" in result.stdout
+    assert "UNEXPECTED" not in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_cycle_with_no_credentials_skips_with_the_remedy_and_exits_75(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The composition-failure path, with `_resources_for` running for REAL
+    against a credential-less roster -- and the guard bracketed cleanly."""
+    _write_zenith(tmp_path)
+    settings = Settings(agent_root=tmp_path, swil_url="https://example.test")
+    guard = _FakeGuard()
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient())
+    monkeypatch.setattr(cli, "_guard_for", lambda settings: guard)
+
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 75
+    assert "create-api-key" in result.stdout
+    assert "Traceback" not in result.stdout
+    assert guard.up_calls == 1
+    assert guard.down_calls == 1
+
+
+def test_cycle_an_unexpected_failure_exits_75_and_logs_unexpected(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Exit 1 is a fourth code neither `cycle-one.sh` nor the heartbeat can
+    read, so even a genuine bug leaves through the 0/66/75 contract -- named
+    `UNEXPECTED` so it is never mistaken for something `create-api-key`
+    fixes."""
+
+    def _boom(persona: Persona, settings: Settings) -> FakeResources:
+        raise _InjectedBugError("boom -- not a setup failure")
+
+    monkeypatch.setattr(cli, "_resources_for", _boom)
+    with caplog.at_level("DEBUG"):
+        result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 75
+    assert "UNEXPECTED _InjectedBugError" in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_cycle_leaves_no_lock_file_or_lease_row_behind(tmp_cycle: Path) -> None:
+    """The orphan-lock class: a cycle that exits without releasing costs the
+    account every round for the next 30 minutes, in BOTH runtimes."""
+    from swil_agent.locks import dream_lock_path
+
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert result.exit_code == 0
+    assert not act_lock_path(tmp_cycle, "zenith").exists()
+    assert not dream_lock_path(tmp_cycle, "zenith").exists()
+
+
+class _LockWatchingProbe:
+    """A `_health_check` stand-in that records what `.agent-state/` looked
+    like at the moment the FIRST node ran -- i.e. with any lease held."""
+
+    def __init__(self, agent_root: Path) -> None:
+        self._root = agent_root
+        self.lock_files: list[str] = []
+
+    def __call__(self, settings: Settings) -> bool:
+        state_dir = self._root / ".agent-state"
+        self.lock_files = sorted(path.name for path in state_dir.glob("*lock_*"))
+        return True
+
+
+def test_cycle_dry_run_takes_no_lease_and_writes_nothing(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F4, and design spec §9.4's whole premise.
+
+    A dry run executes nothing and writes nothing, so it needs no mutual
+    exclusion -- and taking the lock costs a concurrent real Bash round its
+    entire turn (`auto-run.sh`'s `acquire_lock` failure path returns 75 and
+    skips the account). The lock has to be observed DURING the run: a cycle
+    that took and released it leaves exactly the same empty directory behind
+    as one that never took it.
+
+    "Writes nothing" is asserted on four surfaces, because each is a
+    different way for a shadow round to leave a mark: `memory.md`,
+    `personality.md`, and the two SQLite databases -- `sqlite3.connect(path)`
+    creates its file whether or not anything is ever written through it.
+    """
+    probe = _LockWatchingProbe(tmp_cycle)
+    monkeypatch.setattr(cli, "_health_check", probe)
+
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert probe.lock_files == []
+    assert _memory_unchanged(tmp_cycle)
+    assert (tmp_cycle / "agents" / "zenith" / "personality.md").read_text(
+        encoding="utf-8"
+    ) == ZENITH_PERSONALITY
+    assert not (tmp_cycle / ".agent-state" / cli.LEASE_DB_NAME).exists()
+    assert not (tmp_cycle / ".agent-state" / cli.CHECKPOINT_DB_NAME).exists()
+
+
+def test_cycle_dry_run_still_reports_the_plan_it_would_have_executed(tmp_cycle: Path) -> None:
+    """The other half: §9.4 compares the rhythm policy, the guardrail
+    verdicts and the veto lists, so a dry run that produced no plan would
+    make the shadow round measure nothing."""
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run"])
+    assert result.exit_code == 0
+    assert "would execute: post" in result.stdout
+
+
+def test_cycle_dry_run_does_not_dream(tmp_cycle: Path) -> None:
+    """A shadow round "executes nothing and **writes nothing**" -- and the
+    dream phase's two write steps take no `dry_run` to be inert under, so a
+    dry cycle that entered it would rewrite 23 real `personality.md` files
+    during the round whose exit criterion is "Python never wrote".
+
+    Asserted on the REPORT as well as on disk: no dream line at all, because
+    the phase did not run -- which is a different thing from a dream that ran
+    and was rejected.
+    """
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run"])
+    assert "dream" not in result.stdout
+    # NOT a `SKIP zenith -- ` line either. `_report_dream_result` renders a
+    # dream that never proceeded as `SKIP <name> -- <reason>`, and with an
+    # absent reason that is a bare `SKIP zenith -- ` for every shadow round on
+    # the roster: 23 spurious SKIP lines in the very output stage 3 exists to
+    # read (standing constraint §9).
+    assert "SKIP zenith" not in result.stdout
+    assert not (tmp_cycle / "agents" / "zenith" / "personality.archive.md").exists()
+
+
+# ── cycle: the two round logs ─────────────────────────────────────────────
+
+
+def test_a_cycle_splits_its_act_and_dream_lines_across_the_two_log_files(
+    tmp_cycle: Path, round_log_level: None
+) -> None:
+    """`auto-run.sh:34` and `dream.sh:40` write to two different files, and a
+    cycle produces BOTH phases in one process -- so the destination cannot be
+    chosen per command the way `act`'s and `dream`'s are. Plan 2 shipped a
+    version that sent both to `auto-run.log` and no test caught it.
+
+    Both directions are asserted, because either one alone lets a mutation
+    through: an act line in `dream.log` is as wrong as a dream line in
+    `auto-run.log`, and a filter that simply sent everything to one file
+    passes any single-direction check.
+    """
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert result.exit_code == 0
+
+    act_lines = _round_log_lines(tmp_cycle, "auto-run.log")
+    dream_lines = _round_log_lines(tmp_cycle, "dream.log")
+
+    assert any("DONE zenith posted" in line for line in act_lines), act_lines
+    assert not any("dreamed" in line for line in act_lines), act_lines
+
+    assert any("dreamed" in line for line in dream_lines), dream_lines
+    assert any("snapshot uploaded" in line for line in dream_lines), dream_lines
+    assert not any("posted" in line for line in dream_lines), dream_lines
+
+
+def test_a_cycles_logout_record_lands_in_the_act_log(
+    tmp_cycle: Path, round_log_level: None
+) -> None:
+    """§7.6's terminal record is the only line that says a cycle reached its
+    end rather than dying somewhere in the middle, and it belongs where
+    Bash's own `=== auto-run complete ===` is. It comes from
+    `swil_agent.graph.nodes`, the ONE module that emits both phases -- the
+    dream node's deadline FAIL is a child logger for exactly this reason, so
+    routing by module alone would put one of the two in the wrong file."""
+    runner.invoke(cli.app, ["cycle", "zenith"])
+    assert any("logout zenith" in line for line in _round_log_lines(tmp_cycle, "auto-run.log"))
+    assert not any("logout zenith" in line for line in _round_log_lines(tmp_cycle, "dream.log"))
+
+
+def test_a_cycles_dream_deadline_fail_lands_in_the_dream_log(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch, round_log_level: None
+) -> None:
+    """`swil_agent.graph.nodes` is the ONE module that emits records from both
+    phases: the logout record (the cycle's own terminal line, act log) and the
+    dream node's deadline `FAIL` (dream log). Routing by module alone puts one
+    of the two in the wrong file, which is why the deadline line goes through
+    a child logger.
+
+    Nothing else in the suite exercises this: without it, deleting
+    `"swil_agent.graph.nodes.dream"` from `_DREAM_LOG_SOURCES` leaves the
+    whole suite green and quietly moves every deadline FAIL into
+    `auto-run.log`, where a dream-log grep will never find it.
+
+    The deadline is squeezed to zero through `_cycle_deps_for`'s own return
+    value rather than by patching the module constant -- `CycleDeps` captures
+    that constant as a dataclass DEFAULT at class-definition time, so patching
+    it afterwards changes nothing.
+    """
+    from dataclasses import replace
+
+    real_deps = cli._cycle_deps_for
+
+    def _no_time_at_all(*args: object, **kwargs: object) -> object:
+        return replace(real_deps(*args, **kwargs), dream_deadline_seconds=0.0)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli, "_cycle_deps_for", _no_time_at_all)
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert result.exit_code == 0
+
+    dream_lines = _round_log_lines(tmp_cycle, "dream.log")
+    assert any("deadline" in line for line in dream_lines), dream_lines
+    assert not any("deadline" in line for line in _round_log_lines(tmp_cycle, "auto-run.log"))
+
+
+def test_a_cycles_embedder_probe_stays_in_the_dream_log(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch, round_log_level: None
+) -> None:
+    """The round-level embedder-down ERROR is about the drift gate, and
+    `swil-agent dream` already writes it to `dream.log`. A probe that changed
+    file depending on which command ran it is the kind of inconsistency
+    nobody notices until they grep for it during an outage."""
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient(healthy=False))
+    runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert any("embedder unreachable" in line for line in _round_log_lines(tmp_cycle, "dream.log"))
+    assert not any(
+        "embedder unreachable" in line for line in _round_log_lines(tmp_cycle, "auto-run.log")
+    )
+
+
+def test_switching_between_act_and_cycle_does_not_double_any_line(
+    tmp_cycle: Path, round_log_level: None
+) -> None:
+    """`act` attaches ONE unfiltered handler to `auto-run.log`; `cycle`
+    attaches a FILTERED one to the same path plus a second on `dream.log`.
+    Both include a handler on `auto-run.log`, so an idempotency check keyed on
+    the path alone would treat the second attachment as a no-op and leave the
+    unfiltered handler in place -- every act line written twice, and every
+    dream line leaking into the act log."""
+    runner.invoke(cli.app, ["act", "zenith"])
+    after_act = _round_log_lines(tmp_cycle, "auto-run.log")
+    runner.invoke(cli.app, ["cycle", "zenith"])
+    after_cycle = _round_log_lines(tmp_cycle, "auto-run.log")
+
+    added = after_cycle[len(after_act) :]
+    posted = [line for line in added if "DONE zenith posted" in line]
+    assert len(posted) == 1, added
+    assert not any("dreamed" in line for line in added), added
+
+
+# ── cycle: --resume ───────────────────────────────────────────────────────
+
+
+def test_cycle_resume_continues_the_interrupted_run_without_re_acting(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--resume` reuses the `thread_id`, and the proof is an EFFECT the
+    return value cannot show: the act phase does not run again.
+
+    A `--resume` that recomputed the round id from the clock would build a
+    different thread, start a brand-new cycle, and re-post -- passing any
+    test that only checks "the second invocation exited 0".
+
+    The interruption is injected at the `gate` node, which is past the whole
+    act phase and before any dream write, so the checkpoint the resume
+    continues from is one where a post has already landed.
+    """
+    from swil_agent.graph import nodes as nodes_module
+
+    posts: list[FakeResources] = []
+
+    def _recording_resources(persona: Persona, settings: Settings) -> FakeResources:
+        resources = FakeResources()
+        posts.append(resources)
+        return resources
+
+    monkeypatch.setattr(cli, "_resources_for", _recording_resources)
+
+    def _explode(**_kwargs: object) -> object:
+        raise _InjectedBugError("interrupted mid-cycle")
+
+    monkeypatch.setattr(nodes_module, "gate_step", _explode)
+    first = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert first.exit_code == 75
+    assert len(posts[0].created_posts) == 1
+
+    # `undo()` reverts EVERY patch this shared `monkeypatch` made, the
+    # fixture's included -- so the seams have to be reinstalled, not just the
+    # exploding gate removed. Left un-reinstalled, the second invocation would
+    # call the real `load_settings()`, the real `/health` probe and a real
+    # `claude` subprocess.
+    monkeypatch.undo()
+    _patch_cycle_seams(monkeypatch, tmp_cycle)
+    monkeypatch.setattr(cli, "_resources_for", _recording_resources)
+
+    second = runner.invoke(cli.app, ["cycle", "zenith", "--resume"])
+
+    assert second.exit_code == 0
+    # The resumed process re-plans nothing and re-posts nothing: the act
+    # phase's nodes are already past in the checkpoint.
+    assert posts[1].created_posts == []
+    assert len(posts[0].created_posts) == 1
+
+
+def test_cycle_resume_without_a_previous_cycle_skips_with_a_remedy(tmp_cycle: Path) -> None:
+    """No checkpoint means nothing to continue. Reported as a KNOWN,
+    remediable setup problem naming the command that creates one -- not as
+    `UNEXPECTED EmptyInputError`, which is what langgraph raises if the
+    request reaches it."""
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--resume"])
+
+    assert result.exit_code == 75
+    assert "SKIP zenith" in result.stdout
+    assert "no checkpointed cycle to resume" in result.stdout
+    assert "UNEXPECTED" not in result.stdout
+
+
+def test_cycle_resume_and_dry_run_are_mutually_exclusive(tmp_cycle: Path) -> None:
+    """A shadow round writes no checkpoint (that is the point), so there can
+    never be one of its own to resume. Refused with a reason rather than
+    silently resuming some earlier REAL cycle under a `--dry-run` flag the
+    dream phase would then not be protected by."""
+    runner.invoke(cli.app, ["cycle", "zenith"])  # leaves a real checkpoint behind
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--resume", "--dry-run"])
+
+    assert result.exit_code == 75
+    assert "mutually exclusive" in result.stdout
+
+
+def test_cycle_reads_memory_by_the_directory_name_not_the_username(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two identities diverge on this roster (CLAUDE.md, "stray
+    agents/<name> dir shadows a humans/ account"), and every other test in
+    this file uses an account where they coincide -- so a `read_memory` keyed
+    on the wrong one is invisible there.
+
+    Here the directory is `zenith_dir` and the `Username` bullet is `zenith`,
+    with NO `agents/zenith` directory at all: `GitPersonaSource.read_memory`
+    resolves its argument to a directory, so keying on the username cannot
+    silently read the wrong file -- it raises `FileNotFoundError` and the
+    account SKIPs. Which is the mild version of the same defect; on the real
+    roster, where both directories exist, it reads another account's memory
+    into this account's prompt.
+    """
+    directory = tmp_path / "agents" / "zenith_dir"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text(ZENITH_PERSONALITY, encoding="utf-8")
+    (directory / "memory.md").write_text(_INITIAL_MEMORY, encoding="utf-8")
+    _patch_cycle_seams(monkeypatch, tmp_path)
+
+    result = runner.invoke(cli.app, ["cycle", "zenith_dir"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "landed_all" in result.stdout
+    # The act line landed in the DIRECTORY's own memory.md.
+    assert "hello from zenith" in (directory / "memory.md").read_text(encoding="utf-8")
+
+
+def test_cycle_auto_honours_the_dream_cooldown_and_force_does_not(
+    tmp_cycle: Path,
+) -> None:
+    """`--auto` is spelled and defaulted exactly like `swil-agent dream`'s, so
+    the CLI has ONE meaning for the flag -- but `cycle-one.sh` passes
+    `--auto` by DEFAULT (`dream.sh --auto "$NAME"` unless `FORCE_DREAM=1`), so
+    a canary invocation that wants Bash's scheduling has to pass it here too.
+
+    Both halves are asserted: without the force half, hard-coding `auto=True`
+    survives, and without the `--auto` half, hard-coding `auto=False` does.
+    The act phase runs identically either way -- only the dream differs.
+    """
+    _set_last_dream(tmp_cycle, "zenith", hours_ago=1)
+
+    throttled = runner.invoke(cli.app, ["cycle", "zenith", "--auto"])
+    assert throttled.exit_code == 0
+    assert "SKIP zenith" in throttled.stdout
+    assert "cooldown" in throttled.stdout
+    assert not (tmp_cycle / "agents" / "zenith" / "personality.archive.md").exists()
+
+    forced = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert forced.exit_code == 0
+    assert "dream accepted" in forced.stdout
+    assert (tmp_cycle / "agents" / "zenith" / "personality.archive.md").exists()
+
+
+def test_cycle_seeds_the_rhythm_roll_from_the_seed_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--seed` is what makes a shadow round's rhythm verdict comparable
+    against Bash's on a probabilistic account -- the roll happens before the
+    LLM is ever called.
+
+    Pinned on the EXACT roll rather than on "two runs with the same seed
+    agree": `random.Random(7).randint(1, 100)` is 42 and `random.Random(11)`
+    is 58, both fixed forever, where an UNSEEDED `random.Random()` would agree
+    with itself about half the time on a two-outcome rhythm and let the
+    mutation through on most runs.
+    """
+    _write_zenith(tmp_path, personality=_PROBABILISTIC_RHYTHM)
+    _patch_cycle_seams(monkeypatch, tmp_path)
+
+    seven = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run", "--seed", "7"])
+    eleven = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run", "--seed", "11"])
+
+    assert "roll=42/60" in seven.stdout, seven.stdout
+    assert "roll=58/60" in eleven.stdout, eleven.stdout
+
+
+def test_cycle_feeds_the_planner_the_login_written_context_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`context/now.md` and `context/feed_for_<Username>.md` are written by
+    `swil.sh login`, which stays Bash in phase 1 -- so a cycle that failed to
+    read them plans against a blank world and nothing goes red.
+
+    The feed file is keyed on the `Username` BULLET while everything else in
+    this runtime is keyed on the directory name (`auto-run.sh:504`'s own
+    `username_for_feed`), so this account's two identities differ on purpose:
+    a lookup keyed on the directory finds no file and degrades to `""`.
+    """
+    directory = tmp_path / "agents" / "zenith_dir"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text(ZENITH_PERSONALITY, encoding="utf-8")
+    (directory / "memory.md").write_text(_INITIAL_MEMORY, encoding="utf-8")
+    (tmp_path / "context").mkdir()
+    (tmp_path / "context" / "now.md").write_text("NOW-MARKER-9137", encoding="utf-8")
+    (tmp_path / "context" / "feed_for_zenith.md").write_text("FEED-MARKER-4471", encoding="utf-8")
+
+    backends: list[ScriptedBackend] = []
+
+    def _recording_backend(persona: Persona, settings: Settings) -> ScriptedBackend:
+        backend = _cycle_backend()
+        backends.append(backend)
+        return backend
+
+    _patch_cycle_seams(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_backend_for", _recording_backend)
+
+    result = runner.invoke(cli.app, ["cycle", "zenith_dir", "--dry-run"])
+
+    assert result.exit_code == 0
+    plan_prompt = backends[0].calls[0].user
+    assert "NOW-MARKER-9137" in plan_prompt
+    assert "FEED-MARKER-4471" in plan_prompt
+
+
+def test_cycle_budget_caps_what_the_guardrails_let_through(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--budget` is `apply_guardrails`' action cap, and it reaches the
+    guardrail node only by being threaded through `CycleDeps`. Hard-coding
+    the default there would silently restore a 5-action round on a canary
+    invocation asking for one."""
+    three_likes = (
+        '{"plan":[{"action":"like","postId":"' + "a" * 24 + '"},'
+        '{"action":"like","postId":"' + "b" * 24 + '"},'
+        '{"action":"like","postId":"' + "c" * 24 + '"}]}'
+    )
+    monkeypatch.setattr(
+        cli,
+        "_backend_for",
+        lambda persona, settings: ScriptedBackend(three_likes, _valid_dream_candidate(), "叙述"),
+    )
+
+    capped = runner.invoke(cli.app, ["cycle", "zenith", "--budget", "1"])
+    assert capped.exit_code == 0
+    assert "landed=1/1" in capped.stdout, capped.stdout
+
+
+def test_cycle_carries_the_unsplash_key_down_to_the_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`access_key` is a CREDENTIAL, so it comes from the composition root
+    rather than being resolved deeper down -- which means the only thing
+    stopping every image post from silently degrading to text-only is this
+    one argument being threaded.
+
+    `execute_action`'s image fetcher is a DEFAULT parameter bound at
+    definition time, so it cannot be swapped through `execute_step`; the spy
+    goes on `act/round.py`'s module global instead (standing constraint §6 --
+    `execute_step` resolves that name at call time).
+    """
+    from swil_agent.act import round as act_round
+    from swil_agent.models import ActionResult
+
+    _write_zenith(tmp_path)
+    _patch_cycle_seams(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: Settings(agent_root=tmp_path, drift_mode="scalar", unsplash_access_key="KEY-4471"),
+    )
+
+    seen: list[str] = []
+
+    def _spy(resources: object, action: object, **kwargs: object) -> ActionResult:
+        seen.append(str(kwargs["access_key"]))
+        return ActionResult(action=action, landed=True, resource_id="p" * 24)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(act_round, "execute_action", _spy)
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 0
+    assert seen == ["KEY-4471"]
+
+
+def test_cycle_reports_a_partial_round_as_landed_over_attempted(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`landed=N/M` is what a post-round QA pass greps, and every other cycle
+    test here lands everything it attempts -- so the two numbers coincide and
+    a report that swapped them reads identically.
+
+    Two likes, both failing at the wire: `landed=0/2`, which a swap turns into
+    the impossible `landed=2/0`.
+    """
+    two_likes = (
+        '{"plan":[{"action":"like","postId":"'
+        + "a" * 24
+        + '"},{"action":"like","postId":"'
+        + "b" * 24
+        + '"}]}'
+    )
+    monkeypatch.setattr(
+        cli,
+        "_backend_for",
+        lambda persona, settings: ScriptedBackend(two_likes, _valid_dream_candidate(), "叙述"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_resources_for",
+        lambda persona, settings: FakeResources(like_raises=ApiError(500, "boom", None)),
+    )
+
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 0
+    assert "landed=0/2" in result.stdout, result.stdout
+
+
+# ── cycle: the two reporting projections ──────────────────────────────────
+
+
+def test_the_dream_report_follows_the_write_not_the_verdict() -> None:
+    """`accepted` answers "did `personality.md` actually change", which is
+    `written` -- a claim about the FILE -- and never `verdict.accepted`, which
+    is a claim about the gate. The two coincide on every path the graph
+    currently takes, which is exactly why the choice needs its own pin: the
+    write node's dry-run guard already returns `written=False` under an
+    ACCEPTED verdict, and it becomes reachable the moment anyone routes a
+    shadow round through the dream phase.
+    """
+    from swil_agent.models import DreamVerdict
+
+    state = {
+        "proceeded": True,
+        "verdict": DreamVerdict(accepted=True, reason="ok"),
+        "written": False,
+    }
+    result = cli._dream_result_of(state)  # type: ignore[arg-type]
+    assert result.accepted is False
+    assert result.reason == "ok"
+
+
+def test_a_cycle_with_no_outcome_yet_is_not_reported_as_a_failed_round() -> None:
+    """`run_cycle` returns the ACCUMULATED state, and a resumed thread with
+    nothing left to run carries whatever the interrupted run had already
+    recorded -- which may be nothing at all. Treating "not decided" as
+    "denied" would exit 75 on a cycle that simply had no work left, and
+    `cycle-one.sh` reads that as "the act did not land"."""
+    from swil_agent.models import ActOutcome
+
+    assert cli._cycle_granted_dream({}) is True
+    assert cli._cycle_granted_dream({"outcome": ActOutcome.OFFLINE}) is False
+    assert cli._cycle_granted_dream({"outcome": ActOutcome.LANDED_PARTIAL}) is True
+    assert cli._act_result_of({}) is None
+
+
+def test_cycle_resume_looks_up_the_thread_by_the_directory_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ONE identity site in the cycle wiring that is not otherwise pinned
+    to the directory name, on the documented folder-vs-username hazard.
+
+    `thread_id` is `tenant:<directory>:<round>` -- built by `run_cycle` from
+    `agent_dir_name(persona)` -- so a `--resume` that looked the thread up by
+    the `Username` bullet finds nothing, reports "no checkpointed cycle to
+    resume", and quietly turns every resume on a divergent-name account into a
+    SKIP. On this roster the two identities genuinely diverge.
+
+    Every other cycle test uses an account where they coincide, so the lookup
+    key is indiscriminable there: this one gives the directory `zenith_dir`
+    and the bullet `zenith`.
+    """
+    from swil_agent.graph import nodes as nodes_module
+
+    directory = tmp_path / "agents" / "zenith_dir"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text(ZENITH_PERSONALITY, encoding="utf-8")
+    (directory / "memory.md").write_text(_INITIAL_MEMORY, encoding="utf-8")
+    _patch_cycle_seams(monkeypatch, tmp_path)
+
+    def _explode(**_kwargs: object) -> object:
+        raise _InjectedBugError("interrupted mid-cycle")
+
+    monkeypatch.setattr(nodes_module, "gate_step", _explode)
+    first = runner.invoke(cli.app, ["cycle", "zenith_dir"])
+    assert first.exit_code == 75
+
+    monkeypatch.undo()
+    _patch_cycle_seams(monkeypatch, tmp_path)
+    second = runner.invoke(cli.app, ["cycle", "zenith_dir", "--resume"])
+
+    assert second.exit_code == 0, second.stdout
+    assert "no checkpointed cycle to resume" not in second.stdout
+
+
+def test_cycle_dry_run_never_starts_or_probes_the_embedder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A shadow round is routed away from the dream phase, so it reaches no
+    `gate` node and needs no vectors.
+
+    Two costs, both real. `EmbedderGuard.up()` shells out to
+    `embedder-guard.sh`, which writes `.agent-state/embedder_guard/*` and
+    `logs/embedder.log` and `nohup`s the bge-m3 daemon (up to 150s of startup)
+    if nothing is serving -- during the round whose exit criterion is "nothing
+    to revert; Python never wrote". And the post-`up()` health probe logs ONE
+    ERROR per invocation saying the drift gate is off for every dream this
+    invocation runs: across 23 accounts that is 23 alarming lines in
+    `dream.log`, about dreams that never happen, in the very log stage 3 is
+    read from.
+
+    The guard is a REAL `_FakeGuard` here rather than the fixture's, so
+    "never started" is observed rather than assumed -- `_patch_cycle_seams`
+    fakes `_guard_for` away, which is why nothing caught this.
+    """
+    _write_zenith(tmp_path)
+    _patch_cycle_seams(monkeypatch, tmp_path)
+    guard = _FakeGuard()
+    monkeypatch.setattr(cli, "_guard_for", lambda settings: guard)
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient(healthy=False))
+
+    with caplog.at_level("ERROR"):
+        result = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert guard.up_calls == 0
+    assert guard.down_calls == 0
+    assert [record for record in caplog.records if record.levelname == "ERROR"] == []
+
+
+def test_a_real_cycle_still_brackets_the_embedder_guard(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The complement: a non-dry cycle DOES reach the gate, so it keeps
+    `cycle-one.sh`'s `up`/`down` bracket exactly once each. Without this,
+    skipping the guard unconditionally passes the dry-run test above."""
+    guard = _FakeGuard()
+    monkeypatch.setattr(cli, "_guard_for", lambda settings: guard)
+
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 0
+    assert guard.up_calls == 1
+    assert guard.down_calls == 1
+
+
+def test_cycle_with_an_unparseable_persona_skips_with_the_remedy_and_exits_75(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `cycle` sibling of `act`'s and `dream`'s own version. Two `try`
+    blocks, not one, so exit 66 can only ever mean "this account directory
+    does not exist": a personality.md that EXISTS but will not parse is a
+    setup problem (75, with the bullet named), not a missing account."""
+    directory = tmp_path / "agents" / "zenith"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text("# no bullets here at all\n", encoding="utf-8")
+    (directory / "memory.md").write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(agent_root=tmp_path))
+
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 75
+    assert "Username" in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_a_round_log_that_cannot_be_opened_does_not_kill_the_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A round must not die because a log file could not be opened.
+
+    `agent/logs` is a FILE here, so `path.parent.mkdir` raises `NotADirectory
+    Error` (an `OSError`) for BOTH of the cycle's two handlers. The command
+    still runs and still exits 0; all that is lost is the file mirror.
+    """
+    _write_zenith(tmp_path)
+    (tmp_path / "logs").write_text("not a directory\n", encoding="utf-8")
+    _patch_cycle_seams(monkeypatch, tmp_path)
+
+    with caplog.at_level("WARNING"):
+        result = runner.invoke(cli.app, ["cycle", "zenith"])
+
+    assert result.exit_code == 0
+    assert sum("could not open" in record.getMessage() for record in caplog.records) == 2
+
+
+def test_cycle_writes_its_two_databases_into_the_agent_state_directory(
+    tmp_cycle: Path,
+) -> None:
+    """One directory for the Python runtime's local per-account state, next to
+    `lock_<name>` and the dream cooldown markers -- the same place
+    `FilesystemDreamState` already uses. A second top-level directory per
+    feature is how `.agent-state` stops being the one place to look during an
+    incident."""
+    result = runner.invoke(cli.app, ["cycle", "zenith"])
+    assert result.exit_code == 0
+    assert (tmp_cycle / ".agent-state" / cli.CHECKPOINT_DB_NAME).is_file()
+    assert (tmp_cycle / ".agent-state" / cli.LEASE_DB_NAME).is_file()
 
 
 # ── version ──────────────────────────────────────────────────────────────

@@ -74,6 +74,12 @@ from swil_agent.locks import FileLock, LockBusy, act_lock_path, dream_lock_path
 # held. `test_the_ttl_matches_the_bash_staleness_window` pins the equality.
 LEASE_TTL_SECONDS: Final = 1800.0
 
+# This module owns the FILENAME, not the directory -- the same split
+# `graph/checkpoint.py` makes for `CHECKPOINT_DB_NAME`, so both stay trivially
+# testable against a `tmp_path` while the composition root (`cli.py`) decides
+# they live next to `lock_<name>` under `agent/.agent-state/`.
+LEASE_DB_NAME: Final = "run_leases.sqlite"
+
 LeaseKind = Literal["act", "dream"]
 
 # `kind` is part of the identity because Bash locks act and dream separately.

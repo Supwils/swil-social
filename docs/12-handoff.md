@@ -7,19 +7,48 @@ owner: agent-python-migration
 
 # Handoff
 
-## ⚠ Python agent runtime, Plan 2 complete — Bash is still the runtime of record — 2026-08-18
+## ⚠ Python agent runtime, Plan 3 complete — Bash is still the runtime of record — 2026-08-18
 
 `agent/swil_agent/` — a `uv`-managed Python package that ports `auto-run.sh`'s
-act path and `dream.sh` — now has entrypoints: `swil-agent act <name>
-[--dry-run] [--budget N] [--seed N]` and `swil-agent dream <name> [--auto]`
-(`agent/swil_agent/cli.py`; run as `uv run --project agent swil-agent …`, or
-`cd agent && uv run swil-agent …`). 855 tests, 99% coverage, `mypy --strict`
-clean, `ruff` clean. Design spec:
+act path, `dream.sh`, and (Plan 3) `cycle-one.sh` — has three entrypoints:
+
+| command | ports | flags |
+|---|---|---|
+| `swil-agent act <name>` | `auto-run.sh`'s act path | `--dry-run` `--budget N` `--seed N` |
+| `swil-agent dream <name>` | `dream.sh` | `--auto` |
+| `swil-agent cycle <name>` | `cycle-one.sh`, as ONE LangGraph run | `--dry-run` `--resume` `--auto` `--budget N` `--seed N` |
+
+Run as `uv run --project agent swil-agent …`, or `cd agent && uv run
+swil-agent …`. 1135 tests, 99% coverage, `mypy --strict` clean, `ruff` clean.
+Design spec:
 `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`.
-Ledger of all 13 tasks: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progress.md`.
+Ledgers: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progress.md`
+(Plan 2, 13 tasks) and `.superpowers/sdd/2026-08-18-agent-runtime-python-graph/progress.md`
+(Plan 3, 10 tasks).
+
+**Three things about `cycle` that will otherwise surprise a canary operator:**
+
+- **`--auto` defaults to OFF, and `cycle-one.sh`'s default is ON.** That
+  script calls `dream.sh --auto "$NAME"` unless `FORCE_DREAM=1`. The Python
+  flag is spelled and defaulted exactly like `swil-agent dream`'s so the CLI
+  has one meaning for `--auto` — which means **a canary invocation that wants
+  Bash's dream scheduling must pass `--auto` explicitly**, or the account
+  dreams every round regardless of the 12h cooldown.
+- **`--dry-run` does not dream at all**, where `act --dry-run` is inert
+  *within* each step. Nothing in the dream path takes a `dry_run` to be inert
+  under (`write_step` rewrites `personality.md`, `snapshot_step` publishes it,
+  `dream_step` irreversibly consumes `echo_flag_<name>`), so a dry cycle is
+  routed straight from the act phase to logout, takes no lease, writes no
+  checkpoint, and never starts the embedder daemon. Spec §15.1 row 20.
+- **`--resume` continues the last checkpointed cycle** for that account,
+  reusing its `thread_id` (read back out of
+  `agent/.agent-state/cycle_checkpoints.sqlite`, not recomputed from the
+  clock). It requires a previous non-dry cycle and is refused with a remedy
+  otherwise.
 
 **Do not point anything real at this yet.** Per the spec's §10 migration-stage
-table, this closes Stage 2 (package built, unit-tested). Stages 3–4 — the
+table, this closes Stage 2 (package built, unit-tested — now including the
+graph, leases and checkpointing). Stages 3–4 — the
 shadow round (Bash executes, Python plans only, compare deterministic
 divergence) and the canary (3–5 accounts on Python, the rest on Bash, one real
 round) — have not run. **`cycle-one.sh` is still how a real round happens; the
@@ -48,18 +77,27 @@ the per-aspect drift gate, the accept/write sequence), `api/` (typed
 `Resources` + dual auth), `llm/` (claude/codex/deepseek CLI dispatch + the
 neutral aspect distiller), `embedder/` (the bge-m3 client + a thin wrapper
 around `embedder-guard.sh` — the guard script itself stays Bash on purpose,
-see spec §3.2), and now `cli.py` composing all of it. **`graph/` (LangGraph
-cycle orchestration, `CycleState`, checkpointing) and `analysis/`
-(`rule_check`, `behavior_snapshot`, `population_metric`, `summary`) are Plan
-3 and do not exist in this package at all** — there is no `swil-agent cycle`
-or `swil-agent summary` command, only `act`/`dream`/`version`. Run leases
-replacing the Bash PID-lock files (spec §7.3) are also Plan 3; today Python
-and Bash coexist by sharing the exact same lock-file paths and staleness rule
-(`agent/.agent-state/lock_<name>` / `dream_lock_<name>`, 1800s), which is a
-coexistence measure, not the destination — it inherits Bash's own "a stale
-reclaim can steal a live process's lock with no ownership check" property
-bug-for-bug (spec §15.1 does not list it because it isn't a Python/Bash
-*divergence* — both runtimes do the identical thing).
+see spec §3.2), **`graph/` (Plan 3 — the LangGraph cycle, `CycleState`,
+SQLite checkpointing, and run leases)**, and `cli.py` composing all of it.
+
+**`analysis/` (`rule_check`, `behavior_snapshot`, `population_metric`,
+`summary`) is Plan 4 and does not exist yet** — there is no `swil-agent
+summary` command. One consequence worth knowing before a canary:
+`swil-agent cycle` does NOT run `cycle-one.sh`'s step 2, `rule-check.sh`, so
+an account moved onto the Python cycle silently stops feeding `/lab`'s F4
+rule-compliance panel until Plan 4 lands (spec §15.1 row 21).
+
+**Run leases (spec §7.3) now exist** and are what `swil-agent cycle` holds.
+A lease is BOTH halves, deliberately: the Bash-visible lock file
+(`agent/.agent-state/lock_<name>` / `dream_lock_<name>`, same 1800s staleness
+rule) *and* a SQLite row carrying the holder's `run_id` and pid. The file half
+is what makes exclusion cross-runtime during stages 3–4 and is dropped only at
+Stage 5; the row is what makes a lease *expire* and what kills the orphan-lock
+class outright, since a lease whose pid is gone is reclaimable immediately
+rather than after 30 minutes. Two consequences are recorded as spec §15.1
+rows 17 and 18: a cycle holds BOTH locks for its whole duration (where
+`cycle-one.sh` holds them sequentially), and the heartbeat bounds staleness by
+the longest single NODE rather than by the whole cycle.
 
 **Two operational facts that will otherwise cost someone a slow, confusing
 first run:**
