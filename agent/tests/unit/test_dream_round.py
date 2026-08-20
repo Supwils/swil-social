@@ -870,6 +870,22 @@ def test_an_aspect_gated_dream_is_not_flagged_embedder_unreachable(tmp_path: Pat
 
 
 def test_an_aspect_mode_drift_rejection_emits_aspect_shaped_metrics(tmp_path: Path) -> None:
+    """Task 1b (Phase B): `_drift_fail_metrics` used to nest the aspect
+    similarities under an `aspects` object and send `breached` as an array
+    -- `agentEventIngest.metrics` is `z.record(z.union([z.string(),
+    z.number(), z.boolean(), z.null()]))` (`agents.schemas.ts:59`), which
+    rejects both shapes, so zod 400'd the WHOLE event and every aspect-mode
+    rejection since 2026-07-03 (`DRIFT_MODE=aspect`'s go-live) was silently
+    discarded. This pins the FLAT replacement, spelled to match task 1's
+    `_drift_metrics` (`aspectValues`/`aspectStyle`/`aspectTopic`/
+    `driftMode`) rather than inventing a second convention for the same
+    quantities. `breached` has no task-1 counterpart, so it keeps its own
+    name; the list is comma-joined into one scalar (aspect names can never
+    contain a comma, so this is lossless) -- see
+    `test_an_empty_breached_list_and_a_one_element_one_are_distinguishable`
+    for why comma-joining still tells "nothing breached" apart from "one
+    aspect breached".
+    """
     directory = _write_account(tmp_path)
     _write_anchor_cache(
         directory,
@@ -902,7 +918,126 @@ def test_an_aspect_mode_drift_rejection_emits_aspect_shaped_metrics(tmp_path: Pa
     fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
     assert len(fail_events) == 1
     assert fail_events[0].metrics == {
-        "aspects": {"values": 0.99, "style": 0.10, "topic": 0.99},
-        "breached": ["style"],
-        "mode": "aspect",
+        "aspectValues": 0.99,
+        "aspectStyle": 0.10,
+        "aspectTopic": 0.99,
+        "breached": "style",
+        "driftMode": "aspect",
     }
+
+
+def test_an_aspect_mode_drift_rejections_metrics_are_flat_and_wire_legal(
+    tmp_path: Path,
+) -> None:
+    """The TYPE rule `agentEventIngest.metrics` actually enforces, stated as
+    a type rule rather than as a list of expected keys -- a key-list test
+    (like the one above) passes a payload that keeps a nested value under a
+    renamed key, e.g. `{"aspectValues": {"raw": 0.99}}`.
+
+    Two aspects breach here (not one), so `breached` is exercised as a
+    multi-element join, not just the single-element case pinned above.
+
+    Mutation this kills, verified by running each separately: putting the
+    nested `{"aspects": {...}}` object back into the payload is caught by
+    the `isinstance` loop below (a `dict` fails `isinstance(value, str |
+    float | int | bool | type(None))`) -- the `==` check on `breached` two
+    lines above it still passes, since that mutation leaves `breached`
+    untouched. A bare `list[str]` for `breached` is caught earlier, and by
+    a DIFFERENT assertion: `assert metrics["breached"] == "values,style"`
+    fails directly on the list, and pytest halts there -- the `isinstance`
+    loop never runs for that mutation. Both are genuine catches, just not
+    the same one: the loop exists for what the exact-match assertion would
+    not have caught on its own, which is a key-list test (like the one
+    above) passing a payload that keeps a nested value under a renamed key.
+    """
+    directory = _write_account(tmp_path)
+    _write_anchor_cache(
+        directory,
+        anchor_text=RESOLVED_ANCHOR,
+        vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
+    )
+    resources = FakeResources()
+    embedder = FakeEmbedder(
+        [
+            [1.0],  # scalar: anchor (unused -- aspect mode decides)
+            [1.0],  # scalar: candidate
+            [0.10],  # candidate "values" card -> breaches
+            [0.10],  # candidate "style" card -> breaches
+            [0.99],  # candidate "topic" card -> fine
+        ]
+    )
+    runner = RecordingRunner('{"values":"a","style":"b","topic":"c"}')
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        runner=runner,
+        embedder=embedder,
+        settings=Settings(drift_mode="aspect"),
+    )
+
+    assert result.accepted is False
+    fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
+    metrics = fail_events[0].metrics
+    assert metrics["breached"] == "values,style"
+    for key, value in metrics.items():
+        assert isinstance(value, str | float | int | bool | type(None)), (
+            f"metrics[{key!r}] is {type(value).__name__}, which agentEventIngest rejects"
+        )
+
+
+def test_an_empty_breached_list_and_a_one_element_one_are_distinguishable(
+    tmp_path: Path,
+) -> None:
+    """Brief step 1's second required test: a flattened empty list must not
+    collide with a flattened one-element list.
+
+    `shadow` mode is the vehicle: it computes per-aspect sims (so
+    `verdict.sims is not None` and this rejection still takes the aspect
+    branch of `_drift_fail_metrics`) but DECIDES on the scalar gate alone
+    (`dream/gate.py`: `if settings.drift_mode == "aspect" and sims is not
+    None: ...  else: accepted, base_reason = _scalar_decision(...)`) -- so a
+    rejection with every aspect comfortably inside its own threshold, and
+    therefore an EMPTY `breached`, is reachable and realistic, not a
+    contrived empty list.
+
+    Mutation this kills: rendering `breached` so `",".join([])` and
+    `",".join(["style"])` are not both reachable and distinct -- e.g. a
+    sentinel like `"none"` that could also be a real (if odd) aspect label,
+    or joining with a separator that silently drops single elements.
+    """
+    directory = _write_account(tmp_path)
+    _write_anchor_cache(
+        directory,
+        anchor_text=RESOLVED_ANCHOR,
+        vectors=AspectVectors(values=[1.0], style=[1.0], topic=[1.0]),
+    )
+    resources = FakeResources()
+    embedder = FakeEmbedder(
+        [
+            [1.0],  # scalar: anchor
+            [0.0],  # scalar: candidate -- sim=0.0, well below the 0.82 default
+            [0.99],  # candidate "values" card -> fine
+            [0.99],  # candidate "style" card -> fine
+            [0.99],  # candidate "topic" card -> fine
+        ]
+    )
+    runner = RecordingRunner('{"values":"a","style":"b","topic":"c"}')
+
+    result = _run(
+        tmp_path,
+        directory,
+        resources=resources,
+        backend=TwoCallBackend(candidate_response=_valid_candidate()),
+        runner=runner,
+        embedder=embedder,
+        settings=Settings(drift_mode="shadow"),
+    )
+
+    assert result.accepted is False
+    fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
+    empty_breached = fail_events[0].metrics["breached"]
+    assert empty_breached == ""
+    assert empty_breached != "style"

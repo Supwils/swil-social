@@ -14,6 +14,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ActionKind = Literal["post", "comment", "like", "follow", "dm", "echo", "nothing"]
 
+# The value of a persona's `Read` bullet that means "read the whole platform"
+# -- the widest-input arm of the input-diversification experiment (Phase B
+# task 3, spec §8.3). An ABSENT `Read` bullet means the same thing, which is
+# why 22 of the 23 accounts on the roster do not carry one today.
+#
+# It lives here, in the lowest layer, rather than in `act/context.py` beside
+# the code that acts on it, because `ActContext.board_read` below defaults to
+# it and `models` sits UNDER `act/` in spec §5.2's dependency order. A literal
+# `"global"` in one of the two places is exactly the kind of duplicate a later
+# edit changes on one side only.
+GLOBAL_READ_SCOPE = "global"
+
 
 class Action(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -380,6 +392,30 @@ class ActContext(BaseModel):
 
     contacts: list[str] = Field(default_factory=list)
 
+    # ── what this round actually READ (Phase B task 3, spec §8.3) ──────────
+    #
+    # Not prompt content: these three are the record of which input pool the
+    # blocks above were drawn from. Without them a cross-read round is
+    # indistinguishable from a home round in the data and the whole
+    # intervention is unmeasurable.
+    #
+    # `board_read` is the scope actually read -- a board slug, or
+    # `GLOBAL_READ_SCOPE` for an account with no niche. `home_board` is the
+    # scope the persona's `Read` bullet ASSIGNED, which on a cross-read round
+    # is a different board and is otherwise unrecoverable: reconstructing it
+    # would mean joining against the assignment table as of that date, and
+    # that table lives in `personality.md` -- a file a dream can rewrite.
+    # `cross_read` says the round left its niche, which is NOT derivable from
+    # `board_read` alone. `board_items` is how many items the breadth pass
+    # returned, and `None` means the fetch FAILED -- distinct from `0`, which
+    # means the board is empty. Told apart on purpose: a thin board starving
+    # an account of input and an outage look identical in a count that
+    # collapses them.
+    board_read: str = GLOBAL_READ_SCOPE
+    home_board: str = GLOBAL_READ_SCOPE
+    cross_read: bool = False
+    board_items: int | None = None
+
 
 class ActResult(BaseModel):
     """The outcome of one `run_act` round (`act/round.py`, task 7).
@@ -414,3 +450,49 @@ class ActResult(BaseModel):
         -- which is how an empty plan came to cost a personality evolution.
         """
         return self.outcome not in (ActOutcome.BACKEND_UNAVAILABLE, ActOutcome.OFFLINE)
+
+
+class ActSimilarity(BaseModel):
+    """How close one round's candidate post sits to the account's OWN recent
+    posts (Phase B task 2; `act/round.py`'s `measure_act_similarity`).
+
+    SHADOW ONLY. Nothing reads this to decide anything: it is recorded to
+    `/lab` and discarded. The act path -- the half of the cycle that decides
+    and posts -- has no guard at all, which is why `liushang` has been
+    collapsing onto a single recycled phrase since 2026-07-22 while the dream
+    gate correctly rejects its personality rewrites and can do nothing about
+    what it posts. Turning this number into a guard is a later task, after a
+    calibration gate sets the threshold FROM this series. A threshold guessed
+    before the distribution is known is the mistake the drift gate's own
+    `ECHO_VARIANCE_THRESHOLD` already made (0.04 against a real measured range
+    of 0.001-0.011, i.e. it would flag every account on every dream).
+
+    `max_sim` is the MAXIMUM cosine similarity between the candidate and any
+    single prior post, not the mean: the pathology is "this one post repeats
+    that one post", and a mean over a 12-post window dilutes exactly the
+    signal being looked for.
+
+    `None` is a first-class value and is NOT interchangeable with `0.0`, for
+    the same reason `DriftMeasurement` says so above: `0.0` would record
+    "maximally diverse", a fabricated data point, where the truth is "not
+    computed". An account with too small a corpus to compare against, and one
+    whose embedder was down, both record `None` -- `embedder_ok` is what
+    separates them.
+
+    `compared_against` is the number of prior posts in the comparison corpus,
+    recorded even on the paths that compute no similarity, so "nothing to
+    compare against" is distinguishable from "plenty to compare against and
+    the measurement still produced nothing".
+
+    `embedder_ok` is FALSE only when an embed attempted FOR THIS MEASUREMENT
+    failed (or came back unusable). A path that attempted none records `True`
+    -- identical semantics to `DriftMeasurement.embedder_ok`, deliberately, so
+    counting `embedder_ok is False` counts embedder outages on both series
+    rather than meaning one thing on one panel and another on the other.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    max_sim: float | None = None
+    compared_against: int = 0
+    embedder_ok: bool = True

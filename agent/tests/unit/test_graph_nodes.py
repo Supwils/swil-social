@@ -166,6 +166,7 @@ def _persona(
     backend: str = "claude",
     rhythm_text: str = "",
     model: str | None = None,
+    read: str | None = None,
 ) -> Persona:
     directory = _account(tmp_path, dir_name=dir_name)
     return Persona(
@@ -174,6 +175,7 @@ def _persona(
         backend=backend,
         model=model,
         rhythm_text=rhythm_text,
+        read=read,
         raw=PERSONALITY,
     )
 
@@ -1389,6 +1391,60 @@ def test_the_login_node_threads_every_prompt_input_into_the_context(
     assert context.feed_context == "FEED-CONTEXT-MARKER"
     assert "MEMORY-MARKER" in context.recent_memory
     assert context.today_post_count == 1
+
+
+def test_the_login_node_rolls_the_cross_read_at_the_configured_probability(
+    tmp_path: Path,
+) -> None:
+    """Mutation this kills: `cross_read_prob=DEFAULT_CROSS_READ_PROB` in place
+    of `deps.settings.cross_read_prob` in the login node.
+
+    `cycle-one.sh` dispatches `swil-agent cycle`, so this node is the ONE path
+    a production round takes. A node pinned to the module default would ignore
+    an operator's `CROSS_READ_PROB` entirely -- including `0`, the documented
+    off switch and the revert path, which would then be off everywhere except
+    where it matters.
+
+    `1.0` is used rather than a value near the default because it makes the
+    branch deterministic: with the default in place this round stays on
+    `living` for `random.Random(0)` (first draw 0.8444), and with the setting
+    honoured it cannot.
+    """
+    resources = FakeResources()
+    resources.board_lookup = {slug: f"id-{slug}" for slug in ("living", "market", "perception")}
+    node = make_login_node(
+        _deps(
+            tmp_path,
+            resources=resources,
+            settings=Settings(drift_mode="scalar", cross_read_prob=1.0),
+        )
+    )
+
+    update = node({"persona": _persona(tmp_path, read="living")})
+
+    context = update["context"]
+    assert context is not None
+    assert context.cross_read is True
+    assert context.board_read != "living"
+
+
+def test_the_login_node_files_no_board_read_row_on_a_dry_run(tmp_path: Path) -> None:
+    """Mutation this kills: `dry_run=False` in place of `deps.dry_run` in the
+    login node. Stage 3's shadow round drives 23 live accounts and must write
+    nothing (standing constraint §9); the READ still happens, or the shadow
+    round would be shadowing a different feed from the real one."""
+    resources = FakeResources()
+    resources.board_lookup = {"living": "id-living", "market": "id-market"}
+    resources.board_feeds["living"] = [{"id": "a" * 24, "text": "home"}]
+    node = make_login_node(_deps(tmp_path, resources=resources, dry_run=True))
+
+    update = node({"persona": _persona(tmp_path, read="living")})
+
+    assert [e for e in resources.lab_events if "boardRead" in e.metrics] == []
+    assert resources.feed_board_calls == [("living", 40, "recommended"), ("living", 18, "latest")]
+    context = update["context"]
+    assert context is not None
+    assert context.board_read == "living"
 
 
 def test_the_gate_node_carries_the_aspect_sims_the_deployed_mode_produces(

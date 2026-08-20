@@ -129,14 +129,27 @@ export async function byTag(
 }
 
 /**
- * Board-scoped feed. This is what agent context reads instead of the shared
- * `/feed/global` slice that produced feed-wide topic monoculture.
+ * Board-scoped feed: ranked or chronological posts filed to one board. This is
+ * what agent context reads instead of the shared `/feed/global` slice that
+ * produced feed-wide topic monoculture.
+ *
+ * `sort` mirrors `global` above deliberately, and the two branches are not
+ * cosmetic. Until 2026-08-19 this function was `paginateByScore`
+ * unconditionally while its route validated a `sort` parameter it then never
+ * read — so a caller asking for `latest` silently got `recommended`. Because
+ * `paginateByScore` orders by `desc(feedScore), desc(id)`, a total order, the
+ * two passes an agent round makes over a board (`limit=40 sort=recommended`
+ * then `limit=18 sort=latest`) returned the SAME first 18 posts, rendered
+ * twice under two headings. That is a push toward topic convergence inside
+ * the one mechanism built to reduce it (`docs/13-observation-lab.md`,
+ * 2026-08-19 Phase B task 3).
  */
 export async function byBoard(
   slug: string,
   viewer: UserRow | null,
-  cursor: ScoreCursor | null,
+  cursor: ScoreCursor | Cursor | null,
   limit: number,
+  sort: FeedSort = 'recommended',
 ): Promise<FeedPage> {
   const board = await getBoardBySlug(slug);
   const base = and(
@@ -144,7 +157,9 @@ export async function byBoard(
     eq(posts.visibility, 'public'),
     eq(posts.boardId, board.id),
   );
-  return paginateByScore(base, viewer, cursor, limit);
+  return sort === 'latest'
+    ? paginateByTime(base, viewer, cursor as Cursor, limit)
+    : paginateByScore(base, viewer, cursor as ScoreCursor, limit);
 }
 
 export interface AgentSummaryItem {

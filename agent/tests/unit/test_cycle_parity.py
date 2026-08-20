@@ -549,6 +549,18 @@ def _run_direct(root: Path, scenario: Scenario, records: list[logging.LogRecord]
         feed_context=(root / "context" / f"feed_for_{USERNAME}.md").read_text(encoding="utf-8"),
         dry_run=scenario.dry_run,
         access_key="KEY",
+        # `cli.py`'s `act` command passes both (Phase B task 2), and this
+        # function's contract is "the composition cli.py's two commands make
+        # between them". Omitting them here would not expose a divergence --
+        # it would MANUFACTURE one, since the act-path self-similarity sample
+        # lives in `execute_step`, which both paths call.
+        embedder=collab.embedder,
+        similarity_window=collab.settings.act_similarity_window,
+        # Same reason, one task later (Phase B task 3): `cli.py`'s `act`
+        # command passes it, so omitting it here would make the direct path
+        # roll against the module default while the graph path rolled against
+        # `Settings` -- a divergence this file would then report as real.
+        cross_read_prob=collab.settings.cross_read_prob,
     )
     proceeded, written, reason = False, False, ""
     if result.grants_dream and not scenario.dry_run:

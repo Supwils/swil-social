@@ -6,6 +6,22 @@ the orphan-lock class of defect (a dead run's lease expires; a dead run's
 lock file does not). Until then Python must use the same paths and the same
 1800s staleness rule as auto-run.sh:411-433 and dream.sh:461-470, or a Python
 round and a Bash round can hold the same account at the same time.
+
+**The on-disk format is one or two lines.** Line 1 is the holder's pid and
+nothing else, byte-for-byte what `echo "$$" > "$lock_file"` writes, because
+`cat`-ing a stale lock during an incident is how an operator finds the
+process (cli.py's own LeaseBusy remedy tells them to do exactly that). Line 2
+is OPTIONAL and carries an `identity` token supplied by the caller -- a value
+unique to *this acquisition*, so a holder can later tell its own file apart
+from a replacement created at the same path after its lock was reclaimed as
+stale. `read_lock_identity` is the reader.
+
+Nothing in Bash reads either line. auto-run.sh:417 and dream.sh:463 create
+the file with `( set -o noclobber; echo "$$" > … )`, decide staleness from
+`stat` **mtime** alone (auto-run.sh:422, dream.sh:465), and release with
+`rm -f` (auto-run.sh:428/439, dream.sh:471/479). So a second line is
+invisible to the cross-runtime exclusion; what the two runtimes share is the
+path, the mtime, and the file's existence.
 """
 
 from __future__ import annotations
@@ -35,10 +51,78 @@ def dream_lock_path(agent_root: Path, name: str) -> Path:
     return agent_root / ".agent-state" / f"dream_lock_{name}"
 
 
+def read_lock_identity(path: Path) -> str | None:
+    """The identity token on the lock file's second line, or `None` if it has none.
+
+    `None` is a real answer, not an error: a Bash-written lock (`echo "$$"`)
+    is a bare pid, and so is a `FileLock` constructed without an `identity`.
+    Either way the file is provably not one that a caller holding a token
+    created, which is what the caller needs to know.
+
+    A file this cannot READ raises instead, because the safe response to "I
+    cannot tell" differs by call site and this function must not decide it: a
+    holder deciding whether to REFRESH an mtime should treat it as not-mine,
+    while a holder deciding whether to UNLINK on the way out should treat it
+    as mine -- a stranded lock file costs the account every later round, which
+    is the orphan-lock class this whole module exists to avoid.
+
+    **Two exception types, and callers must catch both.** `OSError` covers
+    missing/unreadable. Bytes that are not UTF-8 raise `UnicodeDecodeError`,
+    which is a `ValueError` and therefore NOT caught by `except OSError` --
+    the trap that hid this for a review round. Callers that treat a failure as
+    "unknown" must spell `except (OSError, UnicodeDecodeError)`.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if len(lines) < 2 or not lines[1]:
+        return None
+    return lines[1]
+
+
 class FileLock:
-    def __init__(self, path: Path, *, stale_after: int = STALE_AFTER_SECONDS) -> None:
+    """`identity`, when given, is written on the file's second line.
+
+    It must be unique to this acquisition -- `uuid4().hex`, not a pid and not
+    a run id derived from one. The point is to let a holder whose lock was
+    reclaimed as stale recognise that the file now at its path is a
+    *successor's*, and anything a later process can be handed again (a pid, an
+    inode number) cannot do that.
+
+    It must also be exactly one non-empty line, and that is **enforced here
+    rather than documented here**. It is written verbatim, so a line break
+    would push the rest onto line 3 and an empty string would fail the
+    reader's own emptiness test -- either way `read_lock_identity` returns
+    something that never equals what the holder is comparing against, the
+    holder reads its own live lock as a stranger's forever, and it therefore
+    never refreshes the mtime and never unlinks. That is a stranded lock every
+    round, arriving silently. A `ValueError` at construction turns a rule a
+    comment could only assert into one a test can pin.
+
+    Omitting it keeps the file byte-for-byte identical to Bash's own output,
+    which is what the callers that never need to re-identify their file
+    (`run_act`, `run_dream`, whose locks live and die inside a single `with`)
+    should do.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        stale_after: int = STALE_AFTER_SECONDS,
+        identity: str | None = None,
+    ) -> None:
+        # `splitlines() != [identity]` is the round-trip test, not a
+        # line-count test: it is exactly the condition "`read_lock_identity`
+        # gives this string back". A count of 1 is not enough -- a TRAILING
+        # newline splits to one line whose value differs from the input, so
+        # the holder would compare `"tok\n"` against the `"tok"` it reads back
+        # and never match. Rejects embedded \n and \r, leading and trailing
+        # breaks, and the empty string (`"".splitlines()` is `[]`) in one
+        # predicate.
+        if identity is not None and identity.splitlines() != [identity]:
+            raise ValueError(f"lock identity must be exactly one non-empty line: {identity!r}")
         self._path = path
         self._stale_after = stale_after
+        self._identity = identity
         self._held = False
 
     def _try_create(self) -> bool:
@@ -48,11 +132,14 @@ class FileLock:
             return False
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             # Trailing newline to match Bash's `echo "$$" > "$lock_file"`
-            # (auto-run.sh:417, dream.sh:461) byte-for-byte -- lock semantics
+            # (auto-run.sh:417, dream.sh:463) byte-for-byte -- lock semantics
             # here are purely mtime-based so this changes no behavior, but a
             # Python-held lock's contents should read identically to a
-            # Bash-held one for anyone inspecting it during an incident.
-            handle.write(f"{os.getpid()}\n")
+            # Bash-held one for anyone inspecting it during an incident. The
+            # identity line, when there is one, goes AFTER the pid for the
+            # same reason: `head -1` and a bare `cat` still name the process.
+            suffix = "" if self._identity is None else f"{self._identity}\n"
+            handle.write(f"{os.getpid()}\n{suffix}")
         return True
 
     def acquire(self) -> None:

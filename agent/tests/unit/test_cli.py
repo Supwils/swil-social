@@ -99,6 +99,23 @@ def _write_zenith(tmp_path: Path, *, personality: str = ZENITH_PERSONALITY) -> P
     return directory
 
 
+def _write_zenith_with_read(tmp_path: Path, *, read: str) -> Path:
+    """Re-write the fixture account with a `Read` bullet.
+
+    The shipped roster has exactly one such account, so the niche path has to
+    be manufactured. The bullet is inserted next to `AI Backend` because
+    `loader.get_field` matches any `- **Field:** value` line wherever it sits.
+    """
+    directory = tmp_path / "agents" / "zenith"
+    (directory / "personality.md").write_text(
+        ZENITH_PERSONALITY.replace(
+            "- **AI Backend:** claude", f"- **AI Backend:** claude\n- **Read:** {read}"
+        ),
+        encoding="utf-8",
+    )
+    return directory
+
+
 class _FakeEmbedderClient:
     """A minimal `EmbedderClient` double: `.embed()` for the `Embedder`
     protocol `run_dream` needs, `.health()` for the R10 probe -- the real
@@ -181,8 +198,21 @@ def tmp_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # are swappable inside `cli.py` with the whole suite green (standing
     # constraint §4, on a config value; found by review, and the node layer had
     # already got this right). 5 and 7 make the field each command actually
-    # reads observable at the wire.
-    settings = Settings(agent_root=tmp_path, rule_check_post_limit=5, behavior_post_limit=7)
+    # reads observable at the wire. `act_similarity_window` (Phase B task 2)
+    # gets a THIRD distinct value, 9, for the same reason -- it is a fourth
+    # field defaulting to that same 12.
+    settings = Settings(
+        agent_root=tmp_path,
+        rule_check_post_limit=5,
+        behavior_post_limit=7,
+        act_similarity_window=9,
+        # Phase B task 3. `1.0` rather than a value near the 0.15 default so
+        # the branch it selects is DETERMINISTIC: with the module default in
+        # place, `swil-agent act`'s unseeded `random.Random` would cross-read
+        # only ~15% of the time and the wiring test below would be a coin
+        # flip that usually passed for the wrong reason.
+        cross_read_prob=1.0,
+    )
 
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: FakeResources())
@@ -206,6 +236,67 @@ def test_act_dry_run_executes_nothing_and_writes_nothing(tmp_agent: Path) -> Non
 def test_act_reports_the_outcome_name(tmp_agent: Path) -> None:
     result = runner.invoke(cli.app, ["act", "zenith", "--dry-run"])
     assert "planner_empty" in result.stdout or "landed" in result.stdout
+
+
+def test_act_hands_run_act_an_embedder_and_the_configured_window(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The act-path self-similarity sample (Phase B task 2) reaches the wire
+    from THIS command, not only from `cycle`.
+
+    `embedder=None` here would leave every `swil-agent act` round out of the
+    calibration series while the whole suite stayed green -- nothing else in
+    this file looks at what `act` does with an embedder. The window is 9, the
+    fixture's `act_similarity_window`: neither the module default (12) nor
+    either sampler's (5 / 7), so reading the wrong `Settings` field is
+    visible here rather than being "12 either way".
+
+    Two prior posts, because `MIN_COMPARISON_CORPUS` is 2 -- a shorter corpus
+    would take the skip path and never call the embedder, which would pass
+    this test for the wrong reason.
+    """
+    resources = FakeResources()
+    resources.user_post_items = [{"text": "第一条"}, {"text": "第二条"}]
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+
+    result = runner.invoke(cli.app, ["act", "zenith"])
+
+    assert result.exit_code == 0
+    assert resources.user_posts_calls == [("zenith", 9)]
+    measured = [e for e in resources.lab_events if e.summary.startswith("act self-similarity")]
+    assert [e.outcome for e in measured] == ["success"]
+    assert measured[0].metrics["comparedAgainst"] == 2
+
+
+def test_act_hands_run_act_the_configured_cross_read_probability(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation this kills: dropping `cross_read_prob=settings.cross_read_prob`
+    from `cli.py`'s `run_act` call, leaving `swil-agent act` on the module
+    default while `swil-agent cycle` honoured the setting -- two commands
+    running two different experiments, with the whole suite green.
+
+    The fixture's probability is `1.0`, so a round for an account with a
+    `Read` bullet MUST leave its board; on the module default (0.15) it
+    usually would not. The account is given one here, since the shipped roster
+    has none and this command would otherwise take the no-op path.
+
+    `board_lookup` carries exactly ONE board besides the home one, so the pick
+    is deterministic even though `swil-agent act` seeds its `random.Random`
+    from entropy when no `--seed` is given.
+    """
+    _write_zenith_with_read(tmp_agent, read="living")
+    resources = FakeResources()
+    resources.board_lookup = {"living": "id-living", "market": "id-market"}
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+
+    result = runner.invoke(cli.app, ["act", "zenith"])
+
+    assert result.exit_code == 0
+    rows = [e for e in resources.lab_events if "boardRead" in e.metrics]
+    assert [row.metrics["crossRead"] for row in rows] == [True]
+    assert rows[0].metrics["boardRead"] == "market"
+    assert rows[0].metrics["crossReadProb"] == 1.0
 
 
 def test_an_unknown_account_exits_66(tmp_agent: Path) -> None:

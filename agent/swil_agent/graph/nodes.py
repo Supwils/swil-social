@@ -278,6 +278,13 @@ def make_login_node(deps: CycleDeps) -> NodeFn:
             budget=deps.budget,
             context_now=deps.context_now,
             feed_context=deps.feed_context,
+            # Phase B task 3. `dry_run` is threaded because the board-read
+            # lab event is a write; `cross_read_prob` because a node that
+            # took the module default would ignore an operator's
+            # `CROSS_READ_PROB` on the ONE path `cycle-one.sh` runs, and the
+            # off switch would be off everywhere except in production.
+            cross_read_prob=deps.settings.cross_read_prob,
+            dry_run=deps.dry_run,
         )
         return {"agent": step.agent_name, "context": context, "rhythm": rhythm}
 
@@ -339,6 +346,13 @@ def make_guardrail_node(deps: CycleDeps) -> NodeFn:
 def make_execute_node(deps: CycleDeps) -> NodeFn:
     """`execute_step` -> `finalize_step`, both threaded `dry_run`.
 
+    `deps.embedder` and `deps.settings.act_similarity_window` are threaded
+    into `execute_step` because the shadow self-similarity sample (Phase B
+    task 2) lives inside that function, not in `run_act`'s body -- which is
+    exactly what lets this node get it without a copy. Passing `None` here
+    would silently exclude every graph-driven round, i.e. every round
+    `cycle-one.sh` actually runs, from the calibration series.
+
     An empty `actions` list returns an empty partial instead of running the
     steps. That mirrors `run_act`'s item 7 -- an empty plan is an early
     return, not a step -- and in the graph the equivalent is an edge that
@@ -364,6 +378,8 @@ def make_execute_node(deps: CycleDeps) -> NodeFn:
             now=deps.now,
             access_key=deps.access_key,
             dry_run=deps.dry_run,
+            embedder=deps.embedder,
+            similarity_window=deps.settings.act_similarity_window,
         )
         outcome = finalize_step(
             resources=deps.resources,

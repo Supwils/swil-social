@@ -215,6 +215,75 @@ describe('feed.service', () => {
         status: 404,
       });
     });
+
+    it('defaults to the ranked order when no sort is given', async () => {
+      const author = await seedUser('author3');
+      const market = await seedBoard('market', 1);
+      const hi = await seedPost(author.id, { boardId: market.id, feedScore: 30 });
+      const lo = await seedPost(author.id, { boardId: market.id, feedScore: 10 });
+
+      const out = await byBoard('market', null, null, 10);
+      expect(out.items.map((p) => p.id)).toEqual([hi.id, lo.id]);
+    });
+
+    it("orders by createdAt descending under sort='latest'", async () => {
+      const author = await seedUser('author4');
+      const market = await seedBoard('market', 1);
+      const newest = await seedPost(author.id, { boardId: market.id, createdAt: ago(0) });
+      const middle = await seedPost(author.id, { boardId: market.id, createdAt: ago(1000) });
+      const oldest = await seedPost(author.id, { boardId: market.id, createdAt: ago(2000) });
+
+      const out = await byBoard('market', null, null, 10, 'latest');
+      expect(out.items.map((p) => p.id)).toEqual([newest.id, middle.id, oldest.id]);
+    });
+
+    it("paginates with a TIME cursor under sort='latest'", async () => {
+      const author = await seedUser('author5');
+      const market = await seedBoard('market', 1);
+      const newest = await seedPost(author.id, { boardId: market.id, createdAt: ago(0) });
+      const middle = await seedPost(author.id, { boardId: market.id, createdAt: ago(1000) });
+      const oldest = await seedPost(author.id, { boardId: market.id, createdAt: ago(2000) });
+
+      const page1 = await byBoard('market', null, null, 2, 'latest');
+      expect(page1.items.map((p) => p.id)).toEqual([newest.id, middle.id]);
+      expect(page1.nextCursor).not.toBeNull();
+
+      // decodeCursor, not decodeScoreCursor: a `latest` page emits a TIME
+      // cursor, which is why the route has to pick its decoder off the sort.
+      const cursor = decodeCursor(page1.nextCursor);
+      expect(cursor).not.toBeNull();
+
+      const page2 = await byBoard('market', null, cursor, 2, 'latest');
+      expect(page2.items.map((p) => p.id)).toEqual([oldest.id]);
+      expect(page2.nextCursor).toBeNull();
+    });
+
+    it('gives a different slice for latest than for recommended', async () => {
+      // The regression that mattered (2026-08-19): `byBoard` ignored `sort`
+      // entirely, so the two agent-context passes over one board returned the
+      // same posts in the same order and the prompt rendered them twice.
+      // feedScore is seeded INVERSE to recency, so the two orders can only
+      // agree if one of them is not being applied.
+      const author = await seedUser('author6');
+      const market = await seedBoard('market', 1);
+      const newestLowScore = await seedPost(author.id, {
+        boardId: market.id,
+        createdAt: ago(0),
+        feedScore: 1,
+      });
+      const oldestHighScore = await seedPost(author.id, {
+        boardId: market.id,
+        createdAt: ago(2000),
+        feedScore: 99,
+      });
+
+      const ranked = await byBoard('market', null, null, 10, 'recommended');
+      const chrono = await byBoard('market', null, null, 10, 'latest');
+
+      expect(ranked.items.map((p) => p.id)).toEqual([oldestHighScore.id, newestLowScore.id]);
+      expect(chrono.items.map((p) => p.id)).toEqual([newestLowScore.id, oldestHighScore.id]);
+      expect(ranked.items.map((p) => p.id)).not.toEqual(chrono.items.map((p) => p.id));
+    });
   });
 
   describe('byAuthor (visibility)', () => {

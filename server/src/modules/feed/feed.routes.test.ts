@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   global: vi.fn(),
   byTag: vi.fn(),
   byAuthor: vi.fn(),
+  byBoard: vi.fn(),
 }));
 
 vi.mock('../../middlewares/auth', () => ({
@@ -23,9 +24,19 @@ vi.mock('./feed.service', () => ({
   global: mocks.global,
   byTag: mocks.byTag,
   byAuthor: mocks.byAuthor,
+  byBoard: mocks.byBoard,
 }));
 
+import { decodeCursor, decodeScoreCursor, encodeCursor } from '../../lib/pagination';
 import { feedRouter, userPostsRouter } from './feed.routes';
+
+const CURSOR_ID = 'a'.repeat(24); // both decoders reject an id that is not an ObjectId
+
+/** There is no `encodeScoreCursor` in `lib/pagination`; this is `encodeCursor`'s
+ *  body against the `{ s, id }` shape `decodeScoreCursor` accepts. */
+function encodeScoreCursor(c: { s: number; id: string }): string {
+  return Buffer.from(JSON.stringify(c), 'utf8').toString('base64url');
+}
 
 async function runRoute(
   router: Router,
@@ -166,6 +177,57 @@ describe('feed routes', () => {
     expect(error).toBeUndefined();
     expect(res.statusCode).toBe(200);
     expect(mocks.byTag).toHaveBeenCalledWith('typescript', null, null, 20);
+  });
+
+  it('passes board slugs through with the default sort', async () => {
+    mocks.byBoard.mockResolvedValue({ items: [], nextCursor: null, ctxById: new Map() });
+
+    const { res, error } = await runRoute(feedRouter, '/board/:slug', 'get', {
+      params: { slug: 'market' },
+    });
+
+    expect(error).toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(mocks.byBoard).toHaveBeenCalledWith('market', null, null, 20, 'recommended');
+  });
+
+  it('forwards sort=latest to the board feed instead of dropping it', async () => {
+    // The regression: this route validated `sort` through the shared
+    // `pagingQuery` and then never read `req.query.sort`, so every board read
+    // was ranked whatever the caller asked for. Its `/global` sibling twenty
+    // lines above had always read it.
+    mocks.byBoard.mockResolvedValue({ items: [], nextCursor: null, ctxById: new Map() });
+
+    const { error } = await runRoute(feedRouter, '/board/:slug', 'get', {
+      params: { slug: 'market' },
+      query: { sort: 'latest', limit: '18' },
+    });
+
+    expect(error).toBeUndefined();
+    expect(mocks.byBoard).toHaveBeenCalledWith('market', null, null, 18, 'latest');
+  });
+
+  it('decodes a TIME cursor under latest and a SCORE cursor otherwise', async () => {
+    // The decoder has to follow the sort. `paginateByTime` and
+    // `paginateByScore` consume different cursor shapes, so a `latest` page
+    // handed a score cursor pages from the wrong key — and the two decoders
+    // are total functions that return `null` rather than throwing, so the
+    // mistake would surface as a silently restarted feed, not an error.
+    mocks.byBoard.mockResolvedValue({ items: [], nextCursor: null, ctxById: new Map() });
+    const timeCursor = encodeCursor({ t: new Date(0).toISOString(), id: CURSOR_ID });
+    const scoreCursor = encodeScoreCursor({ s: 5, id: CURSOR_ID });
+
+    await runRoute(feedRouter, '/board/:slug', 'get', {
+      params: { slug: 'market' },
+      query: { sort: 'latest', cursor: timeCursor },
+    });
+    expect(mocks.byBoard.mock.calls[0][2]).toEqual(decodeCursor(timeCursor));
+
+    await runRoute(feedRouter, '/board/:slug', 'get', {
+      params: { slug: 'market' },
+      query: { cursor: scoreCursor },
+    });
+    expect(mocks.byBoard.mock.calls[1][2]).toEqual(decodeScoreCursor(scoreCursor));
   });
 
   it('lists a user profile feed with validated params', async () => {

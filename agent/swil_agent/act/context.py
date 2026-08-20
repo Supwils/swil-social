@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import random
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Final, NamedTuple
 
 from swil_agent.api.client import ApiError
 from swil_agent.api.resources import Resources
-from swil_agent.models import ActContext, Persona
+from swil_agent.models import GLOBAL_READ_SCOPE, ActContext, Persona
 
 _POST_LINE = re.compile(r"\| post \|")
 _ENGAGED_LINE = re.compile(r"^\d{4}-\d{2}-\d{2} \| (?:like|comment) \|")
@@ -254,6 +255,151 @@ def format_conversations(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# ── read scope + cross-reads (Phase B task 3, spec §8.3) ──────────────────
+
+DEFAULT_CROSS_READ_PROB: Final = 0.15
+"""Probability that one round reads a board OUTSIDE the account's niche.
+
+`Settings.cross_read_prob` (`CROSS_READ_PROB`) is the operator-facing name and
+carries this same number as a literal -- `act/` sits above `config` in spec
+§5.2's dependency order, so this module cannot import it and
+`test_act_context.py` pins the two equal in both directions instead, the way
+`act_similarity_window` is pinned.
+
+Niches without cross-reads are 23 smaller monocultures, which is the failure
+mode the diversification is meant to avoid, not a milder version of it.
+"""
+
+
+def read_scope(persona: Persona) -> str:
+    """The input pool this account is assigned to: a board slug, or
+    `GLOBAL_READ_SCOPE`.
+
+    THE `Read` BULLET, NOT `Board`. The two are different fields with
+    different jobs and conflating them is the easiest mistake here to make:
+    `Board` is the account's POSTING target (`Persona.board` ->
+    `_resolve_board_id` -> `create_post`'s `boardId`, `api/resources.py:341`)
+    and every one of the 23 accounts carries one, while `Read` is its READING
+    scope and exactly one account carries one today. Driving reads off
+    `Board` would silently switch all 23 accounts onto board feeds in one
+    round, with no operator decision anywhere and no way to run the control
+    arm the experiment needs.
+
+    `persona/validators.py` already treats `Read` as a round-trip-validated
+    experiment control field for this exact reason, and says so: losing it
+    "turns the widest-input arm into an ordinary board reader with nothing in
+    any log to say so."
+
+    ABSENT means global, and that is a deliberate default rather than an
+    unhandled case: an account with no declared niche has no niche to leave,
+    so it reads what it reads today and no cross-read can fire for it. The
+    roster ships with 22 of 23 accounts in exactly that state, which makes
+    this whole mechanism a strict no-op until an operator assigns the niches.
+
+    The value is stripped but NOT otherwise normalised -- `loader.get_field`
+    preserves an experiment control field verbatim on purpose, and a slug
+    this function silently case-folded would be a value no operator wrote.
+    A mistyped slug therefore reaches the API as written and 404s into the
+    ordinary degraded-feed path, where the lab event's `boardRead` names it.
+    Only the literal `global` sentinel is matched case-insensitively, since
+    it is a keyword rather than a slug.
+    """
+    raw = (persona.read or "").strip()
+    if not raw or raw.casefold() == GLOBAL_READ_SCOPE:
+        return GLOBAL_READ_SCOPE
+    return raw
+
+
+class BoardRead(NamedTuple):
+    """Which pool one round read, and whether that left the account's niche.
+
+    `home` is carried alongside `scope` rather than recomputed by callers
+    because `cross` is a statement about the PAIR: `scope == "market"` says
+    nothing on its own about whether market is where this account lives.
+    """
+
+    scope: str
+    home: str
+    cross: bool
+
+
+def choose_read_scope(
+    resources: Resources,
+    persona: Persona,
+    rng: random.Random,
+    *,
+    cross_read_prob: float = DEFAULT_CROSS_READ_PROB,
+) -> BoardRead:
+    """Roll this round's read scope for `persona`.
+
+    The roll uses the INJECTED `rng` -- the same `random.Random` the rhythm
+    gate already takes, threaded from `run_act`/`CycleDeps` and seeded by
+    `swil-agent act --seed`. A module-level `random.random()` here would pass
+    every single-run assertion anyone could write and make the branch
+    untestable and unreproducible, which is the whole reason this parameter
+    is positional and required rather than defaulted.
+
+    Order of the two guards matters. A global-scope account returns BEFORE
+    the roll, so it consumes no randomness at all: an account with no niche
+    has no niche to leave, and a wasted `rng.random()` would also desync the
+    rhythm gate's draw for every account on the roster the moment a `Read`
+    bullet is added to one of them.
+
+    `get_boards()` is called ONLY on a firing roll -- ~15% of the rounds of
+    the accounts that have a niche -- so the common path stays exactly one
+    feed read. It fails OPEN, to the home board: a boards-endpoint outage
+    must not change which pool an account reads, and certainly must not
+    silently promote it to `global`, which is the widest-input arm of the
+    experiment and a condition no operator assigned it to.
+
+    Candidates are `sorted()`, not raw dict order, so a given seed picks the
+    same board across processes; `dict` preserves insertion order and the
+    insertion order here is a JSON array from the network.
+    """
+    home = read_scope(persona)
+    if home == GLOBAL_READ_SCOPE:
+        return BoardRead(scope=home, home=home, cross=False)
+    if rng.random() >= cross_read_prob:
+        return BoardRead(scope=home, home=home, cross=False)
+
+    try:
+        slugs = sorted(slug for slug in resources.get_boards() if slug != home)
+    except ApiError:
+        return BoardRead(scope=home, home=home, cross=False)
+    if not slugs:
+        return BoardRead(scope=home, home=home, cross=False)
+    return BoardRead(scope=rng.choice(slugs), home=home, cross=True)
+
+
+def read_feed(resources: Resources, scope: str, *, limit: int, sort: str) -> list[dict[str, Any]]:
+    """One feed read, routed by scope.
+
+    `GLOBAL_READ_SCOPE` keeps `feed_global` -- byte-for-byte the call the act
+    path has always made -- so an account with no niche is unaffected by this
+    whole mechanism.
+
+    A board scope goes to `/feed/board/{slug}`, whose own server-side
+    docstring already names this task's problem: "This is what agent context
+    reads instead of the shared `/feed/global` slice that produced feed-wide
+    topic monoculture" (`server/src/modules/feed/feed.service.ts:132-134`).
+
+    `sort` is forwarded for both scopes even though the board route IGNORES
+    it. `pagingQuery` accepts `sort` (`feed.routes.ts:18`) so it validates,
+    but `/board/:slug`'s handler passes it to nothing -- `feed.byBoard` is
+    unconditionally `paginateByScore` (`feed.routes.ts:79-91`,
+    `feed.service.ts:135-148`). Consequence, which is real and is recorded as
+    part of this task's change point: under a board scope the depth pass
+    (`limit=18, sort=latest`) returns a PREFIX of the breadth pass
+    (`limit=40, sort=recommended`) rather than a differently-ordered slice,
+    so a niche account's prompt carries less distinct feed than a global
+    account's. It is forwarded anyway so that the day the board route honours
+    `sort`, both runtimes get the intended slice without a second edit.
+    """
+    if scope == GLOBAL_READ_SCOPE:
+        return resources.feed_global(limit=limit, sort=sort)
+    return resources.feed_board(scope, limit=limit, sort=sort)
+
+
 # ── build_context (contract 01 §4 — the asymmetry, enforced) ───────────────
 
 
@@ -264,8 +410,10 @@ def build_context(
     memory_text: str,
     now: datetime,
     budget: int,
+    rng: random.Random,
     context_now: str = "(no context file)",
     feed_context: str = "",
+    cross_read_prob: float = DEFAULT_CROSS_READ_PROB,
 ) -> ActContext:
     """Assemble every prompt block, degrading per-block exactly as Bash does.
 
@@ -273,7 +421,20 @@ def build_context(
     are files written by `swil.sh login` (contract 01 §2b, §2c), which stays
     Bash in Phase 1. The caller reads them; this function never touches the
     filesystem.
+
+    `rng` is REQUIRED and injected (Phase B task 3): both feed reads are
+    routed through the scope `choose_read_scope` rolls with it, and a default
+    here would be a module-level source of randomness by another name. It is
+    the same generator the rhythm gate draws from one step later, so one seed
+    reproduces a whole round.
+
+    This function still WRITES NOTHING. The read scope it chose is recorded
+    on the returned `ActContext` (`board_read` / `cross_read` /
+    `board_items`); the lab event that publishes it is emitted by
+    `act.round.context_step`, which is where the round's `dry_run` flag lives
+    and where a shadow round can be kept from filing rows.
     """
+    board = choose_read_scope(resources, persona, rng, cross_read_prob=cross_read_prob)
     today = now.strftime("%Y-%m-%d")
     ctx = ActContext(
         context_now=context_now,
@@ -285,18 +446,24 @@ def build_context(
         last_post=last_post_line(memory_text),
         action_budget=budget,
         backend_action_constraint=(CODEX_ACTION_CONSTRAINT if persona.backend == "codex" else ""),
+        board_read=board.scope,
+        home_board=board.home,
+        cross_read=board.cross,
     )
 
     recommended: list[dict[str, Any]] = []
     try:
-        recommended = resources.feed_global(limit=40, sort="recommended")
+        recommended = read_feed(resources, board.scope, limit=40, sort="recommended")
+        ctx.board_items = len(recommended)
         ctx.global_feed = format_global_feed(recommended[:25]) or "(could not fetch feed)"
     except ApiError:
         pass  # placeholder-class: the default already reads "(could not fetch feed)"
 
     # vanish-class: on ApiError, timeline_feed stays "", so the whole section disappears.
     with contextlib.suppress(ApiError):
-        ctx.timeline_feed = format_timeline_feed(resources.feed_global(limit=18, sort="latest"))
+        ctx.timeline_feed = format_timeline_feed(
+            read_feed(resources, board.scope, limit=18, sort="latest")
+        )
 
     with contextlib.suppress(ApiError):
         ctx.notification_context = (

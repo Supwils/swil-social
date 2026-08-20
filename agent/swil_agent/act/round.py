@@ -39,28 +39,31 @@ from __future__ import annotations
 import logging
 import random
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, NamedTuple, Protocol
 
-from swil_agent.act.context import build_context
+from swil_agent.act.context import DEFAULT_CROSS_READ_PROB, build_context
 from swil_agent.act.executor import execute_action
 from swil_agent.act.guardrails import apply_guardrails
 from swil_agent.act.planner import plan_round
 from swil_agent.api.client import ApiError
 from swil_agent.api.dto import LabEvent
 from swil_agent.api.resources import Resources
+from swil_agent.embedder.client import EmbedderUnavailable
 from swil_agent.llm.base import Backend
 from swil_agent.llm.extract import collapse_doubled_text
 from swil_agent.locks import FileLock, act_lock_path
 from swil_agent.models import (
+    GLOBAL_READ_SCOPE,
     ActContext,
     Action,
     ActionResult,
     ActOutcome,
     ActResult,
+    ActSimilarity,
     Persona,
     Plan,
     RhythmDecision,
@@ -585,6 +588,120 @@ class ContextStep(NamedTuple):
     rhythm: RhythmDecision
 
 
+_BOARD_READ_HOME: Final = "read its own board"
+_BOARD_READ_CROSS: Final = "cross-read another board"
+
+
+def _board_read_event(ctx: ActContext, *, cross_read_prob: float) -> LabEvent:
+    """The input-diversification round's `/lab` row (Phase B task 3).
+
+    `type="cycle"`, `phase="act"` -- the act path's own pair, and the pair
+    `agentEventIngest`'s two zod enums accept for this phase
+    (`server/src/modules/agents/agents.schemas.ts:51-52`). It moves no `/lab`
+    counter for the reason `_similarity_event` records in full above: every
+    read of `agentEvents` that COUNTS anything is pinned to a type that is not
+    `cycle`, and the one unfiltered read (`agents.population.ts:38-39`) is a
+    `selectDistinct(userId)` over a set every acting account is already in.
+
+    A SEPARATE event from `_similarity_event`, deliberately, and not an extra
+    key on it. That row is emitted only from `execute_step`, only when the
+    round has a candidate POST -- so a comment-only, like-only or
+    `nothing` round files none. A cross-read happens on every round of an
+    account with a niche, and the rounds where what it read is the ONLY thing
+    that happened are exactly the non-posting ones. Attaching the board there
+    would blind the series to them. It is not on `act/executor.py`'s
+    per-action rows either: those are per ACTION and would repeat the same
+    board 1-5 times per round, turning a per-round fact into a count of
+    actions.
+
+    `action` is left UNSET although the enum would take one. Nothing was
+    acted on; this row records an INPUT.
+
+    `metrics` is FLAT -- four scalars, no nesting, no lists.
+    `agentEventIngest.metrics` is a `z.record` of string/number/boolean/null
+    (`agents.schemas.ts:59`) and a nested object or an array fails that union
+    and makes zod 400 the WHOLE event, silently in both runtimes. Key
+    spellings follow the camelCase convention `_drift_metrics` and
+    `_similarity_event` already use.
+
+    `crossReadProb` is on the row for the reason `window` is on the
+    similarity row: without it, a run of home reads cannot be told apart from
+    an operator having turned the probability down, and the calibration
+    question ("did cross-reads actually fire at the rate we set?") is
+    unanswerable from the series itself.
+
+    `boardItems` is `null` when the feed read FAILED and `0` when the board
+    was genuinely empty. That distinction is the thin-board starvation risk
+    made observable: `making` carried 4 posts at the last count
+    (`docs/12-handoff.md`), so an account niched to it can legitimately read
+    nothing at all, and a series that spelled both cases `0` could not tell
+    that from an outage.
+
+    `homeBoard` is on the row because `boardRead` ALONE cannot answer "which
+    niche did this round leave": on a cross-read it names the AWAY board, and
+    the home board is then recoverable only by joining against the roster's
+    assignment table as of that date. That table is the `Read` bullet in
+    `personality.md` -- a file a dream can rewrite, and (until the explicit
+    `Read: global` bullets land) can even ADD the field to. A series whose
+    interpretation depends on reconstructing a mutable file's past state is a
+    series that decays. Two keys, both flat, and the pair is self-contained.
+    """
+    return LabEvent(
+        type="cycle",
+        phase="act",
+        outcome="success" if ctx.board_items is not None else "warn",
+        summary=_BOARD_READ_CROSS if ctx.cross_read else _BOARD_READ_HOME,
+        metrics={
+            "boardRead": ctx.board_read,
+            "homeBoard": ctx.home_board,
+            "crossRead": ctx.cross_read,
+            "crossReadProb": cross_read_prob,
+            "boardItems": ctx.board_items,
+        },
+    )
+
+
+def record_board_read(
+    resources: Resources,
+    persona: Persona,
+    ctx: ActContext,
+    *,
+    cross_read_prob: float,
+    dry_run: bool,
+) -> None:
+    """Publish which input pool this round read.
+
+    Only for an account that HAS a niche. A persona with no `Read` bullet --
+    22 of the 23 on the roster today -- reads globally exactly as it always
+    has, cannot cross-read, and files nothing: its board is a constant of the
+    roster assignment table, not a per-round observation, and a row per
+    account per round restating it would be 23 rows a round of no information.
+    The moment an operator gives an account a `Read` bullet, its rounds start
+    appearing here.
+
+    `dry_run` skips it because the row is a WRITE, and Stage 3's shadow round
+    drives 23 live accounts (standing constraint §9). The guard is HERE, with
+    the write, rather than in `run_act` -- `graph/nodes.py`'s login node calls
+    `context_step`, not `run_act`, so a guard left in the composition would
+    not cover the path `cycle-one.sh` actually runs (ruling R4 / §5).
+
+    The niche test reads `ctx.home_board`, NOT a second `read_scope(persona)`
+    call. `build_context` already resolved the `Read` bullet for this round
+    and the answer is on the context; re-deriving it here would be two
+    derivations of one experiment control value, which is the class of
+    duplicate this codebase keeps paying for. It also makes the coupling the
+    right way round: if the read path decided this account is global, the row
+    must not be filed, whatever a fresh parse of the persona would say.
+
+    `Resources.lab_event` never raises (`api/resources.py:266-275`), so this
+    needs no guard of its own -- the same guarantee `_emit_memory_event` and
+    `similarity_step` rely on.
+    """
+    if dry_run or ctx.home_board == GLOBAL_READ_SCOPE:
+        return
+    resources.lab_event(persona.username, _board_read_event(ctx, cross_read_prob=cross_read_prob))
+
+
 def context_step(
     *,
     resources: Resources,
@@ -595,6 +712,8 @@ def context_step(
     budget: int = 5,
     context_now: str = "(no context file)",
     feed_context: str = "",
+    cross_read_prob: float = DEFAULT_CROSS_READ_PROB,
+    dry_run: bool = False,
 ) -> ContextStep:
     """Step 3 of the act path: `build_context` (read-side prompt assembly,
     degrading per-block) then `decide_rhythm` (the day's post-budget /
@@ -606,6 +725,18 @@ def context_step(
     else (its own count of today's memory lines, say) would silently change
     which accounts are allowed to post, so the wiring between the two is
     kept here where exactly one implementation of it exists.
+
+    `rng` reaches BOTH consumers, and the order is fixed: `build_context`
+    rolls the cross-read first, `decide_rhythm` draws second. Only an account
+    with a `Read` bullet consumes a draw in the first one
+    (`choose_read_scope` returns before rolling for a global-scope account),
+    so adding this task changed no existing account's rhythm draw.
+
+    The board-read lab event is emitted HERE rather than inside
+    `build_context`: this is the seam both callers pass through -- `run_act`
+    and `graph/nodes.py`'s login node -- and it is the first point in the
+    read path that knows `dry_run`. `build_context` stays a function that
+    writes nothing.
     """
     ctx = build_context(
         resources,
@@ -613,9 +744,12 @@ def context_step(
         memory_text=memory_text,
         now=now,
         budget=budget,
+        rng=rng,
         context_now=context_now,
         feed_context=feed_context,
+        cross_read_prob=cross_read_prob,
     )
+    record_board_read(resources, persona, ctx, cross_read_prob=cross_read_prob, dry_run=dry_run)
     rhythm = decide_rhythm(persona.rhythm_text, ctx.today_post_count, rng)
     return ContextStep(context=ctx, rhythm=rhythm)
 
@@ -739,6 +873,383 @@ def _resolve_board_id(resources: Resources, persona: Persona) -> str | None:
         return None  # degrades to an unfiled post, matching swil.sh
 
 
+# ── act-path self-similarity, SHADOW ONLY (Phase B task 2) ───────────────
+#
+# The act path has no guard on what it posts. `liushang` has been visibly
+# collapsing onto one recycled phrase since 2026-07-22: the dream gate
+# rejects its personality rewrites round after round and cannot touch the
+# posts, because nothing between "the model produced this text" and "the
+# text is on the platform" ever looks at what the account already said.
+#
+# This block MEASURES that and records it. It changes no plan, vetoes no
+# action, re-rolls nothing, and cannot alter a single byte of what gets
+# posted -- deliberately, because the threshold a guard would need does not
+# exist yet and has to be fitted to the distribution this series collects.
+# `ACT_SIMILARITY_THRESHOLD` therefore does not exist anywhere in this
+# package, and adding one is a later task's job, not a config default.
+
+
+class Embedder(Protocol):
+    """The one method this module needs from the bge-m3 daemon.
+
+    Declared HERE rather than imported from `dream/distill.py` or
+    `analysis/behavior_snapshot.py` -- each of which declares its own copy of
+    exactly this -- to keep spec §5.2's dependency direction (`graph -> act,
+    dream, analysis -> api, llm, persona, embedder`). `act`, `dream` and
+    `analysis` are PEERS; importing one from another would be the first
+    sideways edge in that graph. Protocols are structural, so `EmbedderClient`
+    and every existing test double satisfy all three declarations without
+    knowing any of them exists.
+    """
+
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+
+DEFAULT_ACT_SIMILARITY_WINDOW: Final = 12
+"""How many of the account's own recent posts a candidate is compared
+against. `Settings.act_similarity_window` (`ACT_SIMILARITY_WINDOW`) is the
+env-driven override and carries the same default; the two are pinned equal
+in both directions by `test_act_similarity.py`, the same treatment
+`rule_check`/`behavior_snapshot`'s `DEFAULT_POST_LIMIT` pair already gets.
+
+12 matches `analysis/behavior_snapshot.py`'s window -- verified against that
+module, not taken from the brief -- so the two measurements read the same
+slice of the same account's history and can be compared."""
+
+MIN_COMPARISON_CORPUS: Final = 2
+"""Fewer prior posts than this and `max_sim` is `None`, never a number.
+
+A `max` over a one-element sample is not the same estimator as a `max` over
+twelve, and the calibration this series feeds will fit a threshold to the
+latter; mixing single-sample maxima into it biases the fitted threshold
+downward for reasons that have nothing to do with any account's behaviour.
+The zero-prior case -- a new account, which has nothing to be similar to --
+is the one that matters in practice and is covered by the same guard."""
+
+
+def candidate_post_text(actions: Sequence[Action]) -> str | None:
+    """The text this round would put on the platform, or `None` if it would
+    put none there.
+
+    The FIRST `post` action, and only a `post`: `guardrail_step` already caps
+    a round at one post (`act/guardrails.py` stage 5), so "first" and "only"
+    coincide, and a later `post` in the list is one the guardrails vetoed.
+
+    `echo` is deliberately NOT a candidate even though it also creates a row
+    via `create_post` (`act/executor.py`'s `_execute_echo` calls
+    `resources.create_post(text, echo_of=post_id)`). An echo's text is
+    commentary attached to somebody else's post -- a different authorial act
+    with a different length and shape -- and a round may carry one of each,
+    which would leave two candidates competing for one scalar metric. Mixing
+    the two distributions into one calibration sample would set the eventual
+    threshold from a blend of two quantities.
+
+    Normalised with `_memory_text`, which is `_clean` + `collapse_doubled_text`
+    -- byte-for-byte what `act/executor.py:254-262` puts on the wire for a
+    `post`. Embedding `action.text` raw would measure a string that never
+    existed, and the difference is not cosmetic on exactly the accounts this
+    exists for: `collapse_doubled_text` is there because a degenerate backend
+    emits its answer twice, so the raw text of a collapsing account can be
+    double the length of the post it becomes.
+
+    Blank (after normalisation) yields `None`: `_execute_post` SKIPs on empty
+    text without making any call, so there is no candidate to measure.
+    """
+    for action in actions:
+        if action.kind == "post":
+            return _memory_text(action.text) or None
+    return None
+
+
+def prior_post_texts(items: Sequence[dict[str, Any]]) -> list[str]:
+    """The account's own recent post bodies, in the order the API returned
+    them.
+
+    `originalText` falling back to `text` with jq's `//` semantics (an empty
+    `originalText` does NOT fall through, because `""` is truthy in jq), and
+    whitespace-only bodies dropped -- the same extraction
+    `analysis/behavior_snapshot.py`'s `select_post_texts` performs on the same
+    endpoint's payload, for the same reason: the ORIGINAL-language text, so
+    the comparison is never polluted by the translation layer.
+
+    Reimplemented rather than imported. `analysis` and `act` are peers under
+    spec §5.2 and this module may not import that one; and the two scripts
+    that own these extractions already disagree with each other on purpose
+    (`select_post_texts`'s own docstring records that it is deliberately not
+    shared with `rule_check.extract_posts`, whose Bash original genuinely has
+    Python `or` semantics). A non-string body is dropped rather than raising,
+    matching `select_post_texts`.
+    """
+    texts: list[str] = []
+    for item in items:
+        raw: Any = item.get("originalText")
+        if raw is None or raw is False:
+            raw = item.get("text")
+        if isinstance(raw, str) and raw.strip():
+            texts.append(raw)
+    return texts
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """Cosine similarity of two bge-m3 vectors, clamped to [-1, 1].
+
+    A plain dot product is correct because the daemon returns L2-normalised
+    vectors (`normalize_embeddings=True`, contract 04 §1).
+
+    NOT `dream/drift.py`'s `cosine_sim`, and not a candidate for
+    deduplication with it. That one FAILS OPEN TO 1.0 on empty or
+    mismatched-length input, which is the safe direction for a gate that
+    rejects on LOW similarity -- a failed computation can then never cause a
+    rejection. Here the eventual guard fires on HIGH similarity, so the same
+    fallback would turn every broken embed into a maximally-repetitive
+    reading. This function is therefore only ever called on vectors the
+    caller has already checked, and `measure_act_similarity` does that check
+    itself rather than delegating the failure policy to a shared helper whose
+    policy points the other way.
+    """
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    return max(-1.0, min(1.0, dot))
+
+
+def measure_act_similarity(
+    *,
+    candidate_text: str,
+    prior_texts: Sequence[str],
+    embedder: Embedder,
+) -> ActSimilarity:
+    """How close `candidate_text` sits to the closest of `prior_texts`.
+
+    The corpus is a PARAMETER, not something this function fetches, and that
+    is the seam that makes "compared against the account's own posts" a
+    testable property of `similarity_step` (which does the fetching) rather
+    than an untestable one of a function that hides its own I/O. It also
+    keeps the "could not fetch the corpus" outcome -- a genuinely different
+    fact from "the corpus was empty" -- at the layer that can tell them
+    apart; `analysis/behavior_snapshot.py` records what it costs to lose that
+    distinction (an account that has been quiet and a platform that was
+    unreachable produce the same flat series).
+
+    ONE embed call for the whole batch, candidate first: the candidate's
+    vector and the corpus's are needed together and there is nothing to gain
+    from two round trips. The prior posts' vectors are RECOMPUTED every round
+    rather than fetched, because there is nothing to fetch -- no per-post
+    embedding exists anywhere. `server/src/db/schema/lab.ts` carries a
+    `vector` column on exactly two tables (`personalitysnapshots`,
+    `behaviorsnapshots`), and the behavior one is a single vector over all
+    twelve posts JOINED into one document (`behavior-snapshot.sh:66`), which
+    cannot yield a per-post maximum. Posts themselves carry no embedding and
+    no endpoint returns one.
+
+    Fail-open, in the direction that cannot manufacture a signal: any embedder
+    failure, any short or mismatched batch, any unusable vector yields
+    `max_sim=None` with `embedder_ok=False`. `ValueError` is caught alongside
+    `EmbedderUnavailable` because `EmbedderClient.embed` raises it (not
+    `EmbedderUnavailable`) for a batch above `MAX_BATCH`, which an
+    `ACT_SIMILARITY_WINDOW` above 63 would produce -- a config typo must
+    degrade this measurement, never abort a round that was about to post.
+
+    Partial vector damage is treated as total: if any prior vector is empty or
+    a different width from the candidate's, the whole measurement reports
+    `embedder_ok=False` rather than quietly maximising over the survivors.
+    That keeps `compared_against` honest -- on the path that produces a
+    number, every prior counted was genuinely compared.
+    """
+    corpus = list(prior_texts)
+    if len(corpus) < MIN_COMPARISON_CORPUS:
+        return ActSimilarity(max_sim=None, compared_against=len(corpus), embedder_ok=True)
+
+    batch = [candidate_text, *corpus]
+    try:
+        vectors = embedder.embed(batch)
+    except (EmbedderUnavailable, ValueError):
+        return ActSimilarity(max_sim=None, compared_against=len(corpus), embedder_ok=False)
+
+    if len(vectors) != len(batch):
+        return ActSimilarity(max_sim=None, compared_against=len(corpus), embedder_ok=False)
+    candidate_vector, *prior_vectors = vectors
+    if not candidate_vector or any(len(v) != len(candidate_vector) for v in prior_vectors):
+        return ActSimilarity(max_sim=None, compared_against=len(corpus), embedder_ok=False)
+
+    return ActSimilarity(
+        max_sim=max(_cosine(candidate_vector, v) for v in prior_vectors),
+        compared_against=len(corpus),
+        embedder_ok=True,
+    )
+
+
+_SIMILARITY_FETCH_FAILED: Final = "could not fetch prior posts"
+_SIMILARITY_EMBEDDER_DOWN: Final = "embedder unreachable"
+_SIMILARITY_CORPUS_TOO_SMALL: Final = f"fewer than {MIN_COMPARISON_CORPUS} prior posts"
+
+
+def _similarity_event(sim: ActSimilarity, *, window: int, reason: str | None) -> LabEvent:
+    """The shadow measurement's `/lab` row.
+
+    `type="cycle"`, `phase="act"` -- the act path's own pair, and the pair
+    `agentEventIngest`'s two zod enums accept for this phase
+    (`server/src/modules/agents/agents.schemas.ts:51-52`). No `/lab` aggregate
+    counts it, checked one query at a time rather than by recollection (fix
+    round 1, review Minor 2 -- an earlier version of this paragraph said the
+    two modules read `dream` and `echo_flag` only, and missed a third type and
+    an unfiltered read):
+
+      * `agents.pulse.ts` reads `agentEvents` three times, each pinned to a
+        type: `dream`/`fail` (:209-210), `echo_flag`/`flagged` (:219-220),
+        and `rule_check`/`flagged` (:233-234).
+      * `agents.population.ts` reads it twice -- `echo_flag` in range (:127),
+        and once with NO type filter at all (:38-39). That second one is a
+        `selectDistinct(userId)` building the set of accounts `/lab` shows,
+        not a count, and every acting account is already in it: the act path
+        has always emitted a `cycle`/`act` row per action and a
+        `memory`/`memory` row per memory line.
+
+    So an extra `cycle` row per posting round moves no counter and adds no
+    account, and shows up only where it is meant to, in the account's event
+    list.
+
+    `action` is left UNSET although `"post"` is a legal enum member. The
+    sampler did not post anything; `act/executor.py` emits the round's real
+    `action="post"` event, and filing this one under the same action would
+    make a measurement indistinguishable from a write when filtering by it.
+
+    `metrics` is FLAT -- four scalars, no nesting, no lists.
+    `agentEventIngest.metrics` is a `z.record` of string/number/boolean/null
+    (`agents.schemas.ts:59`), and a nested object or an array fails that union
+    and makes zod 400 the WHOLE event. That defect ran unnoticed for six weeks
+    on the dream side (see `dream/round.py`'s `_drift_fail_metrics`, and the
+    2026-08-19 change-point entries in `docs/13-observation-lab.md`); the key
+    spellings here follow `_drift_metrics`' camelCase convention rather than
+    inventing a second one.
+
+    `window` is one key more than the plan's list, for the reason `driftMode`
+    is on the drift event: `comparedAgainst` records how many priors there
+    actually were, `window` records how many were ASKED for, and only the
+    second tells a later analyst whether a short corpus means "quiet account"
+    or "somebody lowered the window".
+
+    `null` survives to the wire and is the point: a similarity that was not
+    computed is `null`, never `0.0`.
+    """
+    measured = sim.max_sim is not None
+    return LabEvent(
+        type="cycle",
+        phase="act",
+        outcome="success" if measured else "skip",
+        summary=(
+            "act self-similarity measured" if measured else "act self-similarity not computed"
+        ),
+        reason=reason,
+        metrics={
+            "maxSim": sim.max_sim,
+            "comparedAgainst": sim.compared_against,
+            "embedderOk": sim.embedder_ok,
+            "window": window,
+        },
+    )
+
+
+def _similarity_reason(sim: ActSimilarity) -> str | None:
+    if sim.max_sim is not None:
+        return None
+    return _SIMILARITY_EMBEDDER_DOWN if not sim.embedder_ok else _SIMILARITY_CORPUS_TOO_SMALL
+
+
+def similarity_step(
+    *,
+    resources: Resources,
+    persona: Persona,
+    actions: Sequence[Action],
+    embedder: Embedder | None,
+    window: int = DEFAULT_ACT_SIMILARITY_WINDOW,
+) -> ActSimilarity | None:
+    """Measure this round's candidate post against the account's own recent
+    posts and record the number. Returns `None` when there was nothing to
+    measure.
+
+    OWN posts -- `resources.user_posts(persona.username, ...)` -- never the
+    feed and never a global corpus. A candidate compared against other
+    accounts' posts measures roster HOMOGENEITY, which is a real quantity
+    (`/lab` Feature 3 computes it population-wide) but a different one, with a
+    different distribution and therefore a different threshold. Wiring the
+    feed in here would produce numbers that look entirely plausible and
+    calibrate the wrong guard.
+
+    `persona.username` is the `Username` bullet, not the directory name: the
+    two differ on this roster (CLAUDE.md, "Stray `agents/<name>` dir shadows a
+    `humans/` account"), and this endpoint is keyed by the platform username.
+
+    NEVER RAISES, and never changes the round. EVERY statement of the body is
+    inside the guard -- there is no preamble above the `try` for a future edit
+    to make fallible -- so every branch either returns an `ActSimilarity` or
+    `None`. The outer `except Exception` catches the class no branch
+    anticipated -- an `OSError`, a `Resources` method that
+    starts raising a type this file does not list. `graph/nodes.py`'s
+    `_fail_soft` catches the same breadth for the same reason and records it
+    at length: this is the observability layer, and a measurement outage may
+    never decide whether a round happened. `BaseException` is deliberately not
+    caught -- a `KeyboardInterrupt` is the operator ending the run.
+
+    A skip still emits its event (with `maxSim: null` and a `reason`), because
+    an absent row and a row saying "the embedder was down" are the two things
+    this plan exists to stop conflating -- and because a series that only
+    records its successes is exactly the censoring Phase B task 1 ended on the
+    dream side.
+    """
+    try:
+        # INSIDE the guard, not above it (fix round 1, review Minor 8). Both
+        # of these are total in practice -- an identity check and a pure
+        # function over already-validated `Action`s -- so this changes no
+        # behaviour today. It changes what enforces the paragraph above: with
+        # them outside, "NEVER RAISES" was a claim about two statements
+        # nobody had a test for; inside, it is a property of the function's
+        # shape, and stays true if either one ever grows a way to fail.
+        if embedder is None:
+            return None
+        candidate = candidate_post_text(actions)
+        if candidate is None:
+            return None
+
+        try:
+            items = resources.user_posts(persona.username, limit=window)
+        except ApiError as exc:
+            logger.warning(
+                "act-similarity: %s — could not fetch prior posts (%s); skipping",
+                persona.username,
+                exc,
+            )
+            sim = ActSimilarity(max_sim=None, compared_against=0, embedder_ok=True)
+            resources.lab_event(
+                persona.username,
+                _similarity_event(sim, window=window, reason=_SIMILARITY_FETCH_FAILED),
+            )
+            return sim
+
+        sim = measure_act_similarity(
+            candidate_text=candidate,
+            prior_texts=prior_post_texts(items),
+            embedder=embedder,
+        )
+        if not sim.embedder_ok:
+            logger.warning(
+                "act-similarity: %s — embedder unreachable; skipping (fail-open)",
+                persona.username,
+            )
+        resources.lab_event(
+            persona.username,
+            _similarity_event(sim, window=window, reason=_similarity_reason(sim)),
+        )
+        return sim
+    except Exception as exc:
+        logger.debug("act-similarity failed for %s", persona.username, exc_info=exc)
+        logger.warning(
+            "act-similarity: %s — sampling failed (%s: %s); the round is unaffected",
+            persona.username,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 class ExecuteStep(NamedTuple):
     """The write-side tally of a round: one `ActionResult` per attempted
     action, in plan order, with `landed` counting those that actually
@@ -758,6 +1269,8 @@ def execute_step(
     now: datetime,
     access_key: str | None = None,
     dry_run: bool = False,
+    embedder: Embedder | None = None,
+    similarity_window: int = DEFAULT_ACT_SIMILARITY_WINDOW,
 ) -> ExecuteStep:
     """Step 6 of the act path: execute every surviving action in order and
     append its `memory.md` line.
@@ -792,9 +1305,32 @@ def execute_step(
     same distinction. `access_key or ""` matches `execute_action`'s own
     `access_key: str = ""` default -- a bare `None` would be a `str | None`
     where its signature demands `str`.
+
+    `embedder` (Phase B task 2) enables the SHADOW self-similarity
+    measurement and nothing else -- `None`, the default, makes this step
+    byte-for-byte what it was. It is sampled HERE, at the head of the step,
+    for a reason that is not stylistic: `resources.user_posts` is what the
+    measurement compares against, and the moment this round's post lands it
+    IS one of those posts, so a sample taken afterwards would compare the
+    candidate to itself and report ~1.0 for every account forever. Placing it
+    inside this step rather than in `run_act`'s body is the same rule
+    `dry_run` obeys (ruling R4 / standing constraint §5): `graph/nodes.py`'s
+    execute node calls this function, not `run_act`, so a measurement left in
+    the composition is a measurement the graph path -- the one `cycle-one.sh`
+    actually runs -- would never take. It sits below the `dry_run` guard
+    because its lab event is a write, and Stage 3's shadow round over 23 live
+    accounts must write nothing.
     """
     if dry_run:
         return ExecuteStep(results=[], attempted=0, landed=0)
+
+    similarity_step(
+        resources=resources,
+        persona=persona,
+        actions=actions,
+        embedder=embedder,
+        window=similarity_window,
+    )
 
     board_id = _resolve_board_id(resources, persona)
 
@@ -918,6 +1454,9 @@ def run_act(
     feed_context: str = "",
     dry_run: bool = False,
     access_key: str | None = None,
+    embedder: Embedder | None = None,
+    similarity_window: int = DEFAULT_ACT_SIMILARITY_WINDOW,
+    cross_read_prob: float = DEFAULT_CROSS_READ_PROB,
 ) -> ActResult:
     """One act round: context -> rhythm -> plan -> guardrails -> execute.
 
@@ -942,7 +1481,12 @@ def run_act(
          position: after login, before any context is built.
       4. `context_step` -- `build_context` (read-side prompt assembly,
          degrading per-block) then `decide_rhythm` (the day's post-budget /
-         probability gate) off the count it computed.
+         probability gate) off the count it computed. Since Phase B task 3
+         this step also chooses the round's READ SCOPE from the persona's
+         `Read` bullet and, with probability `cross_read_prob`, cross-reads
+         a different board; it records which pool it read on the returned
+         `ActContext` and files one lab event for it, but ONLY for an
+         account that has a niche, and never under `dry_run`.
       5. `plan_step` -- ask the backend. `None` means the backend produced
          nothing at all -> `ActOutcome.BACKEND_UNAVAILABLE`.
       6. `guardrail_step` -- backend allow-list, rhythm veto, dm contacts,
@@ -954,7 +1498,14 @@ def run_act(
          nothing to execute regardless.
       8. `execute_step` -- execute every surviving action in order, tally
          `landed`/`attempted`, and append a memory.md line per landed action
-         (`nothing` never gets one).
+         (`nothing` never gets one). When an `embedder` is supplied, this
+         step also takes the SHADOW self-similarity sample (Phase B task 2)
+         BEFORE its first write; `embedder=None` (the default) leaves the
+         step exactly as it was. `ActResult` deliberately does not carry the
+         measurement: it is recorded to `/lab` and read by nothing in this
+         process, because this task's whole contract is that it acts on
+         nothing. The later task that turns it into a guard is what will
+         need it in a return value.
       9. `finalize_step` -- smart mark-read, then the outcome:
          `landed == attempted` (with `attempted > 0`) -> `LANDED_ALL`,
          otherwise `LANDED_PARTIAL`, INCLUDING when `landed == 0` (which
@@ -1060,6 +1611,8 @@ def run_act(
             budget=budget,
             context_now=context_now,
             feed_context=feed_context,
+            cross_read_prob=cross_read_prob,
+            dry_run=dry_run,
         )
 
         plan = plan_step(backend=backend, persona=persona, context=ctx, rhythm=rhythm)
@@ -1098,6 +1651,8 @@ def run_act(
             now=now,
             access_key=access_key,
             dry_run=dry_run,
+            embedder=embedder,
+            similarity_window=similarity_window,
         )
 
         outcome = finalize_step(

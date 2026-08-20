@@ -82,9 +82,13 @@ feedRouter.get(
   validate(z.object({ slug: z.string().min(1).max(64) }), 'params'),
   validate(pagingQuery, 'query'),
   asyncHandler(async (req: Request, res: Response) => {
-    const cursor = decodeScoreCursor(req.query.cursor);
+    // Mirrors `/global` above: the cursor DECODER has to follow the sort, or a
+    // `latest` page hands `paginateByTime` a score cursor and pages wrongly.
+    const sort: FeedSort = req.query.sort === 'latest' ? 'latest' : 'recommended';
+    const cursor =
+      sort === 'latest' ? decodeCursor(req.query.cursor) : decodeScoreCursor(req.query.cursor);
     const limit = parseLimit(req.query.limit, 20);
-    const page = await feed.byBoard(req.params.slug, req.user ?? null, cursor, limit);
+    const page = await feed.byBoard(req.params.slug, req.user ?? null, cursor, limit, sort);
     const lang = req.user?.preferences?.language ?? (req.query.lang as string | undefined) ?? 'en';
     await translatePosts(page.items, page.ctxById, lang);
     return ok(res, { items: pageToDtos(page.items, page.ctxById), nextCursor: page.nextCursor });

@@ -27,7 +27,12 @@ from swil_agent.graph.leases import (
     open_lease_db,
     sweep_expired,
 )
-from swil_agent.locks import STALE_AFTER_SECONDS, act_lock_path, dream_lock_path
+from swil_agent.locks import (
+    STALE_AFTER_SECONDS,
+    act_lock_path,
+    dream_lock_path,
+    read_lock_identity,
+)
 
 _NOW = 1_700_000_000.0
 
@@ -325,7 +330,11 @@ def test_a_reclaimed_holder_does_not_delete_its_successors_row_or_lock(
     row and unlink B's lock file -- leaving B live, holding neither half, with
     nothing to tell it so, and Bash free to start a second round on the same
     account. Every write past acquisition therefore carries `run_id`, and the
-    unlink is guarded by the lock file's inode.
+    unlink is guarded by the identity token the lease wrote into the lock
+    file. (This test alone cannot tell a sound identity from an unsound one --
+    it passes on APFS against an inode-number guard too. The pair below,
+    which simulates ext4 handing the freed inode straight back, is what
+    discriminates.)
     """
     db = _memory_db()
     lock = act_lock_path(tmp_path, "zenith")
@@ -348,35 +357,42 @@ def test_a_reclaimed_holder_does_not_delete_its_successors_row_or_lock(
     assert not lock.exists()
 
 
-def test_a_lease_that_could_not_record_its_lock_inode_still_releases(
+def test_a_lease_that_cannot_read_its_lock_identity_still_releases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the identity of the file it just created cannot be read -- a race
-    that unlinks the lock between create and stat -- the lease takes the safe
-    half of each rule: it still unlinks on the way out, because it did create
-    the file and a stranded lock is the worse outcome; but it will not refresh
-    an mtime it cannot prove is still its own."""
+    """If the identity of the file it created cannot be read back -- an I/O
+    error, or someone sweeping `.agent-state/` mid-round -- the lease takes
+    the safe half of each rule, and the two halves point opposite ways: it
+    still unlinks on the way out, because a lock file no process will ever
+    come back for costs the account every round until Bash's staleness window
+    expires; but it will not refresh an mtime it cannot prove is still its
+    own, because that refresh would hide a successor's real age from Bash."""
     db = _memory_db()
     lock = act_lock_path(tmp_path, "zenith")
-    real_stat = Path.stat
-    failed = False
+    real_read_text = Path.read_text
+    reads = 0
 
-    def _boom_once(self: Path, *args: object, **kwargs: object) -> os.stat_result:
-        nonlocal failed
-        if self == lock and not failed:
-            failed = True
-            raise OSError("stat failed")
-        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+    def _boom(self: Path, *args: object, **kwargs: object) -> str:
+        nonlocal reads
+        if self == lock:
+            reads += 1
+            raise OSError("read failed")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "stat", _boom_once)
+    monkeypatch.setattr(Path, "read_text", _boom)
     lease = RunLease(db, tmp_path, "builtin", "zenith", kind="act", now=_now)
     lease.__enter__()
-    assert failed, "the inode capture never ran"
 
     aged = time.time() - 900
     os.utime(lock, (aged, aged))
     lease.heartbeat()
-    assert lock.stat().st_mtime == pytest.approx(aged)
+    assert reads, "the identity read never ran -- the seam moved"
+    # `abs=1`, not bare `approx`: pytest's default is RELATIVE, and 1e-6 of a
+    # Unix timestamp is ~1787 seconds -- wide enough to swallow a refresh to
+    # the wall clock and call it unchanged. Two mutations survived on exactly
+    # that before this was tightened (STANDING-CONSTRAINTS 4: the fixture has
+    # to make the pinned value discriminable).
+    assert lock.stat().st_mtime == pytest.approx(aged, abs=1)
 
     lease.__exit__(None, None, None)
     assert not lock.exists()
@@ -408,6 +424,185 @@ def test_a_reclaimed_holders_heartbeat_does_not_revive_its_row_or_extend_the_loc
     assert _heartbeat_of(db, "builtin", "zenith") == before_row
     assert lock.stat().st_mtime == before_mtime
     b.__exit__(None, None, None)
+
+
+# --------------------------------------------------------------------------
+# ... and must not depend on the filesystem declining to recycle an inode
+# --------------------------------------------------------------------------
+
+
+def _recycle_inodes(monkeypatch: pytest.MonkeyPatch, target: Path, ino: int = 4_242_424) -> None:
+    """Make every `stat` of `target` report the SAME `st_ino`, whichever file
+    is currently at that path.
+
+    This is ext4, simulated. A reclaim is unlink-then-create
+    (auto-run.sh:428-429, dream.sh:471-472), and Linux hands the inode the
+    unlink just freed straight back to the create that follows -- so the
+    successor's lock file answers to the predecessor's inode number. APFS
+    usually allocates a fresh one, which is why the two tests below passed on
+    the dev machine and failed on the first CI run that ever executed this
+    file on Linux, and why the behaviour has to be injected to be provable
+    here at all.
+
+    Only `st_ino` is substituted; `st_mtime` in particular is passed through
+    unrounded, because `FileLock`'s staleness rule and these tests both read
+    it.
+    """
+    real_stat = Path.stat
+
+    def _stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        st: os.stat_result = real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self != target:
+            return st
+        fields = list(st[:10])
+        fields[1] = ino
+        return os.stat_result(
+            tuple(fields),
+            {"st_atime": st.st_atime, "st_mtime": st.st_mtime, "st_ctime": st.st_ctime},
+        )
+
+    monkeypatch.setattr(Path, "stat", _stat)
+
+
+def test_a_reclaimed_holder_does_not_unlink_its_successors_lock_when_the_inode_is_recycled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ABA hole again, on the filesystem that actually has it.
+
+    Identical to `test_a_reclaimed_holder_does_not_delete_its_successors_row_or_lock`
+    except that the lock path's inode number never changes. A guard keyed on
+    `st_ino` reads B's file as its own here and deletes it; the assertion this
+    makes is that A's identity survives an inode number being handed back,
+    which no `stat` field can promise and a token written into the file can.
+    """
+    db = _memory_db()
+    lock = act_lock_path(tmp_path, "zenith")
+    _recycle_inodes(monkeypatch, lock)
+    a = RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="A", now=_now)
+    a.__enter__()
+    _make_stale(db, lock)
+
+    b = RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="B", now=_now)
+    b.__enter__()
+    b_identity = read_lock_identity(lock)
+    assert b_identity is not None, "B's lock carries no identity to be recognised by"
+    assert _run_ids(db) == ["B"]
+
+    a.__exit__(None, None, None)
+
+    assert _run_ids(db) == ["B"], "A's exit deleted B's row"
+    assert lock.exists(), "A's exit unlinked B's lock file"
+    assert read_lock_identity(lock) == b_identity, "A's exit replaced B's lock file"
+    b.__exit__(None, None, None)
+    assert not lock.exists()
+
+
+def test_a_reclaimed_holders_heartbeat_does_not_extend_the_lock_when_the_inode_is_recycled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same, on the heartbeat path: A must not refresh B's mtime and hide B's
+    real age from the next Bash round, however the filesystem allocates."""
+    db = _memory_db()
+    lock = act_lock_path(tmp_path, "zenith")
+    _recycle_inodes(monkeypatch, lock)
+    a = RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="A", now=_now)
+    a.__enter__()
+    _make_stale(db, lock)
+
+    b = RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="B", now=_now)
+    b.__enter__()
+    aged = time.time() - 900
+    os.utime(lock, (aged, aged))
+    before_row = _heartbeat_of(db, "builtin", "zenith")
+    before_mtime = lock.stat().st_mtime
+
+    a.heartbeat(now=_NOW + 9999)
+
+    assert _heartbeat_of(db, "builtin", "zenith") == before_row
+    assert lock.stat().st_mtime == before_mtime, "A extended B's lock file mtime"
+    b.__exit__(None, None, None)
+
+
+def test_undecodable_bytes_in_the_lock_file_do_not_escape_the_heartbeat_or_the_exit(
+    tmp_path: Path,
+) -> None:
+    """`read_text` raises `UnicodeDecodeError` on non-UTF-8 bytes, and that is
+    a `ValueError` -- it does NOT descend from `OSError`, so an `except
+    OSError` lets it through.
+
+    Both places this guard runs are places an exception must not reach.
+    `run_cycle` calls `heartbeat()` between every superstep with no guard of
+    its own (`graph/cycle.py:672`), so an escape there ends the round; and
+    `__exit__` reaches it through a `finally` that has ALREADY committed the
+    row DELETE, so an escape there leaves the lock file on disk with no
+    SQLite record of it -- the orphan-lock class this module exists to kill,
+    recreated by its own guard. The `stat()` this guard replaced could not
+    raise this, so the hazard arrived with the fix.
+    """
+    db = _memory_db()
+    lock = act_lock_path(tmp_path, "zenith")
+    lease = RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="A", now=_now)
+    lease.__enter__()
+    lock.write_bytes(b"\xff\xfe not utf-8 at all\n")
+    aged = time.time() - 30
+    os.utime(lock, (aged, aged))
+
+    lease.heartbeat(now=_NOW + 9999)
+    assert lock.stat().st_mtime == pytest.approx(aged, abs=1), "refreshed an unprovable mtime"
+
+    lease.__exit__(None, None, None)
+    assert _row_count(db) == 0
+    assert not lock.exists(), "left an unidentifiable lock file behind with no row"
+
+
+def test_the_lock_identity_is_fresh_for_every_acquisition_of_the_same_path(
+    tmp_path: Path,
+) -> None:
+    """The property the ABA guard rests on, asserted directly rather than
+    through its consequence: two leases on the SAME path, in the same process,
+    write different identities. A token derived from anything stable per path
+    or per process -- the pid, `run_id`'s own `pid-<n>` default, the path
+    itself -- would satisfy every other test in this file and re-open the
+    hole, because the successor would be indistinguishable from the
+    predecessor exactly when it matters."""
+    db = _memory_db()
+    lock = act_lock_path(tmp_path, "zenith")
+    with RunLease(db, tmp_path, "builtin", "zenith", kind="act", now=_now):
+        first = read_lock_identity(lock)
+    with RunLease(db, tmp_path, "builtin", "zenith", kind="act", now=_now):
+        second = read_lock_identity(lock)
+    assert first is not None
+    assert second is not None
+    assert first != second
+
+
+def test_a_lease_does_not_unlink_a_lock_bash_reclaimed_and_recreated(tmp_path: Path) -> None:
+    """The cross-runtime shape of the same hole, and the reason the identity
+    lives in the file's CONTENT rather than beside it. Bash reclaims a stale
+    lock with `rm -f` + `echo "$$"` (auto-run.sh:428-429), which leaves a file
+    with a pid and no identity line at all. The stale Python holder must read
+    that as someone else's and leave both the file and its mtime alone --
+    otherwise it deletes the running Bash round's lock and a third round is
+    free to start on the same account."""
+    db = _memory_db()
+    lock = act_lock_path(tmp_path, "zenith")
+    lease = RunLease(db, tmp_path, "builtin", "zenith", kind="act", run_id="A", now=_now)
+    lease.__enter__()
+
+    # Exactly what auto-run.sh:428-429 leaves behind.
+    lock.unlink()
+    lock.write_text("999999\n", encoding="utf-8")
+    aged = time.time() - 30
+    os.utime(lock, (aged, aged))
+
+    lease.heartbeat(now=_NOW + 9999)
+    # `abs=1` for the reason spelled out above -- a bare `approx` on a Unix
+    # timestamp tolerates ~1787s and would pass on a refreshed mtime.
+    assert lock.stat().st_mtime == pytest.approx(aged, abs=1), "extended Bash's lock file mtime"
+
+    lease.__exit__(None, None, None)
+    assert lock.exists(), "unlinked Bash's lock file"
+    assert lock.read_text(encoding="utf-8") == "999999\n"
 
 
 # --------------------------------------------------------------------------

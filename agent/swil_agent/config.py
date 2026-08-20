@@ -56,6 +56,42 @@ class Settings(BaseSettings):
     rule_check_post_limit: int = 12
     behavior_post_limit: int = 12
 
+    # How many of the account's OWN recent posts the act path's self-similarity
+    # sampler compares a candidate post against (Phase B task 2). 12 because
+    # that is the window `behavior_post_limit` above already uses: both read the
+    # same `/users/{u}/posts` endpoint about the same account, so a shared
+    # window is what lets "how repetitive was this round's post" and "what does
+    # this account's recent voice look like" be read against each other rather
+    # than against two different slices of history. Spelled as a literal for the
+    # same reason as the pair above -- `act/` sits above `config` in spec §5.2's
+    # dependency order, so this module cannot import
+    # `act.round.DEFAULT_ACT_SIMILARITY_WINDOW`; `test_act_similarity.py` pins
+    # the two equal in both directions.
+    #
+    # There is deliberately NO `act_similarity_threshold` beside it. This
+    # measurement is SHADOW ONLY -- computed, recorded, acting on nothing --
+    # and the threshold that will eventually gate on it has to be calibrated
+    # from the series this task starts collecting. A threshold sitting here
+    # unused is an invitation to set one before there is any data to set it
+    # from.
+    act_similarity_window: int = 12
+
+    # Probability that one round reads a board OUTSIDE the account's assigned
+    # niche (Phase B task 3, spec §8.3). Spelled as a literal for the same
+    # reason as the three windows above -- `act/` sits above `config` in spec
+    # §5.2's dependency order, so this module cannot import
+    # `act.context.DEFAULT_CROSS_READ_PROB`; `test_act_context.py` pins the two
+    # equal in both directions.
+    #
+    # Bounded to [0, 1] at load time rather than trusted. It is read straight
+    # into a `rng.random() < prob` comparison, where both out-of-range spellings
+    # an operator can plausibly type are SILENT: `CROSS_READ_PROB=15` (meaning
+    # "15%") makes every round a cross-read, and a negative value makes none --
+    # the second being indistinguishable from the intended off switch, and the
+    # first from a deliberate all-cross-reads arm. `0` is the documented off
+    # switch and the revert path, so it stays legal.
+    cross_read_prob: float = Field(default=0.15, ge=0.0, le=1.0)
+
     unsplash_access_key: str | None = None
 
     agent_root: Path = Field(default=_AGENT_ROOT)

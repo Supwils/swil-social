@@ -21,7 +21,7 @@ removing it is not a simplification, it is a regression.
 
 **What actually kills the orphan-lock class.** Time-based expiry alone buys
 nothing over the file it accompanies: Bash already reclaims at the same 1800s
-(auto-run.sh:423, dream.sh:464), so a dead run still costs the account up to
+(auto-run.sh:423, dream.sh:466), so a dead run still costs the account up to
 30 minutes of SKIPped rounds. The row carries the holder's **pid**, and a
 lease whose pid is no longer alive is reclaimable *immediately*. That is the
 difference between "we added SQLite" and "we killed the class of defect that
@@ -46,8 +46,26 @@ legitimately reclaimed while it was still running must not, on the way out,
 delete the *successor's* row or unlink the successor's lock file -- which is
 what a `WHERE (tenant, agent, kind)` delete and an unconditional unlink would
 do, leaving the live successor holding neither half and nothing to tell it so.
-Every write past acquisition therefore carries `run_id`, and the file is only
-unlinked while its inode is still the one this lease created.
+Every write past acquisition therefore carries `run_id`, and the file half is
+guarded by a random token this lease **wrote into** the lock file.
+
+**Why a token in the file and not the inode number.** This guard used to
+compare `st_ino`, on the stated assumption that a reclaim is unlink-then-create
+and "the replacement gets a new inode". That is false, and not marginally:
+ext4 hands a just-freed inode straight back to the next create, so on Linux
+the successor's lock file routinely carries the predecessor's inode number and
+the guard answers "still mine" about a file it does not own -- the exact ABA
+hole it exists to close. APFS allocates file IDs from a monotonic counter
+instead (measured on this repo's own volume: 300 unlink/create cycles at one
+path, 300 distinct strictly-increasing ids), which is why the macOS dev
+machine never saw this and why CI, the first time it ever ran this file on
+Linux, failed both ABA tests immediately. **No `stat` field is a sound
+identity**: `st_ino` and `st_dev` are recycled by design, and the timestamps
+have filesystem-dependent granularity, so a create following an unlink within
+the same tick is indistinguishable. Identity has to be something no later
+file can be *handed*; a `uuid4` this process minted and wrote is that, and it
+survives on disk exactly as long as the file it identifies. Cost: one small
+read per heartbeat and one on release, in place of a `stat`.
 
 A busy lease raises `LeaseBusy` immediately. There is deliberately no retry
 loop: Bash logs `SKIP <name> -- locked` and moves on (auto-run.sh:424), and
@@ -72,16 +90,23 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Final, Literal
 
-from swil_agent.locks import FileLock, LockBusy, act_lock_path, dream_lock_path
+from swil_agent.locks import (
+    FileLock,
+    LockBusy,
+    act_lock_path,
+    dream_lock_path,
+    read_lock_identity,
+)
 
 logger = logging.getLogger(__name__)
 
-# The same 1800s Bash reclaims at (auto-run.sh:423, dream.sh:464), and the
+# The same 1800s Bash reclaims at (auto-run.sh:423, dream.sh:466), and the
 # same window `locks.STALE_AFTER_SECONDS` applies to the file half. The two
 # halves of one lease must expire at the same instant -- any gap between them
 # is a window in which one runtime reclaims what the other still considers
@@ -112,6 +137,14 @@ LEASE_DB_NAME: Final = "run_leases.sqlite"
 _BUSY_TIMEOUT_MS: Final = 8000
 
 LeaseKind = Literal["act", "dream"]
+
+# What the file at the lock path is, relative to this lease. Three answers,
+# not two, because the two decisions the lease makes about that file take
+# opposite sides of the uncertain case: an mtime is refreshed only on proof
+# of ownership (`ours`), while the unlink is skipped only on proof of foreign
+# ownership (`theirs`) -- a stranded lock costs the account every later round,
+# so `unknown` releases.
+_LockFileOwner = Literal["ours", "theirs", "unknown"]
 
 # `kind` is part of the identity because Bash locks act and dream separately.
 # Collapsing them onto (tenant, agent) would serialise a dream behind an
@@ -285,7 +318,7 @@ class RunLease:
         """`agent_dir_name` is the **persona directory name**, not the username.
 
         auto-run.sh:407 derives the lock name with `basename "$agent_dir"` and
-        builds `.agent-state/lock_${agent_name}` from it (:408); dream.sh:460
+        builds `.agent-state/lock_${agent_name}` from it (:408); dream.sh:462
         does the same with the name it was invoked with, which `_find_dir`
         resolves as a directory under `agents/` or `humans/`. Folder name and
         registered username diverge for several accounts on this roster, and a
@@ -308,22 +341,58 @@ class RunLease:
         self._pid = os.getpid()
         self._now = now
         self._lock_path = _LOCK_PATH[kind](agent_root, agent_dir_name)
-        self._lock = FileLock(self._lock_path)
-        self._lock_inode: int | None = None
+        # Minted here, once, and written into the lock file at acquisition:
+        # one `RunLease` instance is one acquisition (`cycle.py:_acquire`
+        # builds a fresh one per kind per round and enters it exactly once),
+        # so the token's lifetime is the file's. NOT `run_id`: its own default
+        # is `pid-<n>`, and a pid is precisely the kind of value the operating
+        # system hands out again.
+        self._lock_token = uuid.uuid4().hex
+        self._lock = FileLock(self._lock_path, identity=self._lock_token)
+
+    def _lock_file_owner(self) -> _LockFileOwner:
+        """Whose is the file at the lock path *now*?
+
+        Identity is the random token this lease WROTE INTO the file at
+        acquisition, compared against what is on disk at this instant. It is
+        deliberately not any `stat` field: this guard used to compare
+        `st_ino`, and an inode number is recycled -- ext4 hands the one just
+        freed by the reclaiming unlink straight back to the create that
+        follows it (auto-run.sh:428-429, dream.sh:471-472), so the successor's
+        file answers to the predecessor's inode and the predecessor then
+        deletes a lock it does not hold. `st_dev` is likewise reused, and the
+        timestamps have filesystem-dependent granularity. A token cannot be
+        handed to a later file by anyone but this process.
+
+        `theirs` covers a Bash reclaim too: `echo "$$"` writes a bare pid with
+        no identity line at all, which is not this lease's token.
+        """
+        try:
+            on_disk = read_lock_identity(self._lock_path)
+        except (OSError, UnicodeDecodeError):
+            # Unreadable, already gone, or bytes that are not UTF-8 at all.
+            # `UnicodeDecodeError` is caught HERE and not by an `except
+            # OSError` because it is a `ValueError`: it does not descend from
+            # `OSError` and an `except OSError` lets it escape. That escape is
+            # not a cosmetic gap -- `run_cycle` calls `heartbeat()` between
+            # every superstep with no guard of its own (`graph/cycle.py:672`),
+            # and `__exit__` reaches this through a `finally` that has already
+            # committed the row DELETE, so a single 0xff byte in the lock file
+            # would end the round AND leave the file behind with no SQLite
+            # record of it -- the orphan-lock class this module exists to
+            # kill, reintroduced by its own guard. The `stat()` this guard
+            # replaced could not raise it, so the class is new here and is
+            # pinned by a test.
+            #
+            # The caller decides what to do with `unknown` -- see
+            # `_LockFileOwner` -- because "assume mine" and "assume not mine"
+            # are each the safe answer at exactly one of the two call sites.
+            return "unknown"
+        return "ours" if on_disk == self._lock_token else "theirs"
 
     def _holds_lock_file(self) -> bool:
-        """Is the file at the lock path still the one this lease created?
-
-        Inode rather than pid, because a reclaim is unlink-then-create
-        (auto-run.sh:428-429, dream.sh:469-470) and the replacement gets a new
-        inode even when the reclaiming process happens to share our pid.
-        """
-        if self._lock_inode is None:
-            return False
-        try:
-            return self._lock_path.stat().st_ino == self._lock_inode
-        except OSError:
-            return False
+        """Is the file at the lock path PROVABLY still the one this lease created?"""
+        return self._lock_file_owner() == "ours"
 
     def __enter__(self) -> RunLease:
         try:
@@ -332,8 +401,11 @@ class RunLease:
             # Bash (or another Python run) got there first. No row is written,
             # so nothing has to be rolled back.
             raise LeaseBusy(*self._key, str(exc)) from exc
-        with contextlib.suppress(OSError):
-            self._lock_inode = self._lock_path.stat().st_ino
+        # No identity to capture here: `FileLock` wrote `self._lock_token`
+        # into the file as part of the same atomic create that won the lock,
+        # so there is no window between "we hold it" and "we can prove it",
+        # and no read that could fail and leave the lease unable to recognise
+        # its own file for the rest of the round.
         try:
             ensure_schema(self._db)
             now = self._now()
@@ -354,7 +426,7 @@ class RunLease:
         """Mark the lease alive: advance the row, and refresh the lock file's mtime.
 
         Both, because the two runtimes read different things. Bash's staleness
-        test is the file's mtime (auto-run.sh:422, dream.sh:463), so a long
+        test is the file's mtime (auto-run.sh:422, dream.sh:465), so a long
         cycle that only heartbeat the row would have its lock file reclaimed
         out from under it by the next Bash round -- the double-run the file
         half exists to prevent. The file is touched with the real wall clock
@@ -402,14 +474,20 @@ class RunLease:
                 os.utime(self._lock_path, None)
 
     def _release_lock_file(self) -> None:
-        """Unlink the lock file only while it is still the one we created.
+        """Unlink the lock file unless it is PROVABLY someone else's.
 
         `FileLock.release()` unlinks whatever is at the path. If this lease
         was reclaimed as stale and a successor recreated the file, that unlink
         would leave a live successor holding no lock at all -- and Bash would
         then be free to start a second round on the same account.
+
+        `unknown` releases, which is the opposite of what `heartbeat` does
+        with it and is deliberate: the mtime refresh is an *extra* claim, so
+        declining it costs nothing, while declining the unlink strands a lock
+        file that no Python process will ever come back for and that costs the
+        account every round until Bash's 1800s staleness window expires.
         """
-        if self._lock_inode is None or self._holds_lock_file():
+        if self._lock_file_owner() != "theirs":
             self._lock.release()
 
     def __exit__(

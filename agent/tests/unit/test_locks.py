@@ -10,6 +10,7 @@ from swil_agent.locks import (
     LockBusy,
     act_lock_path,
     dream_lock_path,
+    read_lock_identity,
 )
 
 
@@ -32,6 +33,93 @@ def test_lock_writes_the_current_pid_into_the_file(tmp_path: Path) -> None:
     path = tmp_path / "lock_zenith"
     with FileLock(path):
         assert path.read_text(encoding="utf-8") == f"{os.getpid()}\n"
+
+
+def test_lock_appends_an_identity_line_after_the_pid_when_one_is_given(tmp_path: Path) -> None:
+    """`RunLease` needs to recognise its own lock file later, and no `stat`
+    field can tell it (inode numbers are recycled). So the identity goes in
+    the file. It goes on line TWO: line one stays byte-for-byte what
+    `echo "$$"` writes, so `head -1` and a bare `cat` during an incident
+    still name the holding process -- which is what cli.py's own LeaseBusy
+    remedy tells an operator to do."""
+    path = tmp_path / "lock_zenith"
+    with FileLock(path, identity="deadbeef"):
+        assert path.read_text(encoding="utf-8") == f"{os.getpid()}\ndeadbeef\n"
+        assert path.read_text(encoding="utf-8").splitlines()[0] == str(os.getpid())
+
+
+def test_read_lock_identity_returns_the_identity_that_was_written(tmp_path: Path) -> None:
+    path = tmp_path / "lock_zenith"
+    with FileLock(path, identity="deadbeef"):
+        assert read_lock_identity(path) == "deadbeef"
+
+
+def test_read_lock_identity_is_none_for_a_bash_written_lock(tmp_path: Path) -> None:
+    """`echo "$$" > "$lock_file"` (auto-run.sh:417, dream.sh:463) writes a
+    bare pid. That is a real answer, not an error: the file is provably not
+    one that a token-holding caller created, which is exactly what a stale
+    Python holder needs to know before it unlinks what Bash just recreated."""
+    path = tmp_path / "lock_zenith"
+    path.write_text("99999\n", encoding="utf-8")
+    assert read_lock_identity(path) is None
+
+
+def test_read_lock_identity_is_none_for_a_lock_with_an_empty_second_line(tmp_path: Path) -> None:
+    """A trailing blank line is not an identity. Returning `""` here would
+    make an unidentified file compare equal to any caller holding `""`."""
+    path = tmp_path / "lock_zenith"
+    path.write_text("99999\n\n", encoding="utf-8")
+    assert read_lock_identity(path) is None
+
+
+def test_read_lock_identity_raises_when_the_file_cannot_be_read(tmp_path: Path) -> None:
+    """Distinct from `None` on purpose. "No identity" and "I could not look"
+    call for opposite responses at `RunLease`'s two call sites, so this
+    function must not collapse them into one answer."""
+    with pytest.raises(OSError):
+        read_lock_identity(tmp_path / "lock_missing")
+
+
+def test_a_lock_without_an_identity_stays_byte_identical_to_bashs_own_output(
+    tmp_path: Path,
+) -> None:
+    """The default is still the Bash-identical single line. `run_act` and
+    `run_dream` hold their lock inside one `with` and never need to
+    re-identify the file, so they pay nothing for a guard they do not use."""
+    path = tmp_path / "lock_zenith"
+    with FileLock(path):
+        assert read_lock_identity(path) is None
+
+
+@pytest.mark.parametrize(
+    "identity",
+    ["two\nlines", "trailing\n", "\nleading", "", "carriage\rreturn"],
+    ids=["embedded-lf", "trailing-lf", "leading-lf", "empty", "embedded-cr"],
+)
+def test_a_multiline_or_empty_identity_is_rejected_at_construction(
+    tmp_path: Path, identity: str
+) -> None:
+    """Enforced, not merely documented. The identity is written verbatim, so
+    a line break pushes the rest to line 3 and an empty string fails the
+    reader's emptiness test -- either way `read_lock_identity` returns
+    something that can never equal what the holder compares against, so the
+    holder reads its own live lock as a stranger's, never refreshes the
+    mtime, and never unlinks. That is a stranded lock every round, arriving
+    silently. `\r` counts because `str.splitlines()` splits on it, which is
+    what the reader uses.
+    """
+    with pytest.raises(ValueError, match="one non-empty line"):
+        FileLock(tmp_path / "lock_zenith", identity=identity)
+
+
+def test_a_rejected_identity_never_creates_a_lock_file(tmp_path: Path) -> None:
+    """The guard is in `__init__`, so it fires before anything touches the
+    filesystem. A lock created and then found invalid would be the stranded
+    file the guard exists to prevent."""
+    path = tmp_path / "lock_zenith"
+    with pytest.raises(ValueError):
+        FileLock(path, identity="two\nlines")
+    assert not path.exists()
 
 
 def test_lock_raises_when_a_fresh_lock_is_held(tmp_path: Path) -> None:

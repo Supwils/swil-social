@@ -243,9 +243,10 @@ def _drift_metrics(measurement: DriftMeasurement) -> dict[str, Any]:
     the schema by running it, not read off a description of it. A nested
     object or an array fails that union and zod rejects the WHOLE event, so
     the three aspect similarities are three top-level keys here rather than
-    one `aspects` object. (`_drift_fail_metrics` below sends exactly the
-    nested shape the schema refuses; see its own docstring for why that is
-    left alone here.)
+    one `aspects` object. (`_drift_fail_metrics` below matches this same
+    flattening -- Phase B task 1b -- and reuses these four key spellings for
+    the quantities the two functions share; see its own docstring for the
+    defect that made flattening it, too, necessary.)
 
     `None` survives to the wire as JSON `null` and is the point: it records
     "not computed" as a distinguishable value. A `0.0` here would be a
@@ -270,24 +271,23 @@ def _drift_metrics(measurement: DriftMeasurement) -> dict[str, Any]:
 
 
 def _drift_fail_metrics(verdict: DreamVerdict, settings: Settings) -> dict[str, Any]:
-    """The `fail_metrics` payload `dream.sh:811-816` attaches to a drift
-    REJECTION's lab event -- `{aspects, breached, mode}` when the gate
-    produced per-aspect similarities (Bash's own
-    `if [[ -n "$aspect_drift_json" ]]` branch, which fires whenever the
-    aspect computation succeeded, regardless of which mode ultimately
-    decided), else `{similarity, drift}` built from `verdict.scalar_sim` --
-    a TYPED field on `DreamVerdict` (fix round 2, task 12), not text pulled
-    back out of `reason` by pattern-matching. An earlier version of this
-    function regex-matched the number out of `dream/gate.py`'s
-    `_scalar_decision` reason string; that coupling meant a harmless-looking
-    reword of that message (e.g. `sim=` -> `similarity=`) would silently
-    empty this function's output with no test failure anywhere -- a lab
-    event missing its numbers looks identical to one that was never going
-    to have any. `scalar_sim` closes that gap: `gate.py` populates it
-    whenever the scalar embed pair succeeded, on BOTH the accept and reject
-    paths, and leaves it `None` -- not `0.0` -- when the embedder could not
-    be reached, so this function tells "no value" apart from "value 0.0" by
-    construction rather than by regex-match-or-not.
+    """The `fail_metrics` payload attached to a drift REJECTION's lab event
+    -- aspect-shaped when the gate produced per-aspect similarities (fires
+    whenever the aspect computation succeeded, regardless of which mode
+    ultimately decided -- see the per-aspect branch below), else
+    `{similarity, drift}` built from `verdict.scalar_sim` -- a TYPED field on
+    `DreamVerdict` (fix round 2, task 12), not text pulled back out of
+    `reason` by pattern-matching. An earlier version of this function
+    regex-matched the number out of `dream/gate.py`'s `_scalar_decision`
+    reason string; that coupling meant a harmless-looking reword of that
+    message (e.g. `sim=` -> `similarity=`) would silently empty this
+    function's output with no test failure anywhere -- a lab event missing
+    its numbers looks identical to one that was never going to have any.
+    `scalar_sim` closes that gap: `gate.py` populates it whenever the scalar
+    embed pair succeeded, on BOTH the accept and reject paths, and leaves it
+    `None` -- not `0.0` -- when the embedder could not be reached, so this
+    function tells "no value" apart from "value 0.0" by construction rather
+    than by regex-match-or-not.
 
     A STRUCTURAL failure's `verdict.sims` AND `verdict.scalar_sim` are both
     `None` (`dream/gate.py` returns immediately after `validate_candidate`
@@ -295,16 +295,43 @@ def _drift_fail_metrics(verdict: DreamVerdict, settings: Settings) -> dict[str, 
     through to `{}` for a structural failure without this function needing
     to know which kind of failure it is looking at, matching Bash's own "no
     metrics" behaviour for those six checks.
+
+    FLATTENED (Phase B task 1b). This function used to return `{"aspects":
+    {"values": ..., "style": ..., "topic": ...}, "breached": [...], "mode":
+    ...}` for the per-aspect branch -- a nested object and an array.
+    `agentEventIngest.metrics` is `z.record(z.union([z.string(), z.number(),
+    z.boolean(), z.null()]))` (`server/src/modules/agents/
+    agents.schemas.ts:59`), which neither shape satisfies, so zod rejected
+    the WHOLE event and `validate(agentEventIngest, 'body')`
+    (`agents.routes.ts:98`) 400'd it. `DRIFT_MODE=aspect` has been the live
+    default since 2026-07-03, so every aspect-mode rejection from that date
+    forward never reached `/lab` -- the exact defect `_drift_metrics` above
+    was written not to repeat, and this function now matches its spelling
+    (`aspectValues`/`aspectStyle`/`aspectTopic`/`driftMode`) for the three
+    quantities they share, rather than inventing a second convention for the
+    same numbers. `breached` has no counterpart in `_drift_metrics` (that
+    function never gates), so it keeps its own name; the list is flattened
+    to a single comma-joined string -- aspect names are drawn from the fixed
+    set `{values, style, topic}`, none of which can ever contain a comma, so
+    the join is lossless: it can be split back into the exact original list
+    with `s.split(",") if s else []` -- the guard matters because a plain
+    `.split(",")` on the empty case returns `['']`, not `[]`. An empty
+    `breached` joins to `""`, distinct from any real one-element string
+    (`"values"`, `"style"`, or `"topic"`), so "nothing breached" is never
+    confused with "one aspect breached" on the wire.
+
+    The scalar-mode branch (`{similarity, drift}`) and the structural
+    branch (`{}`) were already flat before this task and are unchanged --
+    both were already legal against `agentEventIngest.metrics`, so widening
+    them here would be a rewrite of a working branch, not a fix.
     """
     if verdict.sims is not None:
         return {
-            "aspects": {
-                "values": verdict.sims.values,
-                "style": verdict.sims.style,
-                "topic": verdict.sims.topic,
-            },
-            "breached": verdict.breached,
-            "mode": settings.drift_mode,
+            "aspectValues": verdict.sims.values,
+            "aspectStyle": verdict.sims.style,
+            "aspectTopic": verdict.sims.topic,
+            "breached": ",".join(verdict.breached),
+            "driftMode": settings.drift_mode,
         }
     if verdict.scalar_sim is None:
         return {}

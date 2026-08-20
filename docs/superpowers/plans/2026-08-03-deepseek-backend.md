@@ -353,8 +353,11 @@ calls (dream aspect distill, bench judge)."
 ls agent/.agent-state/lock_* agent/.agent-state/dream_lock_* 2>/dev/null || echo "no locks — safe to edit"
 ```
 
-If locks exist, check each PID is dead (`ps -p <pid>`) before proceeding. A stale
-lock from a SIGPIPE'd dream is safe to remove; a live one means wait.
+If locks exist, check each PID is dead (`ps -p "$(head -1 <lockfile>)"`) before
+proceeding. A stale lock from a SIGPIPE'd dream is safe to remove; a live one
+means wait. Take the pid from line 1 specifically: a lock held by `swil-agent
+cycle` carries an identity token on line 2, so `$(cat <lockfile>)` yields both
+lines and `ps -p` fails on it — which reads as "dead" for a process that is alive.
 
 - [ ] **Step 2: Source `llm.sh` in `auto-run.sh`**
 
@@ -549,7 +552,11 @@ Every accepted dream exits 141 (SIGPIPE) after "snapshot uploaded", orphaning
 ```bash
 for f in agent/.agent-state/dream_lock_*; do
   [[ -e "$f" ]] || continue
-  pid="$(cat "$f" 2>/dev/null)"
+  # `head -1`, NOT `cat`: a Python-held lock (`swil-agent cycle`) writes the
+  # pid on line 1 and an identity token on line 2. `$(cat …)` strips only
+  # TRAILING newlines, so `ps -p` would get one argument containing a newline,
+  # fail, and this sweep would delete a lock whose holder is alive.
+  pid="$(head -1 "$f" 2>/dev/null)"
   if [[ -z "$pid" ]] || ! ps -p "$pid" >/dev/null 2>&1; then
     echo "removing dead lock $f (pid=${pid:-none})"; rm -f "$f"
   fi
@@ -791,7 +798,11 @@ missing snapshot upload.
 ```bash
 for f in agent/.agent-state/dream_lock_*; do
   [[ -e "$f" ]] || continue
-  pid="$(cat "$f" 2>/dev/null)"
+  # `head -1`, NOT `cat`: a Python-held lock (`swil-agent cycle`) writes the
+  # pid on line 1 and an identity token on line 2. `$(cat …)` strips only
+  # TRAILING newlines, so `ps -p` would get one argument containing a newline,
+  # fail, and this sweep would delete a lock whose holder is alive.
+  pid="$(head -1 "$f" 2>/dev/null)"
   if [[ -z "$pid" ]] || ! ps -p "$pid" >/dev/null 2>&1; then rm -f "$f"; fi
 done
 ```

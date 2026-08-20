@@ -437,6 +437,7 @@ class FakeResources:
         self.followed: list[str] = []
         self.dms: list[RecordedDM] = []
         self.lab_events: list[LabEvent] = []
+        self.lab_event_usernames: list[str] = []
         self.snapshots: list[tuple[str, dict[str, Any]]] = []
 
         # Read surface (act/context.py's build_context) — see class
@@ -455,6 +456,15 @@ class FakeResources:
         # slug -> id, mirroring Resources.get_boards()'s real shape.
         self.board_lookup: dict[str, str] = {}
         self.get_boards_calls = 0
+
+        # Board-scoped reads (act/context.py, Phase B task 3). `board_feeds`
+        # is slug -> items; a slug with no entry returns [], which is a real
+        # production state (`making` carried 4 posts roster-wide at the last
+        # count). `feed_board_calls` records (slug, limit, sort) so a test can
+        # pin WHICH board a round read and with what pass -- kept apart from
+        # `calls`, which is scoped to writes.
+        self.board_feeds: dict[str, list[dict[str, Any]]] = {}
+        self.feed_board_calls: list[tuple[str, int, str]] = []
 
         # agentBackend sync + smart mark-read (task 13 fix wave, F8/F3).
         # Recorded in their OWN lists, not in `self.calls`: that list is
@@ -484,7 +494,8 @@ class FakeResources:
         `"feed_global_recommended"`, `"feed_global_latest"`,
         `"notifications"`, `"contacts"`, `"conversations"`, `"get_boards"`,
         `"user_posts"` — matching `test_act_context.py`'s local fake, plus
-        `get_boards` and `analysis/`'s one read."""
+        `get_boards` and `analysis/`'s one read. `"feed_board_<slug>"` fails
+        the board-scoped read for one slug (Phase B task 3)."""
         self._fail.add(name)
 
     def get_boards(self) -> dict[str, str]:
@@ -501,6 +512,12 @@ class FakeResources:
         if f"feed_global_{sort}" in self._fail:
             raise ApiError(500, "boom", None)
         return self.recommended if sort == "recommended" else self.latest
+
+    def feed_board(self, slug: str, limit: int = 12, sort: str = "latest") -> list[dict[str, Any]]:
+        self.feed_board_calls.append((slug, limit, sort))
+        if f"feed_board_{slug}" in self._fail:
+            raise ApiError(500, "boom", None)
+        return self.board_feeds.get(slug, [])
 
     def notifications(self, limit: int, unread_only: bool = True) -> list[dict[str, Any]]:
         if "notifications" in self._fail:
@@ -613,6 +630,12 @@ class FakeResources:
     def lab_event(self, username: str, event: LabEvent) -> None:
         if self._lab_event_raises is not None:
             raise self._lab_event_raises
+        # The username is recorded alongside the event, in call order, so a
+        # test can pin WHICH account a row was filed under. The folder name
+        # and the `Username` bullet differ for four accounts on this roster,
+        # and every fake whose two names match makes that slip invisible
+        # (standing constraint §4).
+        self.lab_event_usernames.append(username)
         self.lab_events.append(event)
 
     def create_snapshot(self, username: str, payload: dict[str, Any]) -> str:

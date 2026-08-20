@@ -747,8 +747,8 @@ def _lease_busy_guard(name: str) -> Iterator[None]:
     except LeaseBusy as exc:
         raise AccountSetupError(
             f"{name}: {exc} -- another run holds this account. Wait for it, or "
-            f"if it is an orphan (`cat agent/.agent-state/*lock_{name}` names a "
-            "pid that is no longer alive) remove that lock file; leases older "
+            f"if it is an orphan (`head -1 agent/.agent-state/*lock_{name}` names "
+            "a pid that is no longer alive) remove that lock file; leases older "
             "than 1800s are reclaimed automatically"
         ) from exc
 
@@ -1037,6 +1037,14 @@ def act(
     `act/round.py`'s `run_act` for exactly where that inertness is enforced.
     This command adds no writes of its own on that path either.
 
+    An `EmbedderClient` is handed to `run_act` for the shadow act-path
+    self-similarity sample (Phase B task 2). NO `_probe_embedder` call and no
+    `EmbedderGuard` bracket go with it, unlike `dream`/`cycle`: that ERROR
+    and that daemon boot exist for the drift GATE, which decides something,
+    and this sample decides nothing. A daemon that is down costs one WARN and
+    one `outcome="skip"` lab row per posting round, and the round proceeds
+    exactly as it would have.
+
     Two `try` blocks, not one, so exit 66 can only ever mean "this account
     directory does not exist" (fix wave, F5). Folding them together let ANY
     `FileNotFoundError` raised during the round -- most importantly
@@ -1073,6 +1081,9 @@ def act(
                 feed_context=_feed_context_for(settings, persona.username),
                 dry_run=dry_run,
                 access_key=settings.unsplash_access_key,
+                embedder=_embedder_for(settings),
+                similarity_window=settings.act_similarity_window,
+                cross_read_prob=settings.cross_read_prob,
             )
     except Exception as exc:
         _skip_for_exception(name, exc)
@@ -1090,11 +1101,18 @@ def dream(
     """Python port of `dream.sh`, for one account.
 
     Brackets the embedder daemon the way `cycle-one.sh` does for a real
-    round (`up` before, `down` after) -- `act/round.py` never touches the
-    embedder at all (`dream/round.py`'s own module docstring establishes
-    this: the guard bracket belongs at the caller composing multiple
-    accounts' dreams, i.e. here, not inside a single `run_dream` call), so
-    only this command needs the guard.
+    round (`up` before, `down` after), because the guard bracket belongs at
+    the caller composing multiple accounts' dreams -- i.e. here -- and not
+    inside a single `run_dream` call (`dream/round.py`'s own module docstring
+    establishes this).
+
+    This docstring used to add "`act/round.py` never touches the embedder at
+    all" as the reason only this command needs the guard. That stopped being
+    true on 2026-08-19: `execute_step` now takes a shadow self-similarity
+    sample through an injected embedder (Phase B task 2). The conclusion is
+    unchanged and the reason is now a different one -- that sample is
+    fail-open and decides nothing, so it wants no daemon booted on its
+    behalf, where a dream's drift GATE does.
     """
     settings = load_settings()
     _attach_round_log(settings, DREAM_LOG_FILENAME)
