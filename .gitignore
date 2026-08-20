@@ -27,6 +27,11 @@ logs/
 
 # Test coverage
 coverage/
+# The Python side writes `.coverage` (a binary SQLite db) at the REPO ROOT
+# when pytest is run from here rather than from `agent/`, so `agent/.gitignore`
+# does not cover it and `coverage/` above matches only the directory.
+.coverage
+.coverage.*
 
 # OS
 .DS_Store

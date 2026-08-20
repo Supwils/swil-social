@@ -412,6 +412,7 @@ class FakeResources:
         snapshot_raises: ApiError | WriteNotVerifiedError | None = None,
         behavior_snapshot_raises: ApiError | WriteNotVerifiedError | None = None,
         population_metric_raises: ApiError | WriteNotVerifiedError | None = None,
+        intervention_raises: ApiError | WriteNotVerifiedError | None = None,
         lab_event_raises: Exception | None = None,
         order: list[str] | None = None,
     ) -> None:
@@ -421,6 +422,7 @@ class FakeResources:
         self._snapshot_raises = snapshot_raises
         self._behavior_snapshot_raises = behavior_snapshot_raises
         self._population_metric_raises = population_metric_raises
+        self._intervention_raises = intervention_raises
         self._lab_event_raises = lab_event_raises
         self._order = order
         self._like_raises = like_raises
@@ -438,6 +440,11 @@ class FakeResources:
         self.dms: list[RecordedDM] = []
         self.lab_events: list[LabEvent] = []
         self.lab_event_usernames: list[str] = []
+        # Kept apart from `lab_events`: `record_intervention` is the LOUD twin
+        # of `lab_event` (it raises rather than swallowing), and a test that
+        # could not tell which method a caller used could not tell a
+        # fire-and-forget observability write from a deliberate human record.
+        self.interventions: list[tuple[str, LabEvent]] = []
         self.snapshots: list[tuple[str, dict[str, Any]]] = []
 
         # Read surface (act/context.py's build_context) — see class
@@ -465,6 +472,12 @@ class FakeResources:
         # `calls`, which is scoped to writes.
         self.board_feeds: dict[str, list[dict[str, Any]]] = {}
         self.feed_board_calls: list[tuple[str, int, str]] = []
+
+        # Topic search (act/context.py's follow-topics world-context block).
+        # `search_results` is topic -> items; `search_calls` records
+        # (query, limit) so a test can pin WHICH topics a round searched.
+        self.search_results: dict[str, list[dict[str, Any]]] = {}
+        self.search_calls: list[tuple[str, int]] = []
 
         # agentBackend sync + smart mark-read (task 13 fix wave, F8/F3).
         # Recorded in their OWN lists, not in `self.calls`: that list is
@@ -533,6 +546,19 @@ class FakeResources:
         if post_id in self._fail_posts:
             raise ApiError(500, "boom", None)
         return self.thread_comments.get(post_id, [])
+
+    def search_posts(self, q: str, limit: int = 12) -> list[dict[str, Any]]:
+        """`/posts/search`, the follow-topics world-context read.
+
+        Recorded in its OWN list rather than in `self.calls`, which is scoped
+        to the writes `execute_action` attempts -- several tests assert that
+        list is exactly empty to prove a plan never reached the executor, and
+        this call comes from the context build.
+        """
+        self.search_calls.append((q, limit))
+        if f"search_{q}" in self._fail:
+            raise ApiError(500, "boom", None)
+        return self.search_results.get(q, [])
 
     def contacts(self) -> list[str]:
         if "contacts" in self._fail:
@@ -675,6 +701,13 @@ class FakeResources:
         if self._population_metric_raises is not None:
             raise self._population_metric_raises
         return dict(self.population_metric_data)
+
+    def record_intervention(self, username: str, event: LabEvent) -> str:
+        self.calls.append("record_intervention")
+        self.interventions.append((username, event))
+        if self._intervention_raises is not None:
+            raise self._intervention_raises
+        return f"evt-{len(self.interventions)}"
 
 
 # ── FakeState (dream/candidate.py, task 10) ─────────────────────────────────

@@ -57,6 +57,7 @@ from swil_agent.graph.cycle import (
     LOGIN,
     LOGOUT,
     PLAN,
+    POPULATION_METRIC,
     RULE_CHECK,
     SNAPSHOT,
     WRITE,
@@ -320,6 +321,7 @@ def test_the_topology_matches_the_spec(tmp_path: Path) -> None:
         WRITE,
         SNAPSHOT,
         LOGOUT,
+        POPULATION_METRIC,
     }
     edges = {(edge.source, edge.target) for edge in drawn.edges}
     for source, target in (
@@ -340,7 +342,13 @@ def test_the_topology_matches_the_spec(tmp_path: Path) -> None:
         (GATE, DREAM),
         (WRITE, SNAPSHOT),
         (SNAPSHOT, LOGOUT),
-        (LOGOUT, "__end__"),
+        # The cycle's tail. `logout -> population_metric` is UNCONDITIONAL and
+        # `logout` is reachable from every path, which together are the whole
+        # "one cohesion sample per cycle" claim as a topological fact -- a
+        # conditional edge added here, or a route that skipped `logout`, would
+        # put the homogenization series back to being sampled by hand.
+        (LOGOUT, POPULATION_METRIC),
+        (POPULATION_METRIC, "__end__"),
     ):
         assert (source, target) in edges, f"missing edge {source} -> {target}"
 
@@ -398,7 +406,7 @@ def test_the_retry_policies_match_the_corrected_node_table() -> None:
         policies = nodes[name].retry_policy
         assert policies is not None, f"{name} has no retry policy"
         assert [policy.max_attempts for policy in policies] == [expected]
-    for name in (GUARDRAIL, BEHAVIOR_SNAPSHOT, RULE_CHECK, WRITE, LOGOUT):
+    for name in (GUARDRAIL, BEHAVIOR_SNAPSHOT, RULE_CHECK, WRITE, LOGOUT, POPULATION_METRIC):
         assert nodes[name].retry_policy is None, f"{name} must carry no retry policy"
 
 

@@ -23,10 +23,15 @@ builds its own `Settings(agent_root=tmp_path, ...)` instead.
 
 from __future__ import annotations
 
+import itertools
+import json
 import logging
+import os
 import re
 import time
+from collections.abc import Callable, Iterator
 from datetime import datetime as _real_datetime
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -81,6 +86,17 @@ _INITIAL_MEMORY = "2026-08-01 | act | did a thing\n"
 
 _POST_PLAN = '{"plan":[{"action":"post","text":"hello from zenith"}]}'
 _EMPTY_PLAN = '{"plan":[]}'
+
+# One `/posts/search` result for the follow-topics world-context block. The
+# marker is in the TEXT, not the id, because that is the field the rendered
+# line truncates -- an assertion on the id would survive a renderer that
+# dropped the body.
+_SEARCH_HIT = {
+    "id": "s" * 24,
+    "text": "SEARCH-HIT-2208",
+    "createdAt": "2026-09-26T08:00:00.000Z",
+    "author": {"username": "someone", "displayName": "某人"},
+}
 
 
 def _valid_dream_candidate() -> str:
@@ -1328,17 +1344,90 @@ def test_cycle_seeds_the_rhythm_roll_from_the_seed_flag(
     assert "roll=58/60" in eleven.stdout, eleven.stdout
 
 
-def test_cycle_feeds_the_planner_the_login_written_context_files(
+class _WorldContextClock(_real_datetime):
+    """A clock far from every date that could be a stale artifact.
+
+    2026-09-27 is neither the frozen `now.md` header (2026-08-19 05:30) nor
+    `_FixedClock`'s pair of dates, so a rendered date line carrying it can
+    only have come from HERE -- not from a file, not from another fixture,
+    and not from a constant somebody left in the renderer.
+    """
+
+    @classmethod
+    def now(cls, tz: object = None) -> _real_datetime:  # type: ignore[override]
+        if tz is None:
+            return _real_datetime(2026, 9, 27, 14, 3, 0)
+        return _real_datetime(2026, 9, 27, 6, 3, 0, tzinfo=tz)  # type: ignore[arg-type]
+
+
+def _advancing_clock() -> type[_real_datetime]:
+    """A clock where **every reading is a different day**.
+
+    `_WorldContextClock` above returns a constant, which makes a whole class
+    of mutation invisible (STANDING-CONSTRAINTS §4): `act` and
+    `_cycle_deps_for` deliberately hoist ONE `now` and thread it into the
+    world-context render, the follow-topics render and the round itself, and
+    with a constant clock a call site that ignored the hoisted value and took
+    a fresh `datetime.now()` produced byte-identical output. The comment at
+    both call sites claims those blocks "cannot disagree"; nothing measured
+    it.
+
+    Each class gets its own counter, so tests do not inherit each other's
+    position in the sequence.
+    """
+    ticks = itertools.count()
+    base = _real_datetime(2026, 9, 27, 14, 3, 0)
+
+    class _Advancing(_real_datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> _real_datetime:  # type: ignore[override]
+            reading = base + timedelta(days=next(ticks), minutes=7)
+            if tz is None:
+                return reading
+            return reading.replace(tzinfo=tz)  # type: ignore[arg-type]
+
+    return _Advancing
+
+
+def _assert_prompt_carries_one_clock_reading(prompt: str) -> None:
+    """The three dated lines of a planner prompt describe ONE instant.
+
+    They arrive by three different routes -- `render_now_context`'s header,
+    `render_follow_topics_feed`'s title, and `ActContext.today` -- and under
+    `_advancing_clock` any route that re-reads the clock lands a different
+    DAY, not a different microsecond. The expected value is derived from the
+    prompt rather than hardcoded, so this holds wherever in the clock's
+    sequence the round happens to start.
+    """
+    lines = prompt.splitlines()
+    stamped = [line for line in lines if line.startswith("**今日日期：** ")]
+    assert len(stamped) == 1, prompt
+    reading = _real_datetime.strptime(
+        stamped[0].removeprefix("**今日日期：** "), "%Y年%m月%d日 %H:%M"
+    )
+    assert f"# 关联话题动态 ({reading:%Y-%m-%d %H:%M})" in lines, prompt
+    assert any(line.startswith(f"- 今天（{reading:%Y-%m-%d}）已发帖次数：") for line in lines), (
+        prompt
+    )
+
+
+def test_cycle_feeds_the_planner_a_freshly_rendered_world_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`context/now.md` and `context/feed_for_<Username>.md` are written by
-    `swil.sh login`, which stays Bash in phase 1 -- so a cycle that failed to
-    read them plans against a blank world and nothing goes red.
+    """The world context reaches the planner RENDERED, not read off disk.
 
-    The feed file is keyed on the `Username` BULLET while everything else in
-    this runtime is keyed on the directory name (`auto-run.sh:504`'s own
-    `username_for_feed`), so this account's two identities differ on purpose:
-    a lookup keyed on the directory finds no file and degrades to `""`.
+    This test used to assert the opposite -- that a cycle read
+    `context/now.md` and `context/feed_for_<Username>.md`, which `swil.sh
+    login` wrote. That stopped being true on 2026-08-19, when `cycle-one.sh`
+    began dispatching to `swil-agent cycle` and nothing was left calling
+    `swil.sh`: the files stopped being written and the runtime kept reading
+    them, so every account was planning against a world frozen at
+    2026-08-19 05:30 and a header naming `qiusai`. Both stale files are
+    planted here and both must be absent from the prompt.
+
+    The account's two identities still differ on purpose (`agents/zenith_dir`
+    with a `Username: zenith` bullet): the rendered `当前 Agent` line and the
+    follow-topics search must both key on the BULLET.
     """
     directory = tmp_path / "agents" / "zenith_dir"
     directory.mkdir(parents=True)
@@ -1355,15 +1444,90 @@ def test_cycle_feeds_the_planner_the_login_written_context_files(
         backends.append(backend)
         return backend
 
+    resources = FakeResources()
+    # `alpha` is the fixture persona's first `Follow Topics` entry.
+    resources.search_results = {"alpha": [_SEARCH_HIT]}
+
     _patch_cycle_seams(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_backend_for", _recording_backend)
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+    monkeypatch.setattr(cli, "datetime", _WorldContextClock)
 
     result = runner.invoke(cli.app, ["cycle", "zenith_dir", "--dry-run"])
 
     assert result.exit_code == 0
     plan_prompt = backends[0].calls[0].user
-    assert "NOW-MARKER-9137" in plan_prompt
-    assert "FEED-MARKER-4471" in plan_prompt
+    assert "NOW-MARKER-9137" not in plan_prompt
+    assert "FEED-MARKER-4471" not in plan_prompt
+    assert "**今日日期：** 2026年09月27日 14:03" in plan_prompt
+    # An EXACT line, not a substring: the directory is `zenith_dir`, so
+    # `"... zenith" in prompt` is satisfied by `"... zenith_dir"` and a
+    # renderer keyed on the folder name walks straight past it.
+    assert "**当前 Agent：** zenith" in plan_prompt.splitlines()
+    assert "**当前 Agent：** zenith_dir" not in plan_prompt
+    assert "## #alpha" in plan_prompt
+    assert "SEARCH-HIT-2208" in plan_prompt
+    assert resources.search_calls == [("alpha", 12), ("beta", 12)]
+
+
+def test_cycle_dates_every_block_of_the_prompt_from_one_clock_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_cycle_deps_for` hoists ONE `now` and threads it three ways.
+
+    Its own comment says the hoist exists so the world-context block and the
+    round cannot disagree, and until this test only the now-context half was
+    pinned: the test above uses a CONSTANT clock, so a call site that took a
+    fresh `datetime.now()` instead of the hoisted value rendered byte-
+    identical text. Under `_advancing_clock` it lands a different day.
+
+    In production the gap is microseconds and matters only across a minute
+    boundary -- but "the property the comment asserts" and "the property a
+    test measures" were two different things, which is the shape §4 is about.
+    """
+    directory = tmp_path / "agents" / "zenith_dir"
+    directory.mkdir(parents=True)
+    (directory / "personality.md").write_text(ZENITH_PERSONALITY, encoding="utf-8")
+    (directory / "memory.md").write_text(_INITIAL_MEMORY, encoding="utf-8")
+
+    backends: list[ScriptedBackend] = []
+
+    def _recording_backend(persona: Persona, settings: Settings) -> ScriptedBackend:
+        backend = _cycle_backend()
+        backends.append(backend)
+        return backend
+
+    resources = FakeResources()
+    resources.search_results = {"alpha": [_SEARCH_HIT]}
+
+    _patch_cycle_seams(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_backend_for", _recording_backend)
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+    monkeypatch.setattr(cli, "datetime", _advancing_clock())
+
+    result = runner.invoke(cli.app, ["cycle", "zenith_dir", "--dry-run"])
+
+    assert result.exit_code == 0
+    _assert_prompt_carries_one_clock_reading(backends[0].calls[0].user)
+
+
+def test_cycle_writes_no_now_md_of_its_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ruling R26: render in memory, write no file.
+
+    `context/now.md` is ONE file carrying a per-account `当前 Agent` line, so
+    five parallel `cycle-one.sh` processes raced on it -- which is visibly
+    what happened, since the frozen copy named exactly one of the 23. It
+    stays a Bash-only artifact so the `SWIL_RUNTIME=bash` rollback keeps
+    working, and this pins that Python neither creates it nor overwrites it.
+    """
+    _write_zenith(tmp_path)
+    _patch_cycle_seams(monkeypatch, tmp_path)
+
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert not (tmp_path / "context" / "now.md").exists()
+    assert not (tmp_path / "context" / "feed_for_zenith.md").exists()
 
 
 def test_cycle_budget_caps_what_the_guardrails_let_through(
@@ -1717,17 +1881,82 @@ def test_health_check_false_on_transport_error(tmp_path: Path) -> None:
     assert cli._health_check(settings, transport=httpx.MockTransport(handler)) is False
 
 
-def test_context_now_and_feed_context_fall_back_when_absent(tmp_path: Path) -> None:
-    settings = Settings(agent_root=tmp_path)
-    assert cli._context_now_for(settings) == "(no context file)"
-    assert cli._feed_context_for(settings, "zenith") == ""
+def test_act_plans_against_todays_date_not_a_file_on_disk(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `act` command's own half of the fix -- `cycle` is pinned above.
+
+    The two commands compose the world context independently (`run_act`'s
+    call site and `_cycle_deps_for`), so fixing one and not the other is a
+    live possibility: `swil-agent act` is what `heartbeat.sh` reaches, and it
+    would have gone on planning against 2026-08-19 while `cycle` was fresh.
+
+    Replaces two tests that asserted the OLD behaviour: that `_context_now_for`
+    read `context/now.md`, and that it degraded to `"(no context file)"` when
+    that file was absent. Both are now wrong by design -- there is no file to
+    read and nothing to be absent -- and the renderers' own degradation is
+    pinned in `test_world_context.py`.
+    """
+    (tmp_agent / "context").mkdir()
+    (tmp_agent / "context" / "now.md").write_text("NOW-MARKER-5510", encoding="utf-8")
+    backend = StubBackend(_POST_PLAN)
+    built: list[Persona] = []
+
+    def _counting_resources(persona: Persona, settings: Settings) -> FakeResources:
+        built.append(persona)
+        return resources
+
+    resources = FakeResources()
+    resources.search_results = {"alpha": [_SEARCH_HIT]}
+    monkeypatch.setattr(cli, "_backend_for", lambda persona, settings: backend)
+    monkeypatch.setattr(cli, "_resources_for", _counting_resources)
+    monkeypatch.setattr(cli, "datetime", _WorldContextClock)
+
+    result = runner.invoke(cli.app, ["act", "zenith", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert backend.last is not None
+    assert "NOW-MARKER-5510" not in backend.last.user
+    assert "**今日日期：** 2026年09月27日 14:03" in backend.last.user
+    assert "**当前 Agent：** zenith" in backend.last.user.splitlines()
+    # The follow-topics block reaches THIS command's prompt too. `act` and
+    # `cycle` compose the world context independently, so a fix applied to
+    # one and not the other is a live possibility -- and it would be silent.
+    assert "## #alpha" in backend.last.user
+    assert "SEARCH-HIT-2208" in backend.last.user
+    assert resources.search_calls == [("alpha", 12), ("beta", 12)]
+    assert not (tmp_agent / "context" / "feed_for_zenith.md").exists()
+    # ONE `Resources` for the whole round. The world-context render happens
+    # beside `run_act`'s own arguments, so building a second one there is the
+    # available mistake -- and for an account on the `SWIL_PASS` fallback it
+    # would mean a second `POST /auth/login` per round, silently, 23 times.
+    assert len(built) == 1
 
 
-def test_context_now_reads_the_login_written_file(tmp_path: Path) -> None:
-    (tmp_path / "context").mkdir()
-    (tmp_path / "context" / "now.md").write_text("today's news\n", encoding="utf-8")
-    settings = Settings(agent_root=tmp_path)
-    assert cli._context_now_for(settings) == "today's news\n"
+def test_act_dates_every_block_of_the_prompt_from_one_clock_reading(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`act`'s half of the same hoist, and the same undefended half.
+
+    The test above pins the now-context date against a CONSTANT clock, which
+    cannot distinguish the hoisted `now` from a fresh `datetime.now()` --
+    `_feed_context_for(..., now=datetime.now())` survived the whole suite.
+    Under `_advancing_clock` the follow-topics title and the round's own
+    post-count line drift a day away from the header the moment either one
+    re-reads the clock.
+    """
+    backend = StubBackend(_POST_PLAN)
+    resources = FakeResources()
+    resources.search_results = {"alpha": [_SEARCH_HIT]}
+    monkeypatch.setattr(cli, "_backend_for", lambda persona, settings: backend)
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+    monkeypatch.setattr(cli, "datetime", _advancing_clock())
+
+    result = runner.invoke(cli.app, ["act", "zenith", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert backend.last is not None
+    _assert_prompt_carries_one_clock_reading(backend.last.user)
 
 
 def test_persona_source_for_returns_a_working_git_persona_source(tmp_path: Path) -> None:
@@ -2007,6 +2236,538 @@ def test_behavior_snapshot_without_an_api_key_exits_0(
 def test_behavior_snapshot_on_an_unknown_account_exits_66(tmp_agent: Path) -> None:
     result = runner.invoke(cli.app, ["behavior-snapshot", "nosuchagent"])
     assert result.exit_code == 66
+
+
+# ── intervention ──────────────────────────────────────────────────────────
+
+# Folder name and `Username` bullet DIFFER for every intervention test, and
+# the pair is copied off the live roster (`agent/agents/quant/personality.md`
+# carries `- **Username:** shujupai`). `POST /agents/{username}/events`
+# requires the actor to BE that account, so the bullet is what has to reach
+# the route -- and 4 of the 23 real accounts diverge (`quant`/`shujupai`,
+# `sketch`/`diannaokun`, `vex`/`weijian`, `zenith`/`xuansi`).
+#
+# The `tmp_agent` fixture's own account has folder == username, which is why
+# the first version of `test_intervention_records_the_event_against_the_
+# username_bullet` could not fail: `username=name` and `username=persona.
+# username` both produced `"zenith"`. The two sibling files added alongside
+# it (`test_cycle_analysis_steps.py`, `test_cycle_parity.py`) already carry
+# this pattern; this block now matches them (standing constraint §4).
+INTERVENTION_DIR = "quant_dir"
+INTERVENTION_USERNAME = "shujupai"
+
+
+def _write_intervention_account(root: Path) -> Path:
+    directory = root / "agents" / INTERVENTION_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "personality.md").write_text(
+        ZENITH_PERSONALITY.replace(
+            "- **Username:** zenith", f"- **Username:** {INTERVENTION_USERNAME}"
+        ),
+        encoding="utf-8",
+    )
+    (directory / "memory.md").write_text(_INITIAL_MEMORY, encoding="utf-8")
+    return directory
+
+
+@pytest.fixture
+def tmp_intervention_agent(tmp_agent: Path) -> Path:
+    """`tmp_agent` plus one account whose folder is NOT its username."""
+    _write_intervention_account(tmp_agent)
+    return tmp_agent
+
+
+@pytest.fixture
+def pin_local_zone() -> Iterator[Callable[[str], None]]:
+    """Pin the PROCESS's local zone, and put it back afterwards.
+
+    `_intervention_instant` resolves a bare stamp with `datetime.astimezone()`,
+    which reads the process's local zone -- so a test that builds its own
+    expectation the same way is *identical to the mutant* wherever local is
+    UTC. That is exactly what `ubuntu-latest` gives the `python` job
+    (`.github/workflows/ci.yml`), so the guard was defended on a PDT laptop
+    and undefended on every CI run. Pinning the zone here makes the expected
+    instant a constant that differs from the "read it as UTC" mutant on any
+    machine.
+
+    `time.tzset()` is what makes `TZ` take effect, and it has to run again on
+    teardown or every later test in this process inherits the pinned zone.
+    """
+    previous = os.environ.get("TZ")
+
+    def pin(zone: str) -> None:
+        os.environ["TZ"] = zone
+        time.tzset()
+
+    try:
+        yield pin
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+# Built from a dict rather than sliced out of a positional list: every one of
+# these tests varies exactly one option, and index arithmetic over a flat
+# argv is how a test silently drops the flag NEXT to the one it meant to
+# change and then passes for the wrong reason.
+_INTERVENTION_DEFAULTS = {
+    "--kind": "personality_rollback",
+    "--at": "2026-08-05T01:35:04-07:00",
+    "--summary": "hand rollback",
+    "--evidence": "personality.archive.md header",
+    "--dated-from": "archive-header",
+}
+
+
+def _intervention_args(
+    account: str = INTERVENTION_DIR, *flags: str, **overrides: str | None
+) -> list[str]:
+    options = dict(_INTERVENTION_DEFAULTS)
+    for key, value in overrides.items():
+        flag = "--" + key.replace("_", "-")
+        if value is None:
+            options.pop(flag, None)
+        else:
+            options[flag] = value
+    argv = ["intervention", account]
+    for flag, value in options.items():
+        argv += [flag, value]
+    return argv + list(flags)
+
+
+def _intervention_resources(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> FakeResources:
+    resources = FakeResources(**kwargs)  # type: ignore[arg-type]
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+    return resources
+
+
+def _sent_interventions(resources: FakeResources) -> list[tuple[str, dict[str, object]]]:
+    return [(username, event.to_wire()) for username, event in resources.interventions]
+
+
+# One case per `InterventionKind`, and the three derived `metrics` values are
+# spelled out rather than looked up from `ARTIFACT_BY_KIND` /
+# `GATE_BYPASSED_BY_KIND` -- importing the table the code uses would make this
+# assert that the code agrees with itself.
+_INTERVENTION_KINDS = [
+    ("personality_rollback", "personality.md", True),
+    ("personality_edit", "personality.md", True),
+    ("memory_edit", "memory.md", False),
+    ("other", "", False),
+]
+
+# Distinct from every default above, from each other, and from what the
+# command could plausibly have passed instead. 08:34:18 -07:00 is 15:34:18
+# UTC; 04:39:56 -07:00 is 11:39:56 UTC -- so an offset silently dropped is a
+# different number, and `windowStartsAt` echoing `occurredAt` is visible.
+_AT = "2026-08-17T08:34:18-07:00"
+_AT_ON_THE_WIRE = "2026-08-17T15:34:18+00:00"
+_WINDOW_START = "2026-07-25T04:39:56-07:00"
+_WINDOW_START_ON_THE_WIRE = "2026-07-25T11:39:56+00:00"
+_SUMMARY = "lvchuang personality.md rewritten out of band"
+_EVIDENCE = "commit 3e636bc (+26/-20), no archive entry"
+_REASON = "attribution unresolved: a hand edit or the Write-tool hole"
+
+
+@pytest.mark.parametrize(("kind", "artifact", "gate_bypassed"), _INTERVENTION_KINDS)
+def test_intervention_puts_every_option_on_the_wire(
+    tmp_intervention_agent: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    artifact: str,
+    gate_bypassed: bool,
+) -> None:
+    """The WHOLE outgoing payload, not one field of it.
+
+    `intervention` is threading code, and for threading code the argument IS
+    the behaviour (standing constraint §2): every one of its seven options,
+    plus the username derived from the positional folder, has to arrive on
+    the wire carrying the operator's value. Asserting the complete body --
+    against a fixture where no two of those values coincide -- closes the
+    class "a field was never checked", where one assertion per field only
+    closes the instances somebody thought to enumerate.
+
+    Parametrised over the closed kind set because `--kind` drives three
+    derived `metrics` values, `gateBypassed` among them -- the single most
+    load-bearing fact for anyone reading the drift series, and the one a
+    hardcoded kind would assert for an intervention that never touched
+    `personality.md`.
+    """
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(
+        cli.app,
+        _intervention_args(
+            kind=kind,
+            at=_AT,
+            summary=_SUMMARY,
+            evidence=_EVIDENCE,
+            dated_from="commit",
+            reason=_REASON,
+            window_start=_WINDOW_START,
+        ),
+    )
+
+    assert result.exit_code == 0
+    # The pre-write echo carries `kind` too, and it is the operator's last
+    # chance to catch a wrong one before the write. Asserted HERE rather than
+    # beside the timestamp test because only this test sweeps the whole kind
+    # set: against a single-kind test, hardcoding the echo's kind to that same
+    # value is an equivalent mutation and cannot be killed.
+    assert f"-- @{INTERVENTION_USERNAME} {kind} at " in result.stdout
+    assert _sent_interventions(resources) == [
+        (
+            INTERVENTION_USERNAME,
+            {
+                "type": "anomaly",
+                "phase": "anomaly",
+                "outcome": "flagged",
+                "summary": _SUMMARY,
+                "reason": _REASON,
+                "occurredAt": _AT_ON_THE_WIRE,
+                "metrics": {
+                    "intervention": kind,
+                    "artifact": artifact,
+                    "gateBypassed": gate_bypassed,
+                    "datedFrom": "commit",
+                    "evidence": _EVIDENCE,
+                    "windowStartsAt": _WINDOW_START_ON_THE_WIRE,
+                },
+            },
+        )
+    ]
+
+
+def test_intervention_omits_the_two_optional_fields_when_neither_is_given(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same whole-payload assertion with only the required options.
+
+    `reason` and `windowStartsAt` must be ABSENT, not present-and-empty:
+    `/lab` counts keys, and "we know when" has to stay distinguishable from
+    "we know only within a range".
+    """
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args())
+
+    assert result.exit_code == 0
+    assert _sent_interventions(resources) == [
+        (
+            INTERVENTION_USERNAME,
+            {
+                "type": "anomaly",
+                "phase": "anomaly",
+                "outcome": "flagged",
+                "summary": "hand rollback",
+                # 01:35:04 -07:00 is 08:35:04 UTC.
+                "occurredAt": "2026-08-05T08:35:04+00:00",
+                "metrics": {
+                    "intervention": "personality_rollback",
+                    "artifact": "personality.md",
+                    "gateBypassed": True,
+                    "datedFrom": "archive-header",
+                    "evidence": "personality.archive.md header",
+                },
+            },
+        )
+    ]
+
+
+def test_intervention_records_the_event_against_the_username_bullet(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`POST /agents/{username}/events` requires the actor to BE that account,
+    so the username BULLET decides where the record lands -- not the folder
+    name, which diverges from it on this roster.
+
+    The folder here is `quant_dir` and the bullet is `shujupai`, so posting
+    to the positional argument is a 404/403 that points the operator at the
+    server rather than at the bug."""
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args())
+
+    assert result.exit_code == 0
+    assert "recorded id=evt-1" in result.stdout
+    assert [username for username, _ in resources.interventions] == [INTERVENTION_USERNAME]
+    assert resources.calls == ["record_intervention"]
+
+
+def test_intervention_sends_the_instant_it_is_about_not_now(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole point of the command. 01:35:04 PDT is 08:35:04 UTC -- an
+    offset silently dropped would be a different number, and `now()` would be
+    a different day."""
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args())
+
+    assert result.exit_code == 0
+    wire = resources.interventions[0][1].to_wire()
+    assert wire["occurredAt"] == "2026-08-05T08:35:04+00:00"
+    assert wire["type"] == "anomaly"
+    assert wire["metrics"]["gateBypassed"] is True
+
+
+@pytest.mark.parametrize(
+    ("zone", "expected", "local"),
+    [
+        # 01:35:04 in a -07:00 zone is 08:35:04 UTC; in a +08:00 zone it is
+        # 17:35:04 UTC the PREVIOUS day. Two zones with opposite-signed
+        # offsets, so a resolution that ignored the local zone -- or that
+        # hardcoded one offset -- fails at least one row on every machine.
+        ("America/Los_Angeles", "2026-08-05T08:35:04+00:00", "2026-08-05T01:35:04-07:00"),
+        ("Asia/Shanghai", "2026-08-04T17:35:04+00:00", "2026-08-05T01:35:04+08:00"),
+    ],
+)
+def test_intervention_resolves_a_bare_local_timestamp_and_echoes_it(
+    tmp_intervention_agent: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pin_local_zone: Callable[[str], None],
+    zone: str,
+    expected: str,
+    local: str,
+) -> None:
+    """Every source an operator copies from is written in LOCAL time --
+    `dream.sh`'s archive header, `memory.md`'s note lines, `git log`'s default
+    -- so a bare stamp is resolved as local rather than as UTC.
+
+    The resolved instant is echoed BEFORE the write, because a timestamp that
+    parsed successfully into the wrong instant is the one 2am mistake nothing
+    else can catch.
+
+    The zone is PINNED rather than inherited. Deriving the expectation from
+    this machine's own zone (`datetime(...).astimezone(UTC)`) is portable but
+    vacuous: wherever local is UTC -- which is what CI runs on -- it computes
+    exactly what a "read a bare stamp as UTC" regression would, so the guard
+    was green on the laptop and unguarded in CI.
+    """
+    pin_local_zone(zone)
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args(at="2026-08-05 01:35:04"))
+
+    assert result.exit_code == 0
+    assert resources.interventions[0][1].to_wire()["occurredAt"] == expected
+    # The WHOLE line, not a fragment of it. Asserting only `wire {expected}`
+    # pinned the UTC half and left the other three fields free: the username,
+    # the kind, and -- the sharp one -- the LOCAL half, which is the half the
+    # operator actually compares against the archive header they copied from.
+    # A regression that echoed UTC in both positions would have looked correct
+    # to the substring check and silently removed the only cross-check there is.
+    assert (
+        f"intervention {INTERVENTION_DIR} -- @{INTERVENTION_USERNAME} personality_rollback "
+        f"at {local} (wire {expected})"
+    ) in result.stdout
+
+
+def test_intervention_dry_run_sends_nothing_and_prints_the_wire_body(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args(INTERVENTION_DIR, "--dry-run"))
+
+    assert result.exit_code == 0
+    assert resources.interventions == []
+    assert "dry run, nothing sent" in result.stdout
+    assert "'type': 'anomaly'" in result.stdout
+
+
+def test_intervention_refuses_a_future_instant_and_exits_75(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """There is no legitimate future intervention, and the typo that produces
+    one (a year or a month off) otherwise files a marker that sorts to the top
+    of every timeline forever."""
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args(at="2099-01-01"))
+
+    assert result.exit_code == 75
+    assert "future instant" in result.stdout + result.stderr
+    assert resources.interventions == []
+
+
+def test_intervention_refuses_an_unparseable_timestamp_and_exits_75(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args(at="yesterday"))
+
+    assert result.exit_code == 75
+    assert "--at" in result.stdout + result.stderr
+    assert resources.interventions == []
+
+
+def test_intervention_refuses_a_window_that_runs_backwards(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--window-start` is the EARLIEST possible instant for a bounded date.
+    One later than `--at` is a transposition, and it would publish a window
+    that cannot contain the event it bounds."""
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args(window_start="2026-08-06T00:00:00-07:00"))
+
+    assert result.exit_code == 75
+    assert "backwards" in result.stdout + result.stderr
+    assert resources.interventions == []
+
+
+def test_intervention_records_a_window_when_the_date_is_only_a_bound(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A commit date is an UPPER bound on an edit made at some unknown earlier
+    moment, so the marker carries the range as well as the instant -- and the
+    two are different values, which is what makes an implementation that
+    echoed `occurredAt` into `windowStartsAt` visible."""
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(
+        cli.app,
+        _intervention_args(at=_AT, dated_from="commit", window_start=_WINDOW_START),
+    )
+
+    assert result.exit_code == 0
+    metrics = resources.interventions[0][1].to_wire()["metrics"]
+    assert metrics["windowStartsAt"] == _WINDOW_START_ON_THE_WIRE
+    assert metrics["datedFrom"] == "commit"
+
+
+def test_intervention_refuses_an_over_length_summary_before_the_wire(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = _intervention_resources(monkeypatch)
+
+    result = runner.invoke(cli.app, _intervention_args(summary="x" * 501))
+
+    assert result.exit_code == 75
+    assert "500" in result.stdout + result.stderr
+    assert resources.interventions == []
+
+
+def test_intervention_exits_75_when_the_server_rejects_it(
+    tmp_intervention_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure `Resources.lab_event` would have swallowed. A 403 is the
+    realistic one -- the server requires the actor to BE that account -- and a
+    fire-and-forget write would have printed a success line."""
+    resources = _intervention_resources(
+        monkeypatch, intervention_raises=ApiError(403, "forbidden", None)
+    )
+
+    result = runner.invoke(cli.app, _intervention_args())
+
+    assert result.exit_code == 75
+    output = result.stdout + result.stderr
+    assert "server rejected" in output
+    assert "forbidden" in output
+    assert resources.calls == ["record_intervention"]
+
+
+def test_intervention_on_an_unknown_account_exits_66(tmp_intervention_agent: Path) -> None:
+    result = runner.invoke(cli.app, _intervention_args("nosuchagent"))
+    assert result.exit_code == 66
+
+
+def test_intervention_rejects_a_kind_outside_the_closed_set(tmp_intervention_agent: Path) -> None:
+    """A closed enum, because an open one is how a series gets annotated with
+    a label nobody can query for later. Typer rejects it at parse time (exit
+    2), before any account or credential is touched."""
+    result = runner.invoke(cli.app, _intervention_args(kind="vibes"))
+    assert result.exit_code == 2
+
+
+@pytest.mark.parametrize("missing", ["at", "summary", "evidence", "dated_from"])
+def test_intervention_requires_every_option_that_makes_the_record_readable(
+    tmp_intervention_agent: Path, missing: str
+) -> None:
+    """None of the four has a default, and each absent default is a failure
+    that has already happened: an `--at` defaulting to now would file the
+    marker at the far end of the series from the stretch it annotates, and a
+    record with no `--evidence` or no `--dated-from` cannot be checked or
+    weighted by anyone reading it later."""
+    result = runner.invoke(cli.app, _intervention_args(**{missing: None}))
+    assert result.exit_code == 2
+
+
+def test_intervention_without_any_credential_exits_75_with_a_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "A missing `api_key.txt` fails silently with a curl" is one of the
+    three reasons this command exists, and nothing named that failure at this
+    call site -- it was carried entirely by inherited helper behaviour.
+
+    The precondition is NOT "no `api_key.txt`". It is no `api_key.txt` **and**
+    no usable `SWIL_PASS`: `_resources_for` falls back to `PasswordAuth` when
+    only the key is missing (see the sibling test below), so a test that wrote
+    no key but left a password set would be measuring the wrong branch.
+    `_resources_for` runs for REAL here -- this is the one exception in the
+    intervention block, which monkeypatches it away everywhere else.
+    """
+    _write_intervention_account(tmp_path)  # no api_key.txt, and swil_pass is None
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(agent_root=tmp_path))
+
+    result = runner.invoke(cli.app, _intervention_args())
+
+    output = result.stdout + result.stderr
+    assert result.exit_code == 75
+    assert f"SKIP {INTERVENTION_DIR}" in output
+    assert INTERVENTION_USERNAME in output
+    assert "create-api-key" in output
+    assert "SWIL_PASS" in output
+    assert "Traceback" not in output
+
+
+def test_intervention_with_a_password_and_no_api_key_still_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the precondition above, over a real `ApiClient`.
+
+    A missing key alone is not a failure, and this is also the only pin on
+    the username reaching the ROUTE rather than a fake's argument list: the
+    POST has to land on `/agents/shujupai/events`, never on the folder name.
+    """
+    _write_intervention_account(tmp_path)  # no api_key.txt -- PasswordAuth takes over
+    settings = Settings(agent_root=tmp_path, swil_url="https://example.test", swil_pass="hunter2")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    build_resources = cli._resources_for  # captured before the monkeypatch below
+    posted: list[tuple[str, object]] = []
+    logins: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/login"):
+            logins.append(request.url.path)
+            return httpx.Response(
+                200, json={"data": {}}, headers={"set-cookie": "sid=abc123; Path=/"}
+            )
+        posted.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(201, json={"data": {"event": {"id": "evt-9"}}})
+
+    monkeypatch.setattr(
+        cli,
+        "_resources_for",
+        lambda persona, settings: build_resources(
+            persona, settings, transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    result = runner.invoke(cli.app, _intervention_args())
+
+    assert result.exit_code == 0
+    assert "recorded id=evt-9" in result.stdout
+    # The cookie fallback is empty until `login()` runs, so a builder that
+    # skipped it would 401 every write on this path in production while a
+    # handler that ignores auth stayed green.
+    assert logins == ["/api/v1/auth/login"]
+    assert [path for path, _ in posted] == [f"/api/v1/agents/{INTERVENTION_USERNAME}/events"]
 
 
 def _metric_resources(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> FakeResources:

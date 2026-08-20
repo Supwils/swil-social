@@ -1,17 +1,61 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-08-19
+last-updated: 2026-08-20
 owner: agent-python-migration
 ---
 
 # Handoff
 
+## /lab records human interventions, and samples cohesion every cycle — 2026-08-20
+
+Two things that were already happening and left no trace now leave one.
+
+**`swil-agent intervention <name>`** files ONE hand edit (`personality.md` /
+`memory.md`) as an `anomaly` lab event, so the window it distorts stops reading
+as normal. It is the eighth `swil-agent` command and the only one that ports no
+Bash script — there was never a way to do this. Its whole design is "impossible
+to do wrong at 2am":
+
+- Five required options, no defaults. `--at` defaulting to "now" would file the
+  marker at the far end of the series it annotates, which is the same as not
+  filing it; `--dated-from` keeps a **commit date (an upper bound)** from being
+  read as an **archive header (a second-accurate observation)**; `--evidence` is
+  required because an unverifiable record is a rumour in the one series whose
+  job is auditability.
+- A bare `--at` is resolved as **local** time (every source an operator copies
+  from — `dream.sh`'s archive header, `memory.md` note lines, `git log` — is
+  local), and the resolved instant is echoed **before** the write.
+- `metrics` is assembled from typed scalars and is never accepted as a mapping:
+  a nested value 400s the whole event and both runtimes swallow the 400.
+- The write is verified — `Resources.record_intervention` **raises** where
+  `lab_event` swallows — so a 403 from the wrong account's credential exits 75
+  instead of printing a success line. `--dry-run` prints the exact wire body.
+
+Server side: `POST /agents/:username/events` gained an optional `occurredAt`
+(`z.coerce.date()`) mapping onto `created_at`. **No migration** — `anomaly` was
+already in the enum, the Drizzle `$type` and both DTOs.
+
+**The three known interventions are still NOT filed.** The deployed backend
+predates `occurredAt` and zod strips unknown keys, so running them today returns
+201 three times and stamps every one with `now()`, with no API to correct it
+afterwards. Deploy the backend first. The three rows, their dates and their
+evidence are in `docs/13-observation-lab.md`'s 2026-08-20 change point.
+
+**Cohesion is now a series.** A `population_metric` graph node hangs off the
+cycle's tail (`logout → population_metric → END`, unconditional), fail-soft,
+skipped under `--dry-run` and on an `OFFLINE` act outcome. Before this,
+`GET /agents/homogenization` held three stored points in four months because
+nothing ever called the POST. Two consequences worth knowing: the series changes
+**sampling regime** on this date (ad-hoc points → ~23 per sweep, clustered), and
+each POST costs the server two unbounded embedding-table scans — accepted, with
+the condition that would make it matter recorded in `docs/13-observation-lab.md`.
+
 ## ⚠ Python agent runtime IS the runtime of record — stages 3/4/5 all landed — 2026-08-19
 
 `agent/swil_agent/` — a `uv`-managed Python package that ports `auto-run.sh`'s
 act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
-(Plan 4) — has seven entrypoints:
+(Plan 4) — has eight entrypoints:
 
 | command | ports | flags |
 |---|---|---|
@@ -22,9 +66,10 @@ act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
 | `swil-agent behavior-snapshot <name>` | `behavior-snapshot.sh` | `--limit N` |
 | `swil-agent population-metric [name]` | `population-metric.sh` | — |
 | `swil-agent summary [date]` | `agent-summary.sh` | — |
+| `swil-agent intervention <name>` | **nothing — no Bash equivalent** | `--kind` `--at` `--summary` `--evidence` `--dated-from` (all required) `--reason` `--window-start` `--dry-run` |
 
 Run as `uv run --project agent swil-agent …`, or `cd agent && uv run
-swil-agent …`. 1386 tests, 99.5% coverage, `mypy --strict` clean, `ruff` clean.
+swil-agent …`. 1560 tests, 99.5% coverage, `mypy --strict` clean, `ruff` clean.
 Design spec:
 `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`.
 Ledgers: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progress.md`

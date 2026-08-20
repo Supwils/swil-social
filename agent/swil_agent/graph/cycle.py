@@ -1,16 +1,24 @@
-"""The cycle graph: spec §5.4's nine nodes plus Plan 4's two observability
-nodes, wired together, and the two things that wrap a whole run -- the lease
-and the checkpointer.
+"""The cycle graph: spec §5.4's nine nodes, Plan 4's two observability nodes
+and the population-cohesion tail, wired together, plus the two things that
+wrap a whole run -- the lease and the checkpointer.
 
 ```
 login → plan → guardrail → execute → behavior_snapshot ─┐
           │        │                                     │
           │        └ (veto / empty) ────────────────────→ rule_check → dream
           │                                                             │
-          └ (offline / dead backend) ─────────────────────────→ logout   ↓
-                                                          gate → write → snapshot
-                                                            └ (reject) → keep original
+          └ (offline / dead backend) ──────────────────────→ logout      ↓
+                                                                 gate → write → snapshot
+                                                                  └ (reject) → keep original
+
+  ... every path ends: → logout → population_metric → END
 ```
+
+`population_metric` is the cycle's tail: EVERY path reaches `logout`, and
+`logout -> population_metric -> END` is unconditional, so one
+population-cohesion sample lands per cycle. It sits after `logout` rather
+than before it because `logout` is the ACCOUNT's terminal record and this is
+a reading of the whole population -- see `make_population_metric_node`.
 
 `behavior_snapshot` and `rule_check` are the two steps `cycle-one.sh` and
 `auto-run.sh` perform and Plan 3's cycle did not (spec §15.1 row 21). Their
@@ -128,6 +136,7 @@ from swil_agent.graph.nodes import (
     make_login_node,
     make_logout_node,
     make_plan_node,
+    make_population_metric_node,
     make_rule_check_node,
     make_snapshot_node,
     make_write_node,
@@ -149,6 +158,7 @@ GATE: Final = "gate"
 WRITE: Final = "write"
 SNAPSHOT: Final = "snapshot"
 LOGOUT: Final = "logout"
+POPULATION_METRIC: Final = "population_metric"
 
 # Spec §5.4's node table, as corrected. Read as ATTEMPTS, which is what
 # `RetryPolicy` takes -- see this module's report for the one row where the
@@ -520,6 +530,7 @@ def build_cycle(config: CycleConfig | None = None) -> CycleGraph:
     graph.add_node(WRITE, _bind(make_write_node))
     graph.add_node(SNAPSHOT, _bind(make_snapshot_node), retry_policy=SNAPSHOT_RETRY)
     graph.add_node(LOGOUT, _bind(make_logout_node))
+    graph.add_node(POPULATION_METRIC, _bind(make_population_metric_node))
 
     graph.add_edge(START, LOGIN)
     graph.add_conditional_edges(LOGIN, _continue_or_logout(PLAN), [PLAN, LOGOUT])
@@ -532,18 +543,19 @@ def build_cycle(config: CycleConfig | None = None) -> CycleGraph:
     graph.add_conditional_edges(GATE, _after_gate(cfg), [DREAM, WRITE])
     graph.add_edge(WRITE, SNAPSHOT)
     graph.add_edge(SNAPSHOT, LOGOUT)
-    graph.add_edge(LOGOUT, END)
+    graph.add_edge(LOGOUT, POPULATION_METRIC)
+    graph.add_edge(POPULATION_METRIC, END)
     return graph
 
 
 def _recursion_limit(config: CycleConfig) -> int:
     """Five supersteps per act round (`login`, `plan`, `guardrail`, `execute`,
     `behavior_snapshot`), two per dream attempt, plus the `rule_check` /
-    `write` / `snapshot` / `logout` tail and START. Only exceeds LangGraph's
-    own default for a configuration that turns a loop on -- but a
-    `GraphRecursionError` on the round that finally enables loop 3 would be a
-    confusing way to learn that."""
-    needed = 5 * config.max_rounds + 2 * config.max_dream_attempts + 7
+    `write` / `snapshot` / `logout` / `population_metric` tail and START. Only
+    exceeds LangGraph's own default for a configuration that turns a loop on
+    -- but a `GraphRecursionError` on the round that finally enables loop 3
+    would be a confusing way to learn that."""
+    needed = 5 * config.max_rounds + 2 * config.max_dream_attempts + 8
     return max(_DEFAULT_RECURSION_LIMIT, needed)
 
 

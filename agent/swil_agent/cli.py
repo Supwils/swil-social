@@ -79,14 +79,26 @@ from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Annotated, Final, Protocol
 
 import httpx
 import typer
 
 from swil_agent import __version__
+from swil_agent.act.context import (
+    platform_activity,
+    read_news_digest,
+    render_follow_topics_feed,
+    render_now_context,
+)
 from swil_agent.act.round import run_act
 from swil_agent.analysis.behavior_snapshot import run_behavior_snapshot
+from swil_agent.analysis.intervention import (
+    DatingBasis,
+    InterventionKind,
+    build_intervention_event,
+    run_intervention,
+)
 from swil_agent.analysis.population_metric import (
     API_KEY_FILENAME,
     COHORTS,
@@ -609,23 +621,55 @@ def _health_check(settings: Settings, *, transport: httpx.BaseTransport | None =
     return response.status_code == 200
 
 
-def _read_text_or(path: Path, default: str) -> str:
-    return path.read_text(encoding="utf-8") if path.is_file() else default
+def _context_now_for(
+    resources: Resources,
+    persona: Persona,
+    settings: Settings,
+    *,
+    now: datetime,
+    runner: Runner,
+) -> str:
+    """The world-context block, RENDERED for this account (rulings R25/R26).
+
+    This used to read `context/now.md` off disk. `swil.sh login` wrote that
+    file, nothing in Python calls `swil.sh`, and `cycle-one.sh:45` has
+    dispatched straight to `swil-agent cycle` since 2026-08-19 -- so from the
+    cutover until this function existed, every round of every account was
+    handed the same file, frozen at 2026-08-19 05:30, telling all 23 of them
+    that the date was the 19th and that they were `qiusai`.
+
+    Nothing is written back (R26). `context/now.md` stays a Bash-only
+    artifact: the `SWIL_RUNTIME=bash` rollback still runs `swil.sh login`,
+    which still writes it for `auto-run.sh:500` to read, and the file's
+    single per-account `当前 Agent` line stops being something five parallel
+    rounds race on.
+
+    `now` is threaded in rather than taken here so the whole round -- this
+    block, `run_act`'s `today`, the memory line it writes -- agrees on one
+    clock; `_cycle_deps_for` already freezes one for exactly that reason.
+    """
+    return render_now_context(
+        username=persona.username,
+        now=now,
+        activity=platform_activity(resources, persona, now=now),
+        news=read_news_digest(settings.agent_root, runner),
+    )
 
 
-def _context_now_for(settings: Settings) -> str:
-    """`context/now.md` -- written by `swil.sh login`, which stays Bash in
-    Phase 1 (`act/context.py`'s own `build_context` docstring). This
-    function only reads it, matching `auto-run.sh:500`'s own
-    `cat ... || echo '(no context file)'` fallback."""
-    return _read_text_or(settings.agent_root / "context" / "now.md", "(no context file)")
+def _feed_context_for(resources: Resources, persona: Persona, *, now: datetime) -> str:
+    """The follow-topics feed, RENDERED for this account.
 
+    Same defect, same fix: this read `context/feed_for_<username>.md`, whose
+    freshest copy on the roster was 12 hours old at the time this was found
+    and several of which dated from three days earlier.
 
-def _feed_context_for(settings: Settings, username: str) -> str:
-    """`context/feed_for_<Username bullet>.md` -- keyed by the persona's
-    `Username` bullet, NOT its directory name (`auto-run.sh:504`'s own
-    `username_for_feed` is parsed straight from the `Username:` bullet)."""
-    return _read_text_or(settings.agent_root / "context" / f"feed_for_{username}.md", "")
+    Keyed on the persona's own `Follow Topics`, and the search results are
+    fetched through `Resources` -- the same layering the live board feed in
+    `act/context.py` already uses. The account is identified by the
+    `Username` bullet carried on `Persona`, never by the directory name; the
+    two differ on this roster.
+    """
+    return render_follow_topics_feed(resources, persona, now=now)
 
 
 def _probe_embedder(embedder: EmbedderClient, settings: Settings) -> None:
@@ -787,25 +831,32 @@ def _cycle_deps_for(
     embedder = _embedder_for(settings)
     if not dry_run:
         _probe_embedder(embedder, settings)
+    # Hoisted out of the `CycleDeps(...)` call because the world-context
+    # renderers below need the SAME three: one `Resources` (a second one would
+    # re-run `PasswordAuth.login` for an account without an api_key.txt), one
+    # `Runner`, and the one `now` this cycle is frozen at.
+    resources = _resources_for(persona, settings)
+    runner = _runner_for(settings)
+    now = datetime.now()
     return CycleDeps(
-        resources=_resources_for(persona, settings),
+        resources=resources,
         backend=_backend_for(persona, settings),
         persona_source=persona_source,
-        runner=_runner_for(settings),
+        runner=runner,
         embedder=embedder,
         dream_state=_state_for(settings),
         settings=settings,
         agent_root=settings.agent_root,
         health_check=lambda: _health_check(settings),
         memory_text=persona_source.read_memory(agent_dir_name(persona)),
-        context_now=_context_now_for(settings),
-        feed_context=_feed_context_for(settings, persona.username),
+        context_now=_context_now_for(resources, persona, settings, now=now, runner=runner),
+        feed_context=_feed_context_for(resources, persona, now=now),
         budget=budget,
         access_key=settings.unsplash_access_key,
         dry_run=dry_run,
         auto=auto,
         rng=random.Random(seed),
-        now=datetime.now(),
+        now=now,
         captured_at=datetime.now(UTC),
     )
 
@@ -1067,18 +1118,25 @@ def act(
 
     try:
         with _backend_setup_guard(persona):
+            # Same hoist as `_cycle_deps_for`, for the same reasons: ONE
+            # `Resources` (a second `_resources_for` would re-authenticate an
+            # account on the `SWIL_PASS` fallback) and ONE `now`, so the
+            # world-context block and the round's own `today` cannot disagree.
+            resources = _resources_for(persona, settings)
+            runner = _runner_for(settings)
+            now = datetime.now()
             result = run_act(
                 persona=persona,
-                resources=_resources_for(persona, settings),
+                resources=resources,
                 backend=_backend_for(persona, settings),
                 memory_text=persona_source.read_memory(name),
                 agent_root=settings.agent_root,
-                now=datetime.now(),
+                now=now,
                 rng=random.Random(seed),
                 health_check=lambda: _health_check(settings),
                 budget=budget,
-                context_now=_context_now_for(settings),
-                feed_context=_feed_context_for(settings, persona.username),
+                context_now=_context_now_for(resources, persona, settings, now=now, runner=runner),
+                feed_context=_feed_context_for(resources, persona, now=now),
                 dry_run=dry_run,
                 access_key=settings.unsplash_access_key,
                 embedder=_embedder_for(settings),
@@ -1463,6 +1521,181 @@ def _account_directory_exists(agent_root: Path, name: str) -> bool:
     -name case `find_account_with_api_key` already had to spell out.
     """
     return bool(name) and any((agent_root / cohort / name).is_dir() for cohort in COHORTS)
+
+
+# `Annotated` rather than this module's prevailing `x: T = typer.Option(...)`
+# style, for the whole signature rather than only the two parameters that
+# forced it. Ruff's B008 exempts a call default only when the parameter is
+# annotated with a builtin immutable type, so `kind: InterventionKind =
+# typer.Option(...)` is flagged where `at: str = typer.Option(...)` is not --
+# and a signature that used one style for its enums and another for its
+# strings would read as if the difference meant something.
+@app.command()
+def intervention(
+    name: str,
+    kind: Annotated[InterventionKind, typer.Option("--kind", help="What was done, by hand.")],
+    at: Annotated[
+        str,
+        typer.Option(
+            "--at", help="When it happened. ISO-8601; a bare local time is resolved as local."
+        ),
+    ],
+    summary_text: Annotated[
+        str,
+        typer.Option(
+            "--summary", help="One line, <=500 chars: what a reader of /lab needs to know."
+        ),
+    ],
+    evidence: Annotated[
+        str,
+        typer.Option(
+            "--evidence", help="Where the claim can be checked: archive header, commit, note."
+        ),
+    ],
+    dated_from: Annotated[
+        DatingBasis,
+        typer.Option(
+            "--dated-from", help="How --at was established. A commit date is an UPPER BOUND."
+        ),
+    ],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why, if it needs saying (<=300).")
+    ] = None,
+    window_start: Annotated[
+        str | None,
+        typer.Option(
+            "--window-start",
+            help="Earliest possible instant, when --at is only a bound. ISO-8601.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the exact wire body and send nothing.")
+    ] = False,
+) -> None:
+    """Record ONE human intervention as an `anomaly` lab event on `/lab`.
+
+    A manual edit to an account's `personality.md` or `memory.md` bypasses
+    every mechanism that would otherwise leave a trace -- the archive, the
+    drift gate, the snapshot upload -- so the `/lab` series that covers it
+    goes on looking normal while being wrong. This is how that stops being
+    invisible.
+
+    Optimised for "impossible to do wrong at 2am" rather than for keystrokes,
+    and every one of the five required options is a failure that has already
+    happened here:
+
+      * `--at` has NO default. "Now" is almost never when an intervention
+        happened, and a silent default would put the marker at the far end of
+        the series from the stretch it annotates -- which is the same as not
+        recording it.
+      * `--dated-from` is required because a commit date and an archive
+        header are not the same kind of fact. One is an upper bound on an
+        edit that happened at some unknown earlier moment; the other is a
+        second-accurate observation. Recorded separately so nobody later
+        reads a bound as a measurement.
+      * `--evidence` is required because an intervention record nobody can
+        check against a header, a commit or a note is a rumour in the one
+        series whose job is to make the data auditable.
+      * `metrics` is assembled from these scalars and is never accepted as a
+        mapping: a nested value 400s the whole event and both runtimes
+        swallow it, which is exactly how that defect ran six weeks unnoticed.
+      * The write is VERIFIED, not fire-and-forget. `Resources.lab_event`
+        swallows every `ApiError`; this path uses `record_intervention`,
+        which raises, so a 403 (wrong account's credential) or a 400
+        (rejected body) exits 75 with the server's own message instead of
+        printing a success line.
+
+    No round log is attached, unlike every other command here: this is not a
+    round, and `auto-run.log`'s line counts are read as act-round counts
+    during straggler reconciliation. The durable record is the lab event.
+
+    Exit codes: `66` no such account, `75` anything that stopped the record
+    from landing (bad timestamp, over-length field, setup failure, server
+    rejection), `0` recorded.
+    """
+    settings = load_settings()
+    persona_source = _persona_source_for(settings)
+    try:
+        persona = _load_persona_or_raise_setup_error(persona_source, name)
+    except FileNotFoundError as exc:
+        typer.echo(f"no such account: {name}", err=True)
+        raise typer.Exit(EXIT_NO_SUCH_ACCOUNT) from exc
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    try:
+        occurred_at = _intervention_instant(at, "--at")
+        window = (
+            None if window_start is None else _intervention_instant(window_start, "--window-start")
+        )
+        if window is not None and window > occurred_at:
+            raise ValueError("--window-start is after --at; the window would run backwards")
+        event = build_intervention_event(
+            kind=kind,
+            occurred_at=occurred_at,
+            summary=summary_text,
+            evidence=evidence,
+            dated_from=dated_from,
+            reason=reason,
+            window_start=window,
+        )
+    except ValueError as exc:
+        typer.echo(f"intervention {name} -- refused: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    # Echoed on BOTH paths, before the write. The single most likely 2am
+    # mistake is a timestamp that parsed successfully into the wrong instant
+    # (an offset assumed, a month and day transposed), and the only thing
+    # that catches it is seeing the resolved value next to the account it is
+    # about while there is still time to Ctrl-C.
+    typer.echo(
+        f"intervention {name} -- @{persona.username} {kind.value} "
+        f"at {occurred_at.astimezone().isoformat()} "
+        f"(wire {occurred_at.astimezone(UTC).isoformat()})"
+    )
+    if dry_run:
+        typer.echo(f"intervention {name} -- dry run, nothing sent: {event.to_wire()}")
+        raise typer.Exit(EXIT_OK)
+
+    try:
+        result = run_intervention(
+            _resources_for(persona, settings), username=persona.username, event=event
+        )
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    if not result.ok:
+        typer.echo(f"intervention {name} -- server rejected ({result.reason})", err=True)
+        raise typer.Exit(EXIT_NO_ACTION)
+    typer.echo(f"intervention {name} -- recorded id={result.event_id}")
+    raise typer.Exit(EXIT_OK)
+
+
+def _intervention_instant(raw: str, flag: str) -> datetime:
+    """Parse one operator-supplied timestamp, or raise `ValueError` naming
+    the flag.
+
+    A NAIVE value is resolved as LOCAL time, because that is what every
+    source an operator copies from is written in: `dream.sh:838`'s archive
+    header is `date '+%Y-%m-%d %H:%M:%S'`, `memory.md`'s note lines are
+    `date +%Y-%m-%d`, and `git log`'s default is the committer's local zone.
+    Assuming UTC instead would shift every backfilled marker by the machine's
+    offset -- seven hours here, small enough to still look plausible.
+
+    A FUTURE instant is refused. There is no legitimate one, and the typo
+    that produces it (a year or a month off) otherwise files a marker that
+    sorts to the top of every timeline forever.
+    """
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"{flag}={raw!r} is not an ISO-8601 timestamp ({exc})") from exc
+    resolved = parsed.astimezone() if parsed.tzinfo is None else parsed
+    if resolved > datetime.now(UTC):
+        raise ValueError(f"{flag}={raw!r} resolves to a future instant ({resolved.isoformat()})")
+    return resolved
 
 
 @app.command()

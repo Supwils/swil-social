@@ -275,6 +275,36 @@ class Resources:
         except ApiError:
             return
 
+    def record_intervention(self, username: str, event: LabEvent) -> str:
+        """`lab_event`'s LOUD twin: same route, verified, and it raises.
+
+        `lab_event` swallows every `ApiError` because a measurement outage
+        must not change a round's outcome. A human intervention record is the
+        opposite kind of write: it is filed once, by hand, deliberately, and a
+        silent failure means the analysis it exists to correct goes on being
+        wrong. Nothing retries it and nothing else will notice.
+
+        The two silent failures this closes are both real. `agentEventIngest`
+        400s the WHOLE event on a nested `metrics` value (`z.record` of flat
+        scalars only), a defect that ran six weeks undetected because Bash's
+        `|| true` and this class's own `except ApiError` both discard it. And
+        `POST /agents/{username}/events` requires the actor to BE that
+        account (`agents.events.ts`'s `agent.id !== actor.id` -> 403), so a
+        credential for the wrong account fails in a way no return value
+        distinguishes from success.
+
+        Returns the created event's id. The envelope is
+        `{data: {event: {id}}}` -- `ok(res, { event }, 201)`
+        (agents.controller.ts) inside `respond.ts`'s `{data, meta}` -- so the
+        id is TWO levels down, not one like every snapshot route's
+        `{data: {id}}`. A 2xx without it is a rejection, not a success.
+        """
+        response = self._client.post(f"/agents/{username}/events", json=event.to_wire())
+        event_id = _nested_id(response, "data", "event", "id")
+        if event_id is None:
+            raise WriteNotVerifiedError(f"lab event rejected by server: {response}")
+        return event_id
+
     def create_post(
         self,
         text: str,

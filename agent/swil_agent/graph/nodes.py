@@ -97,6 +97,7 @@ from swil_agent.act.round import (
     sync_backend_step,
 )
 from swil_agent.analysis.behavior_snapshot import run_behavior_snapshot
+from swil_agent.analysis.population_metric import run_population_metric
 from swil_agent.analysis.rule_check import run_rule_check
 from swil_agent.api.resources import Resources
 from swil_agent.config import Settings
@@ -547,6 +548,69 @@ def make_rule_check_node(deps: CycleDeps) -> NodeFn:
         return {}
 
     return rule_check
+
+
+def make_population_metric_node(deps: CycleDeps) -> NodeFn:
+    """`run_population_metric` -- the cycle's tail, and the ONLY thing that
+    puts a point on `/lab`'s homogenization trend.
+
+    That trend is the early-warning signal the safety argument for relaxing
+    the drift gate rests on, and measured on 2026-08-20 it held THREE stored
+    points in four months, two of them on the same day. `population-metric.sh`
+    exists, `swil-agent population-metric` ports it, and nothing calls either:
+    no launchd plist, no script, no cycle step (`grep -rn population-metric
+    agent/scripts agent/launchd` finds only the script itself). Every one of
+    those three rows was somebody running the command by hand. A signal
+    sampled by remembering to sample it is not a signal.
+
+    `docs/03-api-reference.md` already described the intended cadence --
+    "called by the lab scripts after a full round so the homogenization trend
+    gets a sample per round rather than per read" -- so what was missing was
+    the wiring, not the decision.
+
+    **Why here, and what it costs.** The route is `POST
+    /agents/population-metric`: GLOBAL, no username, no body, and the SERVER
+    does all of the arithmetic from vectors it already stores
+    (`recordPopulationMetric` -> `computeCohesion`, `agents.population.ts`).
+    So this adds exactly one HTTP round-trip per cycle and NO second embedder
+    call -- the embeddings it summarises were shipped earlier in this same
+    round by `behavior_snapshot` and, on an accepted dream, `snapshot_step`.
+    Sampling here rather than once per roster sweep is also what makes the
+    series causal: the population vector moves when an account's snapshot
+    lands, and this samples immediately after that account's did.
+
+    **Position: AFTER `logout`, deliberately.** `logout` is the ACCOUNT's
+    terminal record -- §7.6's structured line, "the only record that a cycle
+    reached its end rather than dying somewhere in the middle". This
+    measurement is not about the account at all; it is a reading of the whole
+    population that the account's round happens to be a good moment to take.
+    Putting it after keeps that line meaning what it says, and keeps every
+    router honestly named `_continue_or_logout` rather than pointing at a
+    sampler. The cost is cosmetic and named here so nobody reports it as a
+    bug: a fail-soft WARN from this node appears BELOW the logout line.
+
+    **The `OFFLINE` skip is not symmetry with the other two samplers.** They
+    skip a round that did not happen. This one skips a round that could not
+    have reached the API: `ActOutcome.OFFLINE` is the health probe against
+    `$SWIL_URL/health` having failed, so the POST is guaranteed to fail too.
+    Left in, a roster sweep against a down platform would spend 23 connection
+    timeouts and print 23 WARN lines about a measurement nobody could have
+    taken -- standing constraint §9's "23 spurious FAIL lines per round" in
+    another costume. `BACKEND_UNAVAILABLE` deliberately does NOT skip: that
+    is a dead LLM with a healthy platform, and the population reading is as
+    valid then as on any other round.
+    """
+
+    def population_metric(state: CycleState) -> CycleState:
+        if deps.dry_run:
+            return {}
+        if state.get("outcome") is ActOutcome.OFFLINE:
+            return {}
+        with _fail_soft("population-metric", agent_dir_name(state["persona"])):
+            run_population_metric(deps.resources)
+        return {}
+
+    return population_metric
 
 
 def make_dream_node(deps: CycleDeps) -> NodeFn:

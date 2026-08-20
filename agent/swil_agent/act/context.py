@@ -11,14 +11,20 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import random
 import re
+from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Final, NamedTuple
 
 from swil_agent.api.client import ApiError
 from swil_agent.api.resources import Resources
+from swil_agent.llm.base import Runner
 from swil_agent.models import GLOBAL_READ_SCOPE, ActContext, Persona
+
+logger = logging.getLogger(__name__)
 
 _POST_LINE = re.compile(r"\| post \|")
 _ENGAGED_LINE = re.compile(r"^\d{4}-\d{2}-\d{2} \| (?:like|comment) \|")
@@ -400,6 +406,402 @@ def read_feed(resources: Resources, scope: str, *, limit: int, sort: str) -> lis
     return resources.feed_board(scope, limit=limit, sort=sort)
 
 
+# ── world context: what `swil.sh login` used to write to disk ─────────────
+#
+# `swil.sh login` produced three artifacts and `auto-run.sh` read them back:
+# `context/now.md` (date + platform activity + news), `context/news_today.md`
+# (the shared news cache, inlined into the first), and one
+# `context/feed_for_<username>.md` per account (the follow-topics search
+# feed). Nothing in this package calls `swil.sh`, and `cycle-one.sh:45`
+# dispatches straight to `swil-agent cycle`, so from the 2026-08-19 cutover
+# until this code existed the runtime READ two of those files and WROTE none
+# -- every account was handed a `now.md` frozen at 2026-08-19 05:30, whose
+# header told all 23 of them that the date was the 19th and that they were
+# `qiusai`.
+#
+# Four rulings shape what follows, and none of them is this module's to
+# revisit:
+#
+#   R25 -- port the renderers; do NOT shell out to `swil.sh login`. That
+#     command also authenticates and writes `.agent-state/active`, which the
+#     concurrency model deliberately avoids (parallel rounds pin an account
+#     with `SWIL_AGENT`), and it takes a POSITIONAL personality path rather
+#     than honouring `SWIL_AGENT` at all.
+#   R26 -- render the now-context IN MEMORY and write no file. One shared
+#     file carrying a per-account line is a race under five-way parallelism,
+#     and the frozen file naming exactly one account is what that race looks
+#     like. `context/now.md` stays a Bash-only artifact, which keeps the
+#     `SWIL_RUNTIME=bash` rollback working unchanged.
+#   R27 -- `news_today.md` keeps its file and Python shells out to
+#     `news-fetch.sh`. That script is a pure cache-filler (no auth, no
+#     session state, idempotent, owns its own staleness and lock), shared by
+#     23 readers; reimplementing it here would be a second writer racing the
+#     first.
+#   R28 -- the rendered TEXT stays byte-comparable to what Bash produced.
+#     The drift experiment is in flight: a prompt whose wording moved on
+#     2026-08-20 would put a second change point on top of the runtime
+#     cutover and the two would be inseparable in the data. Only the
+#     freshness of the content may change. `test_world_context.py` pins the
+#     now-context against `swil.sh`'s own heredoc, read out of the script at
+#     test time.
+
+WORLD_CONTEXT_UNAVAILABLE: Final = "（无法获取）"
+"""Bash's placeholder for both the platform-activity block and the news
+digest (`swil.sh:352`, `swil.sh:361-362`). Placeholder-class, not
+vanish-class: the section heading stays and says the read failed."""
+
+NEWS_FETCH_SCRIPT: Final = "news-fetch.sh"
+NEWS_CACHE_FILENAME: Final = "news_today.md"
+
+NEWS_FETCH_TIMEOUT: Final = 180.0
+"""Backstop for the `news-fetch.sh` subprocess, not a policy knob.
+
+It must sit ABOVE the script's own worst case, because firing it is strictly
+worse than waiting: `SubprocessRunner` enforces a timeout by SIGKILLing the
+child, `SIGKILL` does not run the script's `trap ... EXIT`, and that trap is
+what removes `$STATE_DIR/news_fetch.lock`. A timeout that fires therefore
+ORPHANS the lock this constant exists to respect, and every later account
+spins on it until `_lock`'s 120s steal window expires.
+
+Derived from `news-fetch.sh`, so re-derive it when that script changes:
+
+    _lock()'s spinlock cap   120s   `(( waited > 120 )) && return 1`, one
+                                    `sleep 1` per iteration (:70, :74)
+    curl --max-time           45s   `NEWS_TIMEOUT` default (:42, :88)
+    -------------------------------
+    script ceiling           165s   the reachable path is wait-then-fetch:
+                                    the cap only ABORTS the wait, so a lock
+                                    released at 120s is followed by a full
+                                    45s download
+    jq + mktemp + mv           ~     seconds, over a ~1.8 MB payload
+
+180 is that ceiling plus the render tail. The previous value, 90, was derived
+from the 45s download alone and was reachable by any account that waited ~50s
+for the lock and then fetched slowly.
+`test_the_news_fetch_timeout_clears_the_scripts_own_ceiling` pins the
+RELATIONSHIP against the script read at test time, not this literal.
+"""
+
+_NOW_FEED_TEXT_CAP: Final = 120
+_TOPIC_FEED_TEXT_CAP: Final = 200
+
+_NOW_GLOBAL_LIMIT: Final = 18
+_NOW_BOARD_LIMIT: Final = 12
+_NOW_CROSS_BOARD_LIMIT: Final = 3
+_NOW_FALLBACK_LIMIT: Final = 15
+_TOPIC_SEARCH_LIMIT: Final = 12
+"""`swil.sh:392`'s `&limit=12`.
+
+Equal to `_NOW_BOARD_LIMIT` by coincidence, not by design -- they are two
+independent numbers Bash happens to spell the same, on two different
+endpoints. Swapping the two names is therefore an equivalent mutant today
+and would stop being one the day either script value moves, which is exactly
+why they are two constants rather than one shared `_TWELVE`.
+"""
+
+NOW_CONTEXT_TEMPLATE: Final = """\
+# 当前时间上下文
+
+**今日日期：** {today}
+**当前 Agent：** {username}
+
+## 平台最新动态（用于校准时间感知）
+{activity}
+
+## 今日真实世界新闻（swil-news 日报，含各话题要点与总结）
+{news}
+
+（完整日报可访问：https://swil-news.vercel.app/api/news/{{topic}}/{{date}}）
+
+## 注意事项
+- 以上日期是系统真实时间，优先于模型自身的时间估计
+- 发帖时涉及"最近""今天""当前"等表述，请以此日期为准
+- 训练截止日之后的世界事件，如无用户提供的信息，请明确说明不确定性，不要臆造
+- 上面这些新闻是**真实世界当天发生的事**，不是虚构素材。你可以据此发帖、评论、
+  或完全忽略——取决于它是否落在你关心的领域里。引用时按你自己的视角解读，
+  不要复述标题，也不要为了蹭热点去谈一个你的人设根本不关心的话题。
+"""
+"""`swil.sh:355-379`'s heredoc, transcribed once.
+
+The `{{topic}}` / `{{date}}` in the swil-news URL are LITERAL braces that
+survive `str.format` -- they are part of the sentence the model reads, not
+placeholders. Un-escaping either one turns a documentation URL into a
+`KeyError` at render time for `topic`, and into the rendered date for
+`date`. Only `today`, `username`, `activity` and `news` are substituted.
+"""
+
+_NOW_DATE_FORMAT: Final = "%Y年%m月%d日 %H:%M"
+_FEED_DATE_FORMAT: Final = "%Y-%m-%d %H:%M"
+
+
+def format_now_feed(items: list[dict[str, Any]]) -> str:
+    """`_fmt_posts` (`swil.sh:318`), exactly.
+
+    A DIFFERENT line shape and a different cap from `format_global_feed`
+    above, which renders the act path's own feed block: this one is keyed on
+    the author's DISPLAY name (not `@username`), carries no like/comment
+    counts, uses a full-width colon, and truncates at 120 rather than 220.
+    The two blocks sit in the same prompt, so collapsing them onto one
+    formatter would silently rewrite one of them -- which R28 forbids.
+    """
+    return "\n".join(
+        f"- [{item.get('id', '')}] {_author(item).get('displayName', '')}"
+        f"（{_day(item)}）：{_flat(item.get('text'), _NOW_FEED_TEXT_CAP)}"
+        for item in items
+    )
+
+
+def format_topic_feed(items: list[dict[str, Any]]) -> str:
+    """One `## #<topic>` block's rows -- `swil.sh:393`'s jq.
+
+    Cap is 200 here, not the now-feed's 120. Both numbers are Bash's.
+    """
+    return "\n".join(
+        f"- [{item.get('id', '')}] @{_author(item).get('username', '')}"
+        f"（{_author(item).get('displayName', '')}）: "
+        f"{_flat(item.get('text'), _TOPIC_FEED_TEXT_CAP)}"
+        for item in items
+    )
+
+
+def _feed_or_blank(items: Callable[[], list[dict[str, Any]]]) -> str:
+    """One login-time feed read, rendered, degrading to `""` on any API
+    failure.
+
+    Bash reads these as `curl -s ... | _fmt_posts`, where `_fmt_posts` ends
+    in `|| true`: a failed request produces no line, never an aborted login.
+    """
+    try:
+        return format_now_feed(items())
+    except ApiError:
+        return ""
+
+
+def _cross_board(resources: Resources, home: str, *, now: datetime) -> str:
+    """The small window onto ONE other board (`swil.sh:336-347`).
+
+    The pick rotates by day-of-year so the window is not itself a constant --
+    the whole reason it exists is that a flat `/feed/global` read, identical
+    for every account, produced feed-wide topic monoculture (swil.sh's own
+    comment at :303-315, and the 2026-07-25 round where 10 of 13 dream
+    rejections breached the topic aspect).
+
+    Candidate order is the API's, NOT `sorted()`. That is the opposite of
+    `choose_read_scope`'s deliberate sort, and for a different reason: that
+    function has to give one SEED the same board across processes, while this
+    one has to give one DAY the same board as Bash would have. jq's
+    `[.data.items[].slug | select(. != $own)]` preserves the response array's
+    order, and `dict` preserves insertion order, so `get_boards()` already
+    carries it.
+
+    Fails to the empty string on any error -- Bash's `|| true` on the boards
+    call means a boards outage costs the cross-board window and nothing else.
+    """
+    try:
+        slugs = [slug for slug in resources.get_boards() if slug != home]
+    except ApiError:
+        return ""
+    if not slugs:
+        return ""
+    other = slugs[int(now.strftime("%j")) % len(slugs)]
+    posts = _feed_or_blank(
+        lambda: resources.feed_board(other, limit=_NOW_CROSS_BOARD_LIMIT, sort="latest")
+    )
+    if not posts:
+        return ""
+    return f"（其他板块 · {other}）\n{posts}"
+
+
+def platform_activity(resources: Resources, persona: Persona, *, now: datetime) -> str:
+    """The 平台最新动态 block of the now-context (`swil.sh:328-352`).
+
+    Three arms, in Bash's order and with Bash's limits:
+
+      * `Read: global` -- one global read at `limit=18`. The bullet is
+        compared case-insensitively because `swil.sh:329` lowercases it.
+      * a `Board` bullet -- the home board at `limit=12`, plus the rotating
+        cross-board window at `limit=3`.
+      * anything blank -- a global read at `limit=15`.
+
+    The third arm is a FALLBACK, not an else: Bash re-checks the accumulated
+    string and takes it whenever the chosen arm produced nothing, so an
+    account whose board is empty still sees a platform. The three limits are
+    deliberately distinct (18 / 12+3 / 15); collapsing any two would change
+    how much feed a whole arm of the roster reads.
+
+    This is NOT the same read as `choose_read_scope`/`read_feed` further up
+    the file. That pair is the act path's own input-diversification
+    experiment, driven by the `Read` bullet, rolled against an injected
+    `rng`, and recorded on `ActContext.board_read`. This one is the login
+    block, driven by `Board`, rolled against nothing, and it deliberately
+    consumes no randomness -- a draw here would desync the rhythm gate's own
+    draw for every account on the roster.
+    """
+    # Two inert-today normalisations, recorded with their expiry conditions
+    # (STANDING-CONSTRAINTS §7) because both are EQUIVALENT MUTANTS right now
+    # and a reader who deletes one would see a green suite:
+    #   * `.strip()` on `read` is redundant while `loader.get_field` strips
+    #     its own match. It expires the day any other `Persona` producer --
+    #     a fixture, a future roster loader, an API-sourced persona -- stops
+    #     doing that, at which point ` global ` would stop matching the
+    #     sentinel and the account would silently fall to the board arm.
+    #   * NO `.casefold()` on `home`, and adding one is likewise inert while
+    #     every roster slug is lowercase. It stops being inert the day
+    #     someone writes `Board: AI-Governance`: Bash sends the bullet to the
+    #     URL verbatim (`swil.sh:334`), so casefolding here would request a
+    #     DIFFERENT board than the rollback path does.
+    read = (persona.read or "").strip().casefold()
+    home = (persona.board or "").strip()
+
+    activity = ""
+    if read == GLOBAL_READ_SCOPE:
+        activity = _feed_or_blank(
+            lambda: resources.feed_global(limit=_NOW_GLOBAL_LIMIT, sort="latest")
+        )
+    # `elif`, not a second `if`. The two arms are EXCLUSIVE and 12 of the 23
+    # accounts carry both bullets, so an `if` here would give every one of
+    # them the global-18 read, throw the result away, and go board-scoped --
+    # inverting the experiment control `swil.sh:322-327` spends six lines
+    # defending, at the cost of one wasted request per round. Pinned by
+    # `test_a_global_read_account_that_also_has_a_board_never_reads_the_board`.
+    elif home:
+        activity = _feed_or_blank(
+            lambda: resources.feed_board(home, limit=_NOW_BOARD_LIMIT, sort="latest")
+        )
+        cross = _cross_board(resources, home, now=now)
+        if cross:
+            activity = f"{activity}\n{cross}"
+
+    # `.strip()` rather than a bare truth test, matching Bash's
+    # `${RECENT_POSTS//[[:space:]]/}`. Dropping it is an EQUIVALENT mutant
+    # TODAY and is kept anyway: every string `format_now_feed` can return is
+    # either empty or starts with `- [`, so "non-empty" and "not
+    # whitespace-only" cannot currently differ. That equivalence expires the
+    # moment either formatter can emit a blank-ish line -- a server field
+    # rendered raw, a heading with no rows -- at which point the bare test
+    # would let a visually empty block past and suppress the placeholder.
+    if not activity.strip():
+        activity = _feed_or_blank(
+            lambda: resources.feed_global(limit=_NOW_FALLBACK_LIMIT, sort="latest")
+        )
+    return activity if activity.strip() else WORLD_CONTEXT_UNAVAILABLE
+
+
+def read_news_digest(
+    agent_root: Path, runner: Runner, *, timeout: float = NEWS_FETCH_TIMEOUT
+) -> str:
+    """Refresh the shared news cache, then read it (R27, `swil.sh:359-362`).
+
+    `news-fetch.sh` owns the staleness check, the inter-process lock, and the
+    fallback to the previous day's digest, so this is a two-line wrapper and
+    not a port. Everything about it is best-effort:
+
+      * A missing script is skipped silently rather than spawning `bash` on a
+        path that does not exist. Every test `agent_root` is a `tmp_path`
+        with no `scripts/` in it, and spawning a doomed subprocess 23 times a
+        round buys nothing.
+      * A subprocess that fails, times out, or cannot start at all costs a
+        WARN and nothing else. `SubprocessRunner` signals the first two by
+        returning `""` and the third by raising `BackendBinaryMissingError`,
+        so both shapes have to be handled; R27 is explicit that a news
+        outage must not fail the round, and the script is explicit about the
+        same thing (`set -uo pipefail`, no `-e`: "a news outage must never
+        abort a round").
+
+    Trailing newlines are stripped because Bash reads the file through
+    `$(cat ...)`, and command substitution strips them. A cache that is empty
+    or nothing but whitespace reads as unavailable, matching `swil.sh:362`.
+    """
+    script = agent_root / "scripts" / NEWS_FETCH_SCRIPT
+    # EQUIVALENT MUTANT today (§7): production always has this file, so
+    # `if True` behaves identically -- `SubprocessRunner` would raise
+    # `BackendBinaryMissingError` only for a missing `bash`, and a `bash` on a
+    # path that does not exist just exits non-zero into the `except` below.
+    # The guard is here for the SUITE, where every `agent_root` is a
+    # `tmp_path` with no `scripts/`, and it expires as a no-op the day this
+    # function is called with an agent_root that legitimately has no
+    # `news-fetch.sh` -- a worktree, a partial checkout -- at which point it
+    # is the difference between one skip and 23 doomed subprocesses a round.
+    if script.is_file():
+        try:
+            runner.run(["bash", str(script)], stdin=None, env=None, timeout=timeout)
+        except (OSError, RuntimeError) as exc:
+            logger.warning(
+                "news refresh failed (%s: %s) -- using the cached digest", type(exc).__name__, exc
+            )
+
+    try:
+        digest = (agent_root / "context" / NEWS_CACHE_FILENAME).read_text(encoding="utf-8")
+    except OSError:
+        return WORLD_CONTEXT_UNAVAILABLE
+    # `rstrip("\n")`, deliberately not `.strip()`. Bash reads this file
+    # through `$(cat ...)`, and command substitution removes TRAILING
+    # newlines and nothing else -- a leading blank line or an indented first
+    # line survives into `now.md`. Swapping in `.strip()` is an EQUIVALENT
+    # MUTANT today only because `news-fetch.sh:119` writes a non-blank,
+    # non-indented first line; it becomes a live R28 divergence on the news
+    # block the moment that script grows a blank or indented header.
+    digest = digest.rstrip("\n")
+    return digest if digest.strip() else WORLD_CONTEXT_UNAVAILABLE
+
+
+def render_now_context(*, username: str, now: datetime, activity: str, news: str) -> str:
+    """`context/now.md`'s content, in memory (R26).
+
+    `username` is the CALLER's -- the parameter, never a module-level value.
+    That distinction is the entire defect: the file this replaces carried one
+    account's name for all 23, because five parallel rounds wrote it in turn.
+    """
+    return NOW_CONTEXT_TEMPLATE.format(
+        today=now.strftime(_NOW_DATE_FORMAT),
+        username=username,
+        activity=activity,
+        news=news,
+    )
+
+
+def render_follow_topics_feed(resources: Resources, persona: Persona, *, now: datetime) -> str:
+    """`context/feed_for_<username>.md`'s content, in memory
+    (`swil.sh:382-402`).
+
+    One `/posts/search` per `Follow Topics` entry, `limit=12`, in the
+    persona's own declared order; a topic that returned nothing contributes
+    no heading at all, and a topic whose search FAILED is likewise skipped
+    (`curl -sf ... || true`).
+
+    DECLARED order, never `sorted()`. Bash iterates the bullet as written
+    (`for FT_TOPIC in "${FT_TOPICS[@]}"`, `swil.sh:391`) and no roster bullet
+    is alphabetical -- `zenith` reads `AI, philosophy, language,
+    consciousness, perception, time` -- so sorting here would reorder every
+    `## #<topic>` block in the prompt relative to the Bash rollback path.
+    That is an R28 break, not a tidy-up.
+
+    Each `topic` string is used TWICE and identically: as the search query
+    and as the heading. That is why `loader._split_topics` has to reproduce
+    Bash's whitespace collapse rather than merely trimming -- see its
+    docstring; `AI 行业` and `AI行业` are two different queries and two
+    different headings.
+
+    An account with no `Follow Topics` bullet gets the empty string, not a
+    dated header with nothing under it. Bash guarded the whole block on that
+    bullet (`swil.sh:387`) and so never wrote the file, and `""` is load-
+    bearing downstream: `render_planner_prompt` drops the 平台时间线 heading
+    entirely when the feed context is empty.
+    """
+    if not persona.follow_topics:
+        return ""
+
+    text = f"# 关联话题动态 ({now.strftime(_FEED_DATE_FORMAT)})\n\n"
+    for topic in persona.follow_topics:
+        try:
+            rows = format_topic_feed(resources.search_posts(topic, limit=_TOPIC_SEARCH_LIMIT))
+        except ApiError:
+            continue
+        if rows:
+            text += f"## #{topic}\n{rows}\n\n"
+    return text
+
+
 # ── build_context (contract 01 §4 — the asymmetry, enforced) ───────────────
 
 
@@ -417,10 +819,19 @@ def build_context(
 ) -> ActContext:
     """Assemble every prompt block, degrading per-block exactly as Bash does.
 
-    `context_now` and `feed_context` are passed IN rather than read here: they
-    are files written by `swil.sh login` (contract 01 §2b, §2c), which stays
-    Bash in Phase 1. The caller reads them; this function never touches the
-    filesystem.
+    `context_now` and `feed_context` are passed IN rather than built here.
+    They used to be FILES written by `swil.sh login` (contract 01 §2b, §2c)
+    and read by the caller; as of 2026-08-20 the caller RENDERS them, through
+    `render_now_context` / `render_follow_topics_feed` above -- `swil.sh
+    login` had stopped running at the Stage-5 cutover and the files had been
+    frozen since 2026-08-19 05:30. Either way this function never touches the
+    filesystem, and the seam is unchanged: both arrive as strings.
+
+    They are deliberately NOT rendered inside this function. Doing so would
+    put two more feed reads and one search per topic behind the same call
+    that `rng` is threaded into, and the now-context's cross-board pick is
+    date-driven while `choose_read_scope`'s is rng-driven -- mixing them would
+    make one round's randomness depend on how many boards exist.
 
     `rng` is REQUIRED and injected (Phase B task 3): both feed reads are
     routed through the scope `choose_read_scope` rolls with it, and a default

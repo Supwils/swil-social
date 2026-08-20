@@ -73,6 +73,14 @@ export async function ingestAgentEvent(
       reason: input.reason,
       targetId: input.targetId,
       metrics: input.metrics,
+      // `createdAt` defaults to now(); an explicit `occurredAt` overrides it so
+      // an event ABOUT a past moment sorts and filters with that moment. Every
+      // /lab read of this table orders by `created_at`, so this is the only
+      // field that can put a backfilled human intervention beside the stretch
+      // of series it contaminates instead of at today's end of the timeline.
+      // `updatedAt` is deliberately left at now(): it records when the ROW was
+      // written, which for a backfill is genuinely today.
+      ...(input.occurredAt ? { createdAt: input.occurredAt } : {}),
     })
     .returning();
 

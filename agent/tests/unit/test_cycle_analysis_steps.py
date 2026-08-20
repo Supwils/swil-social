@@ -67,6 +67,7 @@ from swil_agent.graph.cycle import CycleConfig, run_cycle
 from swil_agent.graph.nodes import (
     CycleDeps,
     make_behavior_snapshot_node,
+    make_population_metric_node,
     make_rule_check_node,
 )
 from swil_agent.graph.state import CycleState
@@ -254,6 +255,7 @@ _TRACEABLE = (
     "finalize_step",
     "run_behavior_snapshot",
     "run_rule_check",
+    "run_population_metric",
     "cooldown_step",
     "dream_step",
     "gate_step",
@@ -548,6 +550,11 @@ def test_a_full_cycle_samples_behaviour_after_the_act_and_rules_before_the_dream
         "gate_step",
         "write_step",
         "snapshot_step",
+        # The cycle's tail, after `logout`. It is LAST because the population
+        # vector it summarises only finishes moving when this account's own
+        # snapshot has landed -- sampling before `snapshot_step` would read
+        # the population as it was before this round's contribution.
+        "run_population_metric",
     ]
 
 
@@ -786,3 +793,165 @@ def test_the_two_post_limits_carry_the_scripts_own_defaults() -> None:
     assert settings.rule_check_post_limit == rule_check_module.DEFAULT_POST_LIMIT
     assert settings.behavior_post_limit == behavior_module.DEFAULT_POST_LIMIT
     assert (settings.rule_check_post_limit, settings.behavior_post_limit) == (12, 12)
+
+
+# ── the cycle tail: one population-cohesion sample per round ────────────────
+
+
+def test_the_cycle_tail_records_exactly_one_population_cohesion_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GET /agents/homogenization` is the early-warning signal the safety
+    argument for relaxing the drift gate depends on, and on 2026-08-20 it held
+    three stored points in four months -- two of them on the same day. There
+    was no caller: `population-metric.sh` and `swil-agent population-metric`
+    both exist, and no launchd plist, script or cycle step invoked either, so
+    every one of those three rows was a human remembering.
+
+    ONE, not two: `record_population_metric` inserts a row on every call
+    (`agents.population.ts`), so a second call per cycle silently doubles the
+    series' sampling rate -- which is a change to what the trend MEANS, made
+    by a duplicated line.
+    """
+    root = _root(tmp_path)
+    resources = _resources()
+    trace = _trace_calls(monkeypatch)
+
+    _run(root, _persona(root), _deps(root, resources=resources))
+
+    assert trace.count("run_population_metric") == 1
+    assert resources.calls.count("record_population_metric") == 1
+    # Last of everything the round does: the reading is only complete once
+    # this account's own snapshot has landed.
+    assert trace[-1] == "run_population_metric"
+
+
+def test_an_offline_round_records_no_population_sample_but_a_dead_backend_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one discrimination this node makes, and both halves of it.
+
+    `OFFLINE` is the `$SWIL_URL/health` probe having failed, so the POST is
+    guaranteed to fail too: a roster sweep against a down platform would spend
+    23 connection timeouts and print 23 WARN lines about a measurement nobody
+    could have taken (standing constraint §9's "23 spurious FAIL lines per
+    round" in another costume).
+
+    `BACKEND_UNAVAILABLE` is a dead LLM with a HEALTHY platform, where the
+    population reading is exactly as valid as on any other round -- and it is
+    the round on which cohesion is most worth having, since nothing that
+    round changed any account's vectors. Asserted as a PAIR: a node that
+    skipped on any non-acting outcome would pass the first assertion alone.
+    """
+    offline_root = _root(tmp_path / "offline")
+    offline_resources = _resources()
+    offline_trace = _trace_calls(monkeypatch)
+    _run(
+        offline_root,
+        _persona(offline_root),
+        _deps(offline_root, resources=offline_resources, health_check=lambda: False),
+    )
+    assert "run_population_metric" not in offline_trace
+    assert offline_resources.calls == []
+
+    dead_root = _root(tmp_path / "dead")
+    dead_resources = _resources()
+    dead_trace = _trace_calls(monkeypatch)
+    _run(
+        dead_root,
+        _persona(dead_root),
+        _deps(
+            dead_root,
+            resources=dead_resources,
+            backend=ScriptedBackend("not json at all"),
+        ),
+    )
+    assert dead_trace.count("run_population_metric") == 1
+    assert dead_resources.calls == ["record_population_metric"]
+
+
+def test_a_dry_cycle_records_no_population_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Standing constraints §5 and §9. `run_population_metric` POSTs on every
+    successful path and takes no `dry_run` parameter to be inert under, and
+    the tail is reached from every route including the dry one -- so this line
+    in the node is the only guard, and deleting it writes 23 rows into the
+    homogenization series during the round whose exit criterion is that Python
+    never wrote."""
+    root = _root(tmp_path)
+    resources = _resources()
+    trace = _trace_calls(monkeypatch)
+
+    _run(root, _persona(root), _deps(root, resources=resources, dry_run=True))
+
+    assert "run_population_metric" not in trace
+    assert resources.calls == []
+
+
+def test_a_population_sample_failure_leaves_the_round_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fail-soft, like its two siblings and for the same reason: this node
+    carries no retry policy and no fallback edge, so an escaping exception
+    aborts the LangGraph run after the account has already acted, dreamt and
+    logged out -- discarding a completed round to record a number on a panel.
+
+    The label is pinned as well as the cause: `population-metric` is what an
+    operator greps for when the homogenization trend stops moving, and a WARN
+    naming a different sampler sends them to the wrong panel.
+    """
+    root = _root(tmp_path)
+    monkeypatch.setattr(nodes_module, "run_population_metric", _explode("run_population_metric"))
+
+    with caplog.at_level(logging.WARNING, logger="swil_agent.graph.nodes"):
+        final = _run(root, _persona(root), _deps(root))
+
+    assert final.get("outcome") is ActOutcome.LANDED_ALL
+    assert final.get("written") is True
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        message.startswith(f"population-metric: {DIR_NAME} ")
+        and "run_population_metric blew up" in message
+        for message in messages
+    ), messages
+
+
+def test_the_population_sample_does_not_swallow_a_keyboard_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`except Exception`, not `except BaseException` -- the same line the
+    other two samplers are held to. Swallowing a `KeyboardInterrupt` here
+    would carry on with the cycle while still holding both leases."""
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(nodes_module, "run_population_metric", interrupt)
+
+    root = _root(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        make_population_metric_node(_deps(root))({"persona": _persona(root)})
+
+
+def test_the_population_sample_needs_no_api_key_because_the_route_is_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unlike `rule_check` and `behavior_snapshot`, which skip an account with
+    no `api_key.txt` (rule-check.sh:38 / behavior-snapshot.sh's own gate),
+    this node has no such check and must not grow one.
+
+    `POST /agents/population-metric` takes no username and any authenticated
+    lab account authorises it, so `deps.resources` -- whatever `resolve_auth`
+    picked, Bearer or the `SWIL_PASS` session cookie -- is already sufficient.
+    A key check copied from the siblings would silently stop sampling on every
+    key-less account, which is the majority of the parity fixtures.
+    """
+    root = _root(tmp_path)
+    resources = _resources()
+    trace = _trace_calls(monkeypatch)
+
+    _run(root, _persona(root, api_key=False), _deps(root, resources=resources))
+
+    assert trace.count("run_population_metric") == 1
+    assert resources.calls.count("record_population_metric") == 1

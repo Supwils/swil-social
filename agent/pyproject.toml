@@ -38,7 +38,13 @@ target-version = "py313"
 extend-exclude = ["scripts"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+# `W` is selected for W605 specifically: an invalid escape sequence in a
+# docstring (`\(`, `\``) is a SyntaxWarning at import time and nothing else
+# in this pipeline reports it -- pytest's own warning capture is disabled by
+# `-p no:warnings` in the mutation harness, and one such warning shipped
+# undetected in the 2026-08-20 fix round. It is a lint-visible defect; make
+# lint see it.
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "W"]
 # RUF001: this codebase embeds fullwidth Chinese punctuation (：，；etc.) by
 # design, to match the Bash source and the real personality.md files.
 ignore = ["RUF001"]
@@ -70,6 +76,12 @@ ignore = ["RUF001"]
 # 感叹号) so a failure line names the rule that broke. A CJK identifier has no
 # case, which ruff reports as "should be lowercase"; there is nothing to fix.
 "tests/unit/test_rule_check.py" = ["RUF002", "N802"]
+# Same family as the repo-wide RUF001 ignore. This module's docstring quotes
+# the ONE surviving trace of the 2026-08-05 hand rollback verbatim -- the
+# archive header `归档于 ... ，手工干预：短语固着回滚`, full-width comma and
+# colon included. ASCII-ising a quotation of on-disk evidence turns the
+# module's own justification into a paraphrase of it.
+"swil_agent/analysis/intervention.py" = ["RUF002", "RUF003"]
 # Same family again. This file's whole discriminating fixture is a hashtag
 # band written the way the real personality.md files write it -- with the
 # FULL-WIDTH tilde `～`, which is one of the separators `rule_check`'s range

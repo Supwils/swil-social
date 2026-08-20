@@ -594,12 +594,15 @@ def _run_direct(root: Path, scenario: Scenario, records: list[logging.LogRecord]
 # `run_act` + `run_dream` cannot.
 _GRAPH_ONLY_LOG_PREFIX = "swil_agent.graph.nodes INFO logout"
 
-# Spec §15.1 row 21, closed by Plan 4: the cycle runs `analysis`'s two
+# Spec §15.1 row 21, closed by Plan 4: the cycle runs `analysis`'s
 # observability samplers (`behavior_snapshot` after the act phase,
-# `rule_check` before the dream) and the direct path runs neither, because
-# `run_act` and `run_dream` are frozen ports of `auto-run.sh`'s act path and
-# `dream.sh` -- the two calls live in `auto-run.sh:806` and `cycle-one.sh:45`,
-# i.e. in the composition, which on the direct path is the CLI.
+# `rule_check` before the dream, `population_metric` at the tail) and the
+# direct path runs none of them, because `run_act` and `run_dream` are frozen
+# ports of `auto-run.sh`'s act path and `dream.sh` -- the first two calls live
+# in `auto-run.sh:806` and `cycle-one.sh:45`, i.e. in the composition, which on
+# the direct path is the CLI. The third has no Bash call site at ALL: nothing
+# invoked `population-metric.sh`, which is why the homogenization trend held
+# three points in four months (measured 2026-08-20).
 #
 # Filtered by LOGGER NAME rather than by message, and that is what keeps this
 # from being the blanket filter the logout line was deliberately not given: no
@@ -774,8 +777,9 @@ def test_the_graph_path_adds_exactly_one_log_line_of_its_own(
     an act line twice would produce a duplicate that `line not in direct.log`
     cannot see, so the count is what discriminates. The arithmetic names the
     two accounted-for differences explicitly -- ONE logout record (§7.6) plus
-    the TWO `analysis` sampler lines (§15.1 row 21) -- rather than being
-    loosened to an inequality, so a third, unexplained line still fails here.
+    the THREE `analysis` sampler lines (§15.1 row 21, plus the
+    population-cohesion tail) -- rather than being loosened to an inequality,
+    so a fourth, unexplained line still fails here.
     `_assert_parity` makes the same checks for every scenario; this one also
     reads the logout line's contents.
     """
@@ -785,8 +789,8 @@ def test_the_graph_path_adds_exactly_one_log_line_of_its_own(
     logout_lines = [line for line in graph.log if line.startswith(_GRAPH_ONLY_LOG_PREFIX)]
     sampler_lines = [line for line in graph.log if line.startswith(_ANALYSIS_LOG_PREFIX)]
     assert len(logout_lines) == 1
-    assert len(sampler_lines) == 2
-    assert len(graph.log) == len(direct.log) + 1 + 2
+    assert len(sampler_lines) == 3
+    assert len(graph.log) == len(direct.log) + 1 + 3
     assert DIR_NAME in logout_lines[0]
     assert "run_id=graph-run" in logout_lines[0]
     assert "outcome=landed_all" in logout_lines[0]
@@ -801,17 +805,21 @@ def test_the_graph_path_also_samples_rules_and_behaviour(
     `dream.sh`, and `auto-run.sh:806` runs `behavior-snapshot.sh` at the end
     of each act round. Both calls live in the COMPOSITION, and on the direct
     path the composition is `cli.py`'s two separate commands -- so the graph
-    path samples and `run_act` + `run_dream` do not.
+    path samples and `run_act` + `run_dream` do not. `population_metric` is
+    the same divergence with no Bash antecedent at all.
 
-    Asserted as EXACTLY two extra lines in a known order, and as zero
+    Asserted as EXACTLY three extra lines in a known order, and as zero
     `swil_agent.analysis` records on the direct path. The order is the
-    contract: the behaviour snapshot is the act phase's tail and the rule
-    check the dream phase's head, so the rule check must also precede every
-    dream-phase record -- which is the ordering `cycle-one.sh:39-41` exists
-    to state. (Both take their `no api_key.txt` skip path here: this roster
-    is key-less, exactly like the other scenarios, so the divergence is one
-    log line each and nothing on the wire. `test_cycle_analysis_steps.py`
-    drives the keyed version.)
+    contract: the behaviour snapshot is the act phase's tail, the rule check
+    the dream phase's head -- so the rule check must also precede every
+    dream-phase record, which is the ordering `cycle-one.sh:39-41` exists to
+    state -- and the population sample is the cycle's tail, so it must come
+    LAST of the three. (The first two take their `no api_key.txt` skip path
+    here: this roster is key-less, exactly like the other scenarios, so their
+    divergence is one log line each and nothing on the wire. The population
+    sample needs no key -- the route is global and `FakeResources` answers it
+    -- so its line is a real success. `test_cycle_analysis_steps.py` drives
+    the keyed version.)
     """
     scenario = Scenario(name="analysis samplers")
     graph, direct = _both(tmp_path, scenario, caplog)
@@ -819,10 +827,16 @@ def test_the_graph_path_also_samples_rules_and_behaviour(
     assert [line for line in direct.log if line.startswith(_ANALYSIS_LOG_PREFIX)] == []
 
     sampled = [line for line in graph.log if line.startswith(_ANALYSIS_LOG_PREFIX)]
-    assert len(sampled) == 2, sampled
+    assert len(sampled) == 3, sampled
     assert sampled[0].startswith("swil_agent.analysis.behavior_snapshot")
     assert sampled[1].startswith("swil_agent.analysis.rule_check")
+    assert sampled[2].startswith("swil_agent.analysis.population_metric")
     assert DIR_NAME in sampled[0] and DIR_NAME in sampled[1]
+    # ...and NOT in the third: the population sample is a reading of the whole
+    # population that this account's round merely triggered. A line naming the
+    # account would invite exactly the misreading `record_population_metric`'s
+    # own docstring warns about -- that picking an account picks a SUBJECT.
+    assert DIR_NAME not in sampled[2]
 
     first_dream_record = next(
         index for index, line in enumerate(graph.log) if line.startswith("swil_agent.dream")

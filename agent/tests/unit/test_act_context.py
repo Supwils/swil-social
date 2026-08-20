@@ -132,7 +132,7 @@ NOTIFICATION = {
 
 
 def test_notification_line_uses_the_post_id_not_the_notification_id() -> None:
-    """Matches `auto-run.sh:580`'s own `\(.post.id)` -- this is parity, not a
+    r"""Matches `auto-run.sh:580`'s own `\(.post.id)` -- this is parity, not a
     divergence. `NotificationDTO.id` and `.post.id` are different values
     (`server/src/lib/dto.ts:316-320`) and Bash reads the second one too."""
     line = format_notifications([NOTIFICATION])
@@ -526,9 +526,13 @@ def test_build_context_populates_every_block_on_success(fake_resources: FakeReso
 def test_build_context_passes_through_context_now_and_feed_context(
     fake_resources: FakeResources,
 ) -> None:
-    """`context_now`/`feed_context` are files `swil.sh login` writes; this
-    function must pass them through untouched rather than re-deriving or
-    dropping them."""
+    """`context_now`/`feed_context` are RENDERED by the caller (`cli.py`, via
+    `render_now_context` / `render_follow_topics_feed`); this function must
+    pass them through untouched rather than re-deriving or dropping them.
+
+    They were files `swil.sh login` wrote until 2026-08-20, when the runtime
+    stopped reading a `now.md` nothing had refreshed since the Stage-5
+    cutover. The seam this test pins is the same either way."""
     ctx = build_context(
         fake_resources,
         _persona(),

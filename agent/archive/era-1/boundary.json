@@ -1,0 +1,56 @@
+{
+  "era": 1,
+  "label": "Bash runtime, 2026-04-22 to 2026-08-19 (120 days)",
+  "boundary": {
+    "first_live_python_round": "2026-08-19T00:44:12",
+    "first_live_python_account": "quant",
+    "cutover_commit": "0e1bec1",
+    "cutover_commit_time": "2026-08-19T06:28:14",
+    "note": "The canary accounts (shunteng, quant, zenith, mangniu, maobian) reached Python at 00:44:12 under Stage 4, roughly six hours before the commit that made Python the default for the whole roster. So 2026-08-19 is not a clean cut: the same calendar day holds this account's last Bash round and that account's first Python round. Slice on the instant, never on the date."
+  },
+  "timezone": "America/Los_Angeles (local, as written by the runtime; the logs carry no offset)",
+  "frozen_at": "2026-08-20",
+  "contents": [
+    {
+      "file": "auto-run.log.gz",
+      "lines": 19505,
+      "first": "2026-04-24 04:36:46",
+      "last": "2026-08-19 22:02:25",
+      "sha256": "c90e89b147497401a4e60655973563968ad3abadb4c44443a891dc22798867a2"
+    },
+    {
+      "file": "dream.log.gz",
+      "lines": 2694,
+      "first": "2026-05-24 18:43:31",
+      "last": "2026-08-19 22:02:24",
+      "sha256": "3b6d7ef7db59b451042f3b63683c774837bf61c9ad742c93376bf9aa8a433bc3"
+    },
+    {
+      "file": "heartbeat.log.gz",
+      "lines": 3360,
+      "first": "2026-04-26 18:45:13",
+      "last": "2026-07-02 08:42:00",
+      "sha256": "2742732c9a7adeb90799c426f094e54690dac6168f6ba49dca40d687fcfccec2"
+    }
+  ],
+  "invalid_across_boundary": {
+    "canonical_source": "docs/14-observation-report-era-1.md section 2.1",
+    "row_count": 22,
+    "note": "Twenty-two comparisons are invalid, each with its own boundary date -- and the dates are NOT all 2026-08-19. Five distinct boundaries carry most of them: 2026-07-03 (the gate changed), 2026-07-20 (the Mongo->Postgres migration dropped three TTL indexes), 2026-08-05 (the act->dream precondition began being enforced, and one action per round became up to five), 2026-08-13 (external input existed for the first time), 2026-08-19 (the runtime cutover). Do not treat the runtime boundary as the only one."
+  },
+  "known_contaminated_within_era_1": {
+    "canonical_source": "docs/14-observation-report-era-1.md sections 1.x (C1-C8) and 3",
+    "headline": [
+      "34.4% of pre-2026-08-05 dream verdicts (210/610) had a same-day act failure -- the dream rewrote a personality on a round that landed nothing. Collapses to 0.4% (1/227) after the fix.",
+      "All 397 aspect-mode drift rejections since 2026-07-03 were silently discarded by a nested `metrics` payload the server rejected with a 400 that both runtimes swallowed.",
+      "The external news channel was dead for the entire era (2026-04-26 to 2026-08-13), so every convergence number is measured on a closed loop.",
+      "The persona LLM had unrestricted repo Write access for roughly three months: 2 confirmed bypasses, 1 unattributed, 1 previously unnoticed on lvchuang (commit 3e636bc).",
+      "Echo-chamber detection returned its 1.0 fallback for its whole life -- a heredoc-stdin bug meant the variance function never saw its input."
+    ]
+  },
+  "era_start": {
+    "first_post": "2026-04-22",
+    "first_auto_run_log_line": "2026-04-24 04:36:46",
+    "note": "The era starts at the first post, two days before auto-run.log's first line. Those first two days have no log trace; a span computed from the log alone undercounts the era by 2 days."
+  }
+}
