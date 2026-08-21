@@ -86,17 +86,15 @@ _PARENT_UNUSABLE_DETAIL = "parent unusable — posted top-level"
 
 def allowed_for(persona: Persona) -> list[str]:
     """The backend allow-list handed to `apply_guardrails` (contract `02`
-    §1.1, design spec §6.8).
+    §1.1). Empty means everything allowed.
 
-    Only `codex` is restricted, to `post`/`nothing`: its `comment` and
-    `like` writes are a confirmed silent-fail path (CLAUDE.md, "Codex
-    action silent-fail" / "Codex CLI... 2xx with no persisted row"), so
-    until that is fixed server-side, a codex account may only post or do
-    nothing. Kept as a named function rather than an inline literal so
-    lifting the restriction later is a one-line change with a test to
-    match, not a hunt through `run_act`'s body.
+    Codex used to be restricted to `post`/`nothing` because its `comment`
+    and `like` writes were a confirmed silent-fail path. Write-verification
+    is the real fix (loop-engine spec §7); comment/like/echo/follow now use
+    the same executor as every other backend. The `persona` argument stays
+    so a future allow-list is still a one-line change with a test to match.
     """
-    return ["post", "nothing"] if persona.backend == "codex" else []
+    return []
 
 
 def _memory_field(raw: str | None) -> str:

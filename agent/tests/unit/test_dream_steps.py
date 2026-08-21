@@ -464,7 +464,7 @@ def test_gate_step_owns_the_rejection_log_and_event(
     fail_events = [e for e in resources.lab_events if e.outcome == "fail"]
     assert len(fail_events) == 1
     assert "Username drift" in fail_events[0].summary
-    assert fail_events[0].metrics == {}
+    assert fail_events[0].metrics == {"gateStatus": "struct_reject"}
 
 
 def test_gate_step_warns_when_it_fail_opened(tmp_path: Path) -> None:

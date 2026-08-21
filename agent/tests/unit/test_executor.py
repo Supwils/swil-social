@@ -189,22 +189,51 @@ def test_an_api_error_response_body_survives_into_detail() -> None:
     assert "Invalid id" in (result.detail or "")
 
 
-# ── follow always lands (contract 02 §2.4) ───────────────────────────────
+# ── follow landed (loop-engine spec §6) ──────────────────────────────────
 
 
-def test_follow_counts_as_landed_even_when_the_request_fails() -> None:
-    resources = FakeResources(follow_raises=ApiError(400, "bad", None))
-    result = execute_action(resources, Action(kind="follow", username="vex"), **CTX)
-    assert result.landed is True
-    assert "likely already following" in (result.detail or "")
-
-
-def test_follow_succeeds_cleanly_when_the_request_succeeds() -> None:
+def test_verified_follow_lands_and_the_call_succeeds() -> None:
     resources = FakeResources()
     result = execute_action(resources, Action(kind="follow", username="vex"), **CTX)
     assert result.landed is True
+    assert result.call_succeeded is True
     assert result.detail is None
     assert resources.followed == ["vex"]
+
+
+def test_follow_409_conflict_is_idempotent_success_with_no_memory_line() -> None:
+    resources = FakeResources(
+        follow_raises=ApiError(409, "Already following this user", "CONFLICT")
+    )
+    result = execute_action(resources, Action(kind="follow", username="vex"), **CTX)
+    assert result.landed is True
+    assert result.call_succeeded is False
+    assert resources.lab_events[-1].outcome == "warn"
+
+
+def test_follow_missing_username_skips_and_does_not_land() -> None:
+    resources = FakeResources()
+    result = execute_action(resources, Action(kind="follow"), **CTX)
+    assert result.landed is False
+    assert result.call_succeeded is False
+    assert resources.calls == []
+    assert resources.lab_events[-1].outcome == "skip"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ApiError(500, "boom", None),
+        ApiError(400, "bad", None),
+        WriteNotVerifiedError("follow returned unexpected status 200"),
+    ],
+)
+def test_follow_other_write_failures_do_not_land(exc: ApiError | WriteNotVerifiedError) -> None:
+    resources = FakeResources(follow_raises=exc)
+    result = execute_action(resources, Action(kind="follow", username="vex"), **CTX)
+    assert result.landed is False
+    assert result.call_succeeded is False
+    assert "likely already following" not in (result.detail or "")
 
 
 # ── per-kind happy paths (contract 02 §2, "each kind maps to one call") ──

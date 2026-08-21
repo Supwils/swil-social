@@ -97,8 +97,17 @@ from swil_agent.act.round import (
     sync_backend_step,
 )
 from swil_agent.analysis.behavior_snapshot import run_behavior_snapshot
+from swil_agent.analysis.cycle_run import (
+    MISSING_SAMPLER_BEHAVIOR,
+    MISSING_SAMPLER_RULE,
+    build_cycle_run_event,
+    build_missing_sampler_event,
+    derive_gate_status,
+    grants_dream_for,
+)
 from swil_agent.analysis.population_metric import run_population_metric
 from swil_agent.analysis.rule_check import run_rule_check
+from swil_agent.api.dto import LabEvent
 from swil_agent.api.resources import Resources
 from swil_agent.config import Settings
 from swil_agent.dream.candidate import DreamState
@@ -442,6 +451,48 @@ def _fail_soft(label: str, name: str) -> Iterator[None]:
         )
 
 
+def _emit_lab(resources: Resources, username: str, event: LabEvent) -> None:
+    """Best-effort ledger write -- a dead events endpoint must not become
+    the round's exit code. Same net as `dream/round.py`'s `_emit`."""
+    try:
+        resources.lab_event(username, event)
+    except Exception:
+        logger.debug(
+            "lab event failed for %s (%s/%s/%s): outcome unaffected",
+            username,
+            event.type,
+            event.phase,
+            event.outcome,
+        )
+
+
+def _sampler_missing(label: str, name: str, body: Callable[[], bool]) -> bool:
+    """Run a sampler. True if the sample is missing. Never raises Exception.
+
+    `body` returns True when a sample landed (or a documented skip made one
+    unnecessary). False or an unexpected exception is a missing sample --
+    fail-soft on the round, fail-loud on the ledger.
+    """
+    try:
+        return not body()
+    except Exception as exc:
+        logger.debug("%s failed for %s", label, name, exc_info=exc)
+        logger.warning(
+            "%s: %s — sampling failed (%s: %s); the round is unaffected",
+            label,
+            name,
+            type(exc).__name__,
+            exc,
+        )
+        return True
+
+
+# Documented skip reasons `run_behavior_snapshot` returns with `ok=False`.
+# These are "nothing to sample", not "the sampler failed": a quiet account
+# or a key-less fixture must not inflate `/lab`'s missingSamples.
+_BEHAVIOR_SKIP_REASONS: Final = frozenset({"no api_key.txt", "no recent posts"})
+
+
 def make_behavior_snapshot_node(deps: CycleDeps) -> NodeFn:
     """`run_behavior_snapshot` -- `auto-run.sh:806`, the act phase's tail.
 
@@ -485,8 +536,10 @@ def make_behavior_snapshot_node(deps: CycleDeps) -> NodeFn:
         if deps.dry_run:
             return {}
         persona = state["persona"]
-        with _fail_soft("behavior-snapshot", agent_dir_name(persona)):
-            run_behavior_snapshot(
+        name = agent_dir_name(persona)
+
+        def body() -> bool:
+            result = run_behavior_snapshot(
                 deps.resources,
                 directory=persona.directory,
                 username=persona.username,
@@ -494,6 +547,16 @@ def make_behavior_snapshot_node(deps: CycleDeps) -> NodeFn:
                 captured_at=deps.captured_at,
                 limit=deps.settings.behavior_post_limit,
             )
+            return result.ok or result.reason in _BEHAVIOR_SKIP_REASONS
+
+        missing = _sampler_missing("behavior-snapshot", name, body)
+        if missing:
+            _emit_lab(
+                deps.resources,
+                persona.username,
+                build_missing_sampler_event(sampler=MISSING_SAMPLER_BEHAVIOR),
+            )
+            return {"missing_behavior_snapshot": True}
         return {}
 
     return behavior_snapshot
@@ -538,13 +601,28 @@ def make_rule_check_node(deps: CycleDeps) -> NodeFn:
         if deps.dry_run:
             return {}
         persona = state["persona"]
-        with _fail_soft("rule-check", agent_dir_name(persona)):
+        name = agent_dir_name(persona)
+
+        def body() -> bool:
             run_rule_check(
                 deps.resources,
                 directory=persona.directory,
                 username=persona.username,
                 limit=deps.settings.rule_check_post_limit,
             )
+            # An empty return is the documented skip (no key, no posts, no
+            # parseable rules, fetch folded into empty). Only a raise is a
+            # missing sample -- the return type cannot tell those apart.
+            return True
+
+        missing = _sampler_missing("rule-check", name, body)
+        if missing:
+            _emit_lab(
+                deps.resources,
+                persona.username,
+                build_missing_sampler_event(sampler=MISSING_SAMPLER_RULE),
+            )
+            return {"missing_rule_check": True}
         return {}
 
     return rule_check
@@ -830,6 +908,39 @@ def make_logout_node(deps: CycleDeps) -> NodeFn:
             state.get("snapshot_ok", False),
             deps.dry_run,
         )
+        if not deps.dry_run:
+            _emit_cycle_run_card(deps, state)
         return {}
 
     return logout
+
+
+def _emit_cycle_run_card(deps: CycleDeps, state: CycleState) -> None:
+    """One cycle_run card per finished cycle, including early logout."""
+    persona = state["persona"]
+    outcome = state.get("outcome")
+    proceeded = state.get("proceeded", False)
+    written = state.get("written", False)
+    started = state.get("started_monotonic")
+    duration_ms = 0 if started is None else max(0, int((deps.monotonic() - started) * 1000))
+    if written:
+        dream_accepted: bool | None = True
+    elif proceeded:
+        dream_accepted = False
+    else:
+        dream_accepted = None
+    event = build_cycle_run_event(
+        username=persona.username,
+        attempted=state.get("attempted", 0),
+        landed=state.get("landed", 0),
+        act_outcome=outcome,
+        grants_dream=grants_dream_for(outcome),
+        dream_accepted=dream_accepted,
+        gate_status=derive_gate_status(state.get("verdict"), proceeded=proceeded, written=written),
+        missing_behavior_snapshot=state.get("missing_behavior_snapshot", False),
+        missing_rule_check=state.get("missing_rule_check", False),
+        duration_ms=duration_ms,
+        backend=persona.backend,
+        model=persona.model or "",
+    )
+    _emit_lab(deps.resources, persona.username, event)

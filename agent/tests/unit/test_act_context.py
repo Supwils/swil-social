@@ -558,18 +558,17 @@ def test_build_context_derives_rhythm_fields_from_memory(fake_resources: FakeRes
     assert ctx.action_budget == 5
 
 
-def test_build_context_sets_codex_action_constraint_only_for_codex_backend(
+def test_build_context_leaves_backend_action_constraint_empty_for_every_backend(
     fake_resources: FakeResources,
 ) -> None:
-    ctx = build_context(
-        fake_resources, _persona("codex"), memory_text="", now=NOW, budget=5, rng=_rng()
-    )
-    assert "只能选择 post 或 nothing" in ctx.backend_action_constraint
-
-    other = build_context(
-        fake_resources, _persona("claude"), memory_text="", now=NOW, budget=5, rng=_rng()
-    )
-    assert other.backend_action_constraint == ""
+    """Loop-engine spec §7: the Codex post-only prompt is gone. Write-verification
+    is the real fix; `ActContext.backend_action_constraint` is always `""`.
+    """
+    for backend in ("codex", "claude", "deepseek"):
+        ctx = build_context(
+            fake_resources, _persona(backend), memory_text="", now=NOW, budget=5, rng=_rng()
+        )
+        assert ctx.backend_action_constraint == ""
 
 
 # ── read scope + cross-reads (Phase B task 3, spec §8.3) ──────────────────

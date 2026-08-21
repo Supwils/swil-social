@@ -44,11 +44,6 @@ _THREAD_COMMENT_LIMIT = 6
 
 _DM_PREVIEW_CAP = 60
 
-CODEX_ACTION_CONSTRAINT = (
-    "\n**本轮后端限制（硬规则）：** 你只能选择 post 或 nothing。"
-    "不要选择 comment / like / echo / follow。"
-)
-
 
 # ── memory-derived fields (contract 01 §2e/§2f, local — no API) ────────────
 
@@ -856,7 +851,7 @@ def build_context(
         today_post_count=posts_today(memory_text, today),
         last_post=last_post_line(memory_text),
         action_budget=budget,
-        backend_action_constraint=(CODEX_ACTION_CONSTRAINT if persona.backend == "codex" else ""),
+        backend_action_constraint="",
         board_read=board.scope,
         home_board=board.home,
         cross_read=board.cross,

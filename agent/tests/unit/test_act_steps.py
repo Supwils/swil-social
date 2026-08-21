@@ -305,11 +305,12 @@ def test_the_backend_sync_still_happens_on_a_round_that_returns_early(
 
 
 def test_the_backend_sync_still_happens_on_a_vetoed_empty_round(tmp_path: Path) -> None:
-    """M1, third early-return path: a codex account whose only action is a
-    `comment` has it stripped by the backend allow-list."""
+    """M1, third early-return path: a DM to someone not in contacts is
+    stripped by the contacts guardrail. Codex is no longer allow-listed
+    (loop-engine spec §7); the veto still has to fire the backend sync."""
     resources = FakeResources()
     persona = _persona(tmp_path, backend="codex")
-    backend = StubBackend(_plan_json({"action": "comment", "postId": "p1", "text": "hi"}))
+    backend = StubBackend(_plan_json({"action": "dm", "username": "vex", "text": "hi"}))
 
     result = _run(tmp_path, persona=persona, resources=resources, backend=backend)
 
@@ -791,7 +792,8 @@ def test_guardrail_step_labels_a_dropped_plan_vetoed_and_an_absent_one_empty(
 ) -> None:
     """The one distinction Bash cannot make: it logs both as `planned:
     nothing`, which is what left three codex accounts uninterpretable on
-    2026-08-16."""
+    2026-08-16. Codex is no longer allow-listed (loop-engine spec §7); a
+    DM to someone not in contacts is the veto that still empties a plan."""
     persona = _persona(tmp_path, backend="codex")
     ctx_step = context_step(
         resources=FakeResources(),
@@ -802,7 +804,7 @@ def test_guardrail_step_labels_a_dropped_plan_vetoed_and_an_absent_one_empty(
     )
 
     dropped = guardrail_step(
-        plan=Plan(actions=[Action(kind="comment", post_id="p1", text="hi")]),
+        plan=Plan(actions=[Action(kind="dm", username="vex", text="hi")]),
         persona=persona,
         rhythm=ctx_step.rhythm,
         context=ctx_step.context,

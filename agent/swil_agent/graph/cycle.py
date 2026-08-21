@@ -659,6 +659,7 @@ def run_cycle(
         # the lease. A provider that flipped `dry_run` between rounds would be
         # a contradiction in terms, and the routers need one answer.
         "dry_run": first.dry_run,
+        "started_monotonic": first.monotonic(),
     }
     # `None` on a resume: see this function's docstring. The seed is still
     # BUILT on that path, because it is also this function's return value if

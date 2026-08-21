@@ -52,6 +52,12 @@ roster directories and compares:
     after review, and recorded rather than silently reworded, because a
     docstring that overstates what a test covers is the same failure class as
     a test that names a behaviour it cannot detect -- §15.4.)
+  * spec §4 (2026-08-21 loop engine) -- the graph path emits one `cycle_run`
+    card at logout (and a `missingSampler` warn if a sampler failed). The
+    direct path is `run_act` + `run_dream`, not a cycle, so it has no card.
+    Filtered by payload (`metrics.kind == cycle_run` / `missingSampler`),
+    not by a blanket "graph emitted an extra event" rule. Positive pin:
+    `test_cycle_run.py`.
 
 Two corrections to the brief that produced this file, recorded rather than
 absorbed (standing constraint §1 -- the source wins):
@@ -639,11 +645,28 @@ def _both(
     return collected[0], collected[1]
 
 
+def _is_cycle_ledger(encoded: str) -> bool:
+    """The cycle_run card and missingSampler audit rows are graph-only."""
+    return "'kind': 'cycle_run'" in encoded or "missingSampler" in encoded
+
+
 def _assert_parity(graph: Effects, direct: Effects, scenario: Scenario) -> None:
     """Field by field, so a divergence names itself instead of printing two
     opaque dataclasses."""
-    assert graph.calls == direct.calls, f"{scenario.name}: collaborator call order diverged"
-    assert graph.lab_events == direct.lab_events, f"{scenario.name}: lab events diverged"
+    graph_calls = [call for call in graph.calls if not _is_cycle_ledger(call)]
+    assert graph_calls == direct.calls, f"{scenario.name}: collaborator call order diverged"
+    graph_events = [event for event in graph.lab_events if not _is_cycle_ledger(event)]
+    assert graph_events == direct.lab_events, f"{scenario.name}: lab events diverged"
+    # The card is attempted even when the events endpoint is down -- the
+    # collaborator trace records the call; `lab_events` only keeps what
+    # landed. A dry run must attempt nothing.
+    ledger_calls = [call for call in graph.calls if _is_cycle_ledger(call)]
+    if scenario.dry_run:
+        assert ledger_calls == [], f"{scenario.name}: a dry run posted a cycle_run card"
+    else:
+        assert any("'kind': 'cycle_run'" in call for call in ledger_calls), (
+            f"{scenario.name}: expected a cycle_run card on the graph path"
+        )
     assert graph.memory == direct.memory, f"{scenario.name}: memory.md bytes diverged"
     assert graph.tree == direct.tree, f"{scenario.name}: the roster tree diverged"
     assert graph.backend_prompts == direct.backend_prompts, f"{scenario.name}: prompts diverged"

@@ -452,7 +452,10 @@ def test_a_sampler_that_raises_is_swallowed_at_the_node(
     monkeypatch.setattr(nodes_module, step, _explode(step))
 
     with caplog.at_level(logging.WARNING, logger="swil_agent.graph.nodes"):
-        assert factory(_deps(root))({"persona": _persona(root)}) == {}
+        update = factory(_deps(root))({"persona": _persona(root)})
+
+    flag = "missing_rule_check" if step == "run_rule_check" else "missing_behavior_snapshot"
+    assert update == {flag: True}
 
     messages = [record.getMessage() for record in caplog.records]
     assert any(
@@ -768,6 +771,8 @@ def test_a_sampler_failure_leaves_the_whole_round_untouched(
                 sorted(event.to_wire().items())
                 for event in resources.lab_events
                 if event.type != "rule_check"
+                and event.metrics.get("kind") != "cycle_run"
+                and "missingSampler" not in event.metrics
             ],
             "posts": [post.text for post in resources.created_posts],
         }

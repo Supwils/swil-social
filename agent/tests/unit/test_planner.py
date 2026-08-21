@@ -15,14 +15,16 @@ lives in the task-4 report.
 
 from __future__ import annotations
 
+import random
+from datetime import datetime
 from pathlib import Path
 
-from swil_agent.act.context import CODEX_ACTION_CONSTRAINT
+from swil_agent.act.context import build_context
 from swil_agent.act.planner import plan_round, render_planner_prompt
 from swil_agent.llm.base import BackendUnavailableError, CompletionRequest
 from swil_agent.models import ActContext, Persona
 
-from ._runners import SilentBackend, StubBackend
+from ._runners import FakeResources, SilentBackend, StubBackend
 
 
 def _persona(*, backend: str = "claude", model: str | None = None, raw: str = "PERSONA") -> Persona:
@@ -86,10 +88,24 @@ def test_action_budget_appears_in_the_prompt_text() -> None:
     )
 
 
-def test_codex_constraint_appears_only_when_set() -> None:
-    assert "本轮后端限制" not in render_planner_prompt(ActContext(), rhythm_guidance="g")
-    ctx = ActContext(backend_action_constraint=CODEX_ACTION_CONSTRAINT)
-    assert "本轮后端限制" in render_planner_prompt(ctx, rhythm_guidance="g")
+def test_codex_persona_context_has_empty_backend_action_constraint() -> None:
+    """Loop-engine spec §7: Codex is no longer prompt-limited to post/nothing.
+    Write-verification is the real fix; `backend_action_constraint` is always
+    empty, including for a Codex persona, and the planner never injects the
+    old post-only hard rule.
+    """
+    ctx = build_context(
+        FakeResources(),
+        _persona(backend="codex"),
+        memory_text="",
+        now=datetime(2026, 8, 17, 10, 0, 0),
+        budget=5,
+        rng=random.Random(0),
+    )
+    assert ctx.backend_action_constraint == ""
+    prompt = render_planner_prompt(ctx, rhythm_guidance="g")
+    assert "本轮后端限制" not in prompt
+    assert "只能选择 post 或 nothing" not in prompt
 
 
 # ── isolation: each optional section is scoped to its OWN field ────────────
@@ -378,67 +394,6 @@ parentId 说明：回复通知中的评论时使用，填写通知里的评论ID
 follow 说明：当 feed 里反复出现某个值得长期关注的用户时使用；同一个用户不要重复关注（你已经关注的人不会重复出现互动通知里）。
 dm 说明：私信是私下说话，不是公开发言。用在只想对一个人说、不适合放在帖子下面的时候；对方看得到你的名字。"""
 
-_EXPECTED_CODEX = """## 当前上下文
-(no context file)
-
-
-## 我的未读通知（最新8条，可据此决定是否回应）
-（暂无新互动）
-
-## 最近行动记录（最新20条）
-(no memory yet)
-
-
-## 发帖统计
-- 今天（）已发帖次数：0
-- 最近一条发帖记录：(暂无发帖记录)
-
-## 本轮节律约束
-g
-
-## 平台最新帖子（推荐流，可用于回应、点赞、转发等）
-(could not fetch feed)
-
-
-
-
-
----
-请根据你的性格、行为规则和「发帖节律」，决定这一轮要做什么。
-
-上面的“本轮节律约束”是硬规则，不要违背。
-
-**本轮后端限制（硬规则）：** 你只能选择 post 或 nothing。不要选择 comment / like / echo / follow。
-
-你这一轮有 5 个动作的预算。按你的性格决定这一轮做哪些事——
-可以只做一件，也可以做满预算。别硬凑数量，但也别只发一条帖子就走。
-
-硬规则（违反的动作会被直接丢弃）：
-- 最多 1 条 post，最多 1 条 echo；其余预算必须花在互动上（comment / reply / like / follow / dm）
-- 私信只能发给上面「可以私信的人」名单里的人
-- 同一条帖子不要重复做同一个动作
-
-**只输出一个合法的 JSON 对象，不要有任何其他文字：**
-
-{"plan":[ ...按你想执行的顺序排列的动作... ]}
-
-每个动作的格式：
-发帖（纯文字）：{"action":"post","text":"你的帖子内容"}
-发帖（带图片）：{"action":"post","text":"你的帖子内容","imageTopic":"english keyword for image search"}
-评论帖子：{"action":"comment","postId":"帖子的24位ID","text":"评论内容"}
-回复评论：{"action":"comment","postId":"帖子的24位ID","parentId":"评论的24位ID","text":"回复内容"}
-点赞：{"action":"like","postId":"帖子的24位ID"}
-转发（纯转发）：{"action":"echo","postId":"帖子的24位ID"}
-引用转发（带你的评价）：{"action":"echo","postId":"帖子的24位ID","text":"你的引用语"}
-关注：{"action":"follow","username":"用户名（不带@）"}
-私信：{"action":"dm","username":"用户名（不带@）","text":"私信内容"}
-这一轮什么都不做：{"plan":[{"action":"nothing"}]}
-
-imageTopic 说明：可选字段，填写与帖子内容相关的英文关键词（如 "technology"、"nature"、"city night"），系统会自动配图。不想配图时省略此字段即可。
-parentId 说明：回复通知中的评论时使用，填写通知里的评论ID（24位十六进制）。
-follow 说明：当 feed 里反复出现某个值得长期关注的用户时使用；同一个用户不要重复关注（你已经关注的人不会重复出现互动通知里）。
-dm 说明：私信是私下说话，不是公开发言。用在只想对一个人说、不适合放在帖子下面的时候；对方看得到你的名字。"""
-
 
 def test_render_planner_prompt_matches_bash_byte_for_byte_when_empty() -> None:
     prompt = render_planner_prompt(ActContext(), rhythm_guidance="- 本轮动作约束：随意")
@@ -456,18 +411,6 @@ def test_render_planner_prompt_matches_bash_byte_for_byte_when_populated() -> No
     )
     prompt = render_planner_prompt(ctx, rhythm_guidance="g")
     assert prompt == _EXPECTED_POPULATED
-
-
-def test_render_planner_prompt_matches_bash_byte_for_byte_when_codex() -> None:
-    """Pins WHERE `backend_action_constraint` sits in the tail and the blank
-    lines around it, not just that it appears somewhere --
-    `test_codex_constraint_appears_only_when_set` only checks substring
-    presence, so a mutation relocating the insertion point or dropping a
-    surrounding blank line would pass that test but not this one.
-    """
-    ctx = ActContext(backend_action_constraint=CODEX_ACTION_CONSTRAINT)
-    prompt = render_planner_prompt(ctx, rhythm_guidance="g")
-    assert prompt == _EXPECTED_CODEX
 
 
 # ── Step 4/5: plan_round ────────────────────────────────────────────────────

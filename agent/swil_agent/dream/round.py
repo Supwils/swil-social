@@ -199,6 +199,33 @@ _ASPECT_PROMPT_VERSION: Final = 2
 # the script, not assumed to be the same string.
 _EMBEDDER_UNREACHABLE_EVENT_SUMMARY: Final = "embedder unreachable, skipped drift check"
 
+# Prefix of `dream/gate.py`'s aspect-fallback note. Duplicated rather than
+# imported from `analysis.cycle_run` (peers, spec §5.2) or from `gate.py`
+# (private). Used to mark `gateStatus=fail_open` on the 2026-08-13 path.
+_ASPECT_FALLBACK_PREFIX: Final = "aspect distill/embed failed"
+
+
+def _gate_status(verdict: DreamVerdict, *, written: bool) -> str:
+    """Dream-event copy of the cycle_run card's gateStatus.
+
+    The warn/fail/success events this module posts are the "dream event (if
+    one exists)" spec §3 names; the card copies the same string. Fail-open
+    is flagged on an accepted ungated write even before `written` is True
+    so the embedder-unreachable WARN (posted in `gate_step`, before the
+    write) carries the status.
+    """
+    if not verdict.accepted:
+        if verdict.scalar_sim is None and verdict.sims is None:
+            return "struct_reject"
+        return "drift_reject"
+    ungated = verdict.embedder_unreachable or verdict.reason.startswith(_ASPECT_FALLBACK_PREFIX)
+    if ungated:
+        return "fail_open"
+    if written:
+        return "accepted"
+    return "checked"
+
+
 # dream.sh:647-648's own log line and lab-event summary for a backend that
 # produced nothing -- ONE string used by both, and by `DreamResult.reason`,
 # so a caller never has to re-spell it.
@@ -757,11 +784,14 @@ def gate_step(
                 phase="dream",
                 outcome="warn",
                 summary=_EMBEDDER_UNREACHABLE_EVENT_SUMMARY,
+                metrics={"gateStatus": "fail_open"},
             ),
         )
 
     if not verdict.accepted:
         logger.warning("FAIL %s — %s; keeping original", persona.directory.name, verdict.reason)
+        fail_metrics = _drift_fail_metrics(verdict, settings)
+        fail_metrics["gateStatus"] = _gate_status(verdict, written=False)
         _emit(
             resources,
             persona.username,
@@ -770,7 +800,7 @@ def gate_step(
                 phase="dream",
                 outcome="fail",
                 summary=verdict.reason,
-                metrics=_drift_fail_metrics(verdict, settings),
+                metrics=fail_metrics,
             ),
         )
     return outcome
@@ -842,7 +872,13 @@ def write_step(
     _emit(
         resources,
         persona.username,
-        LabEvent(type="dream", phase="dream", outcome="success", summary="personality updated"),
+        LabEvent(
+            type="dream",
+            phase="dream",
+            outcome="success",
+            summary="personality updated",
+            metrics={"gateStatus": _gate_status(verdict, written=True)},
+        ),
     )
     return WriteStep(written=True, narrative=narrative)
 

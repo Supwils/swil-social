@@ -107,11 +107,10 @@ def _run(
 # ── allowed_for (contract 02 §1.1, spec §6.8) ───────────────────────────────
 
 
-def test_allowed_for_restricts_codex_to_post_and_nothing(tmp_path: Path) -> None:
-    assert allowed_for(_persona(tmp_path, backend="codex")) == ["post", "nothing"]
-
-
-def test_allowed_for_is_unrestricted_for_claude(tmp_path: Path) -> None:
+def test_allowed_for_is_unrestricted_including_for_codex(tmp_path: Path) -> None:
+    """Loop-engine spec §7: the Codex post/nothing allow-list is gone.
+    Comment/like/echo/follow use the same write-verified executor."""
+    assert allowed_for(_persona(tmp_path, backend="codex")) == []
     assert allowed_for(_persona(tmp_path, backend="claude")) == []
 
 

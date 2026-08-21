@@ -349,18 +349,12 @@ def test_act_dry_run_with_an_empty_plan_reports_nothing_and_planner_empty(
 
 
 def test_act_reports_vetoed_actions(tmp_agent: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A `codex` account may only `post`/`nothing` (contract `02` §1.1,
-    `act/round.py`'s `allowed_for`) -- a `comment` is stripped by the
-    guardrail allow-list stage and lands in `result.vetoed`, exercising the
-    CLI's veto-reporting line."""
-    directory = tmp_agent / "agents" / "zenith"
-    personality = (directory / "personality.md").read_text(encoding="utf-8")
-    (directory / "personality.md").write_text(
-        personality.replace("- **AI Backend:** claude", "- **AI Backend:** codex"),
-        encoding="utf-8",
-    )
-    comment_plan = f'{{"plan":[{{"action":"comment","postId":"{"p" * 24}","text":"hi"}}]}}'
-    monkeypatch.setattr(cli, "_backend_for", lambda persona, settings: StubBackend(comment_plan))
+    """A DM to someone not in contacts is stripped by the guardrail and
+    lands in `result.vetoed`, exercising the CLI's veto-reporting line.
+    Codex is no longer allow-listed (loop-engine spec §7); this veto is
+    independent of backend."""
+    dm_plan = '{"plan":[{"action":"dm","username":"vex","text":"hi"}]}'
+    monkeypatch.setattr(cli, "_backend_for", lambda persona, settings: StubBackend(dm_plan))
 
     result = runner.invoke(cli.app, ["act", "zenith", "--dry-run"])
     assert "vetoed" in result.stdout

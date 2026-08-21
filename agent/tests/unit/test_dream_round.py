@@ -606,7 +606,7 @@ def test_a_structural_rejection_emits_a_fail_event_with_the_validators_reason(
     assert event.type == "dream"
     assert event.phase == "dream"
     assert "Username drift" in event.summary
-    assert event.metrics == {}
+    assert event.metrics == {"gateStatus": "struct_reject"}
 
 
 def test_a_drift_rejection_emits_a_fail_event_with_metrics(tmp_path: Path) -> None:
@@ -923,6 +923,7 @@ def test_an_aspect_mode_drift_rejection_emits_aspect_shaped_metrics(tmp_path: Pa
         "aspectTopic": 0.99,
         "breached": "style",
         "driftMode": "aspect",
+        "gateStatus": "drift_reject",
     }
 
 

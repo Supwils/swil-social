@@ -541,13 +541,14 @@ def test_the_guardrail_node_performs_no_io_at_all(tmp_path: Path) -> None:
 
 def test_the_guardrail_node_hands_on_the_survivors_and_the_vetoes(tmp_path: Path) -> None:
     """§7.5: a dropped action is recorded with its reason, never filtered
-    silently -- "the codex allow-list dropped all five comments" and "the
-    model chose to do nothing" were indistinguishable on 2026-08-16."""
+    silently -- "the contacts list dropped a DM" and "the model chose to
+    do nothing" must stay distinguishable. Codex is no longer allow-listed
+    (loop-engine spec §7); a DM to someone not in contacts is the veto."""
     node = make_guardrail_node(_deps(tmp_path))
     plan = Plan(
         actions=[
             Action(kind="post", text="hello"),
-            Action(kind="comment", post_id="a" * 24, text="hi"),
+            Action(kind="dm", username="vex", text="hi"),
         ]
     )
 
@@ -561,7 +562,7 @@ def test_the_guardrail_node_hands_on_the_survivors_and_the_vetoes(tmp_path: Path
     )
 
     assert [action.kind for action in update["actions"]] == ["post"]
-    assert [vetoed.action.kind for vetoed in update["vetoed"]] == ["comment"]
+    assert [vetoed.action.kind for vetoed in update["vetoed"]] == ["dm"]
     assert update["solo_nothing"] is False
     assert "outcome" not in update
 
@@ -571,7 +572,7 @@ def test_the_guardrail_node_hands_on_the_survivors_and_the_vetoes(tmp_path: Path
     [
         (Plan(actions=[]), ActOutcome.PLANNER_EMPTY),
         (
-            Plan(actions=[Action(kind="comment", post_id="a" * 24, text="hi")]),
+            Plan(actions=[Action(kind="dm", username="vex", text="hi")]),
             ActOutcome.VETOED_EMPTY,
         ),
     ],

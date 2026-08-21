@@ -62,10 +62,11 @@ def apply_guardrails(
     def drop(action: Action, reason: str) -> None:
         vetoed.append(VetoedAction(action=action, reason=reason))
 
-    # 1. Backend allow-list. Empty means "everything allowed". codex accounts
-    # are restricted to post/nothing while their comment path stays a
-    # confirmed silent-fail (see CLAUDE.md); prompt text alone does not hold
-    # this line, so it is enforced here.
+    # 1. Backend allow-list. Empty means "everything allowed". Codex used to
+    # be restricted to post/nothing while its comment path was a confirmed
+    # silent-fail; write-verification is the real fix (loop-engine spec §7)
+    # so that list is empty for every backend. The stage stays: a non-empty
+    # `allowed` still filters.
     allowed_kinds = {a for a in allowed if a}
     if allowed_kinds:
         kept = [a for a in plan.actions if a.kind in allowed_kinds]

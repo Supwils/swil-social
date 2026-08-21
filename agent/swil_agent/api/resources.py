@@ -474,11 +474,11 @@ class Resources:
         shape that cannot be ignored silently by a caller: a returned flag
         can be dropped on the floor, which is exactly how this survived.
 
-        `act/executor.py`'s `_execute_follow` catches it with every other
-        write failure and routes it to Bash's `else` branch, keeping
-        `landed=True`. No caller needs to know it was a CONFLICT
-        specifically -- Bash does not distinguish either, which is why its
-        own message says "likely".
+        `act/executor.py`'s `_execute_follow` distinguishes this CONFLICT
+        from every other write failure (loop-engine spec §6): 409 /
+        `CONFLICT` is `landed=True`, `call_succeeded=False` (idempotent
+        success, no memory line); any other `ApiError` /
+        `WriteNotVerifiedError` is `landed=False`.
         """
         response = self._client.raw_post(f"/users/{username}/follow")
         if response.status_code != 204:

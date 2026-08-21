@@ -100,6 +100,14 @@ class CycleState(TypedDict, total=False):
         So a dry run does not dream at all: it would otherwise rewrite 23
         personalities and upload 23 snapshots during the round whose whole
         premise is that Python never wrote (standing constraint §9).
+      * `missing_behavior_snapshot` / `missing_rule_check` -- the matching
+        sampler node produces True when that sampler raised or failed to
+        produce a sample. `logout` copies them onto the cycle_run card.
+        Unset is False: a path that never reached the sampler (offline, dead
+        backend, empty-plan skipping behavior_snapshot) is not a missing
+        sample, it is a round that was not supposed to sample.
+      * `started_monotonic` -- `run_cycle` seeds it from `deps.monotonic()`
+        before the first node. `logout` subtracts it to fill `durationMs`.
 
     Every type here must survive a checkpoint round-trip, which for
     `SqliteSaver` means being reachable from these annotations --
@@ -142,3 +150,8 @@ class CycleState(TypedDict, total=False):
     snapshot_ok: bool
     snapshot_reason: str | None
     dream_attempt: int
+
+    # ledger
+    missing_behavior_snapshot: bool
+    missing_rule_check: bool
+    started_monotonic: float

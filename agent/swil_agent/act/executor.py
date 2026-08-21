@@ -23,12 +23,13 @@ reusing it unmodified is the fix, not a new formatter.
 Two Bash rules are preserved deliberately, not just left as historical
 trivia:
 
-  * **`follow` always counts as landed**, regardless of the HTTP outcome
-    (contract `02` §2.4) — `auto-run.sh:250-252` returns 0 on both branches
-    ("Deliberately 0 either way: 'already following' is the common outcome
-    and is not a failed round"). This is the one action kind whose REAL
-    failure is invisible in a round's `landed/attempted` tally: a genuinely
-    broken follow path looks identical to a healthy one here.
+  * **`follow` 409 / `CONFLICT` is idempotent success** (loop-engine spec
+    §6) — `landed=True`, `call_succeeded=False`, no memory line. That is
+    "already following": the edge exists, the round is not a failure, and
+    Bash itself never `_remember`s it. Any other `ApiError` /
+    `WriteNotVerifiedError` is `landed=False`. After cutover we no longer
+    need Bash's "every follow is landed" lie — a 500 must not look like a
+    healthy round in the tally.
 
     An earlier version of this paragraph added that `Resources.follow`
     "already absorbs a 409 `CONFLICT` as a no-op success". **That is no
@@ -201,8 +202,9 @@ def _outcome(
 ) -> ExecutionOutcome:
     # `call_succeeded` DERIVES from `landed` unless a branch says otherwise,
     # so the two cannot drift apart by accident: the only caller that passes
-    # it explicitly is `_execute_follow`'s failure branch, the single place
-    # Bash itself distinguishes them (ruling R19; see `ActionResult`).
+    # it explicitly is `_execute_follow`'s 409/`CONFLICT` branch, the single
+    # place a follow can be landed without a memory line (loop-engine spec
+    # §6; see `ActionResult`).
     result = ActionResult(
         action=action,
         landed=landed,
@@ -412,6 +414,11 @@ def _execute_like(resources: Resources, action: Action, *, agent_name: str) -> E
     )
 
 
+def _is_follow_conflict(exc: ApiError | WriteNotVerifiedError) -> bool:
+    """HTTP 409 or error code `CONFLICT` — "already following" (spec §6)."""
+    return isinstance(exc, ApiError) and (exc.status == 409 or exc.code == "CONFLICT")
+
+
 def _execute_follow(resources: Resources, action: Action, *, agent_name: str) -> ExecutionOutcome:
     username = _clean_username(action.username)
     if not username:
@@ -424,36 +431,33 @@ def _execute_follow(resources: Resources, action: Action, *, agent_name: str) ->
     try:
         resources.follow(username)
     except _WriteFailure as exc:
-        # Deliberately STILL landed=True (contract 02 §2.4): `auto-run.sh
-        # :250-252` returns 0 on both branches, because "already following"
-        # is the common outcome and is not a failed round.
-        #
-        # This branch sees the WHOLE failure space, including that common
-        # 409: `Resources.follow` no longer swallows CONFLICT (ruling R20 --
-        # while it did, the swallow sent the common case down the success
-        # path instead, with a DONE line, a `success` lab event and a
-        # memory.md line Bash never writes).
-        #
-        # Cost, recorded here rather than left implicit: this is the one
-        # action kind whose REAL failure never shows up in a round's
-        # landed/attempted tally, so a genuinely broken follow path looks
-        # identical to a healthy one from the outside. The log line, the lab
-        # event and the absent memory line are where it IS visible.
+        # Loop-engine spec §6: only 409 / `CONFLICT` is idempotent success
+        # (`landed=True`, `call_succeeded=False`, no memory line). Any other
+        # write failure is not landed — Bash's "every follow is landed" lie
+        # hid a broken follow path inside a healthy tally.
+        if _is_follow_conflict(exc):
+            return _outcome(
+                action,
+                landed=True,
+                # The swil.sh call itself did NOT succeed, so no memory.md line
+                # (rulings R19 + R20). `swil.sh`'s `follow` case is `_curl … |
+                # jq .` followed by `_remember` (swil.sh:679-683), and the
+                # failing `_curl` aborts the case under `set -euo pipefail`
+                # before `_remember` ever runs.
+                call_succeeded=False,
+                resource_id=None,
+                detail=f"likely already following: {_error_detail(exc)}",
+                log_line=f"WARN {agent_name} follow @{username} failed (likely already following)",
+                lab_outcome="warn",
+                lab_summary="follow request failed",
+                lab_reason=username,
+            )
         return _outcome(
             action,
-            landed=True,
-            # ... but the swil.sh call itself did NOT succeed, so no
-            # memory.md line (rulings R19 + R20). `swil.sh`'s `follow` case
-            # is `_curl … | jq .` followed by `_remember` (swil.sh:679-683),
-            # and the failing `_curl` aborts the case under `set -euo
-            # pipefail` before `_remember` ever runs. This is the ONLY thing
-            # that differs from the success branch besides the log line and
-            # the lab outcome -- `landed` is True either way (see the except
-            # clause above).
-            call_succeeded=False,
+            landed=False,
             resource_id=None,
-            detail=f"likely already following: {_error_detail(exc)}",
-            log_line=f"WARN {agent_name} follow @{username} failed (likely already following)",
+            detail=_error_detail(exc),
+            log_line=f"WARN {agent_name} follow @{username} failed",
             lab_outcome="warn",
             lab_summary="follow request failed",
             lab_reason=username,
