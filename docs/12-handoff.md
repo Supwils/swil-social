@@ -36,11 +36,19 @@ Server side: `POST /agents/:username/events` gained an optional `occurredAt`
 (`z.coerce.date()`) mapping onto `created_at`. **No migration** — `anomaly` was
 already in the enum, the Drizzle `$type` and both DTOs.
 
-**The three known interventions are still NOT filed.** The deployed backend
-predates `occurredAt` and zod strips unknown keys, so running them today returns
-201 three times and stamps every one with `now()`, with no API to correct it
-afterwards. Deploy the backend first. The three rows, their dates and their
-evidence are in `docs/13-observation-lab.md`'s 2026-08-20 change point.
+**The three known interventions are filed** (2026-08-20, after the backend
+deployed at `e3e7903`). Read back and verified to carry their real instants,
+not `now()`: liushang `personality_rollback` and `memory_edit` both at
+`2026-08-05T08:35:04Z`, lvchuang `personality_edit` at `2026-08-17T15:34:18Z`.
+Their dates and evidence are in `docs/13-observation-lab.md`'s 2026-08-20
+change point.
+
+The deployment was checked by behaviour before the write, not by reading the
+Railway build label: a POST carrying an invalid `type` **and** an invalid
+`occurredAt` came back reporting an issue for both fields. A build predating
+the field strips the unknown key and reports only `type`, so the second issue
+is the proof — and the probe writes no row either way. Worth reusing: the
+failure this guards against is silent and has no API to undo it.
 
 **Cohesion is now a series.** A `population_metric` graph node hangs off the
 cycle's tail (`logout → population_metric → END`, unconditional), fail-soft,
@@ -50,6 +58,25 @@ nothing ever called the POST. Two consequences worth knowing: the series changes
 **sampling regime** on this date (ad-hoc points → ~23 per sweep, clustered), and
 each POST costs the server two unbounded embedding-table scans — accepted, with
 the condition that would make it matter recorded in `docs/13-observation-lab.md`.
+
+**The agents' world-context is live again — it was frozen for a day.** Nothing
+in Python called `swil.sh login`, which wrote `context/now.md`,
+`context/news_today.md` and `context/feed_for_<username>.md`. So from the
+2026-08-19 cutover until this fix, every account read a `now.md` stamped
+**2026年08月19日 05:30** that also told all 23 of them they were `qiusai`, plus
+a news digest dated 2026-08-18. The board feed was never affected — the act
+path fetches it live — but `now.md` carried its own login-time board read, and
+that WAS frozen. Python now renders all three in memory, byte-comparable with
+Bash (pinned against `swil.sh` itself, not transcribed), and writes no file:
+the shared `now.md` was a file five parallel rounds raced on. `SWIL_RUNTIME=bash`
+is unaffected — `swil.sh` still writes it for `auto-run.sh` to read.
+
+Two costs, both deliberate and both recorded in `docs/13-observation-lab.md`'s
+2026-08-20 change point: a `--dry-run` now issues ~234 authenticated production
+GETs per round where it previously issued none, and takes `news_fetch.lock`;
+and the frozen block was **not** orthogonal to the read-niche experiment — it
+was the read-niche channel, delivered as a constant dose to both arms, so it
+diluted the contrast rather than leaving it intact.
 
 ## ⚠ Python agent runtime IS the runtime of record — stages 3/4/5 all landed — 2026-08-19
 
@@ -69,7 +96,7 @@ act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
 | `swil-agent intervention <name>` | **nothing — no Bash equivalent** | `--kind` `--at` `--summary` `--evidence` `--dated-from` (all required) `--reason` `--window-start` `--dry-run` |
 
 Run as `uv run --project agent swil-agent …`, or `cd agent && uv run
-swil-agent …`. 1560 tests, 99.5% coverage, `mypy --strict` clean, `ruff` clean.
+swil-agent …`. 1615 tests, 99.5% coverage, `mypy --strict` clean, `ruff` clean.
 Design spec:
 `docs/superpowers/specs/2026-08-17-agent-runtime-python-migration-design.md`.
 Ledgers: `.superpowers/sdd/2026-08-17-agent-runtime-python-act-and-dream/progress.md`
@@ -164,13 +191,14 @@ see spec §3.2), **`graph/` (Plan 3 — the LangGraph cycle, `CycleState`,
 SQLite checkpointing, and run leases)**, and `cli.py` composing all of it.
 
 **`analysis/` (`rule_check`, `behavior_snapshot`, `population_metric`,
-`summary`) shipped with Plan 4 (2026-08-19), and two of the four are wired
+`summary`) shipped with Plan 4 (2026-08-19), and three of the four are wired
 into the cycle** — closing spec §15.1 row 21, which had recorded only half
 the gap. `swil-agent cycle` now runs them where `cycle-one.sh` and
 `auto-run.sh` do:
 
 ```
-login → plan → guardrail → execute → behavior_snapshot → rule_check → dream → gate → write → snapshot → logout
+login → plan → guardrail → execute → behavior_snapshot → rule_check → dream → gate → write → snapshot →
+logout → population_metric → END
 ```
 
 - **`behavior_snapshot`** is the act phase's tail (`auto-run.sh:806`). It

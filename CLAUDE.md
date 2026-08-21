@@ -374,7 +374,8 @@ cycle`** (Plan 4, closing spec §15.1 row 21 — which had recorded only the
 first of the two):
 
 ```
-login → plan → guardrail → execute → behavior_snapshot → rule_check → dream → gate → write → snapshot → logout
+login → plan → guardrail → execute → behavior_snapshot → rule_check → dream → gate → write → snapshot →
+logout → population_metric → END
 ```
 
 - `behavior_snapshot` is the act phase's tail (`auto-run.sh:806`) and feeds
@@ -477,21 +478,59 @@ absent `agent/.env` in worktrees).
 - Per-account locks at `.agent-state/lock_<name>` and `.agent-state/dream_lock_<name>`
 - So parallel `cycle-one.sh` calls across different accounts are safe; the heartbeat launchd job + manual subagent runs co-exist (whoever loses the lock race just SKIPs that round)
 
-**Heartbeat is NOT currently running.** The plist exists at
-`~/Library/LaunchAgents/com.swil.heartbeat.plist`, but `launchctl list | grep swil`
-returns nothing and `agent/logs/heartbeat.log` stops at **2026-07-02** — so every
-round since then has been hand-cranked. Verify before assuming otherwise:
+## Rounds are scheduled OPPORTUNISTICALLY — `com.swil.round`, since 2026-08-20
+
+Rounds are no longer hand-cranked, and they are **not** on a wall-clock
+schedule either. `agent/scripts/opportunistic-round.sh` runs one full roster
+round, but only when the machine is genuinely available and at least
+`ROUND_MIN_INTERVAL_HOURS` (default **48**) since the last one.
+
+`agent/launchd/com.swil.round.plist` fires it every 30 min with
+`RunAtLoad`. Almost every firing is a ~50 ms no-op because the interval gate
+says "too soon". launchd does not fire while the machine is asleep and
+coalesces the firings it missed into a single firing **on wake** — so
+"run when the lid next opens, or after a boot" needs no wake hook and no
+`sleepwatcher`.
 
 ```bash
-launchctl list | grep -i swil          # empty ⇒ nothing scheduled
-tail -1 agent/logs/heartbeat.log       # last automatic round
-launchctl load ~/Library/LaunchAgents/com.swil.heartbeat.plist   # to enable
+bash agent/scripts/opportunistic-round.sh --status    # why it will or won't run
+bash agent/scripts/opportunistic-round.sh --dry-run   # check every gate, run nothing
+bash agent/scripts/opportunistic-round.sh --force     # ignore the interval gate only
+tail -20 agent/logs/opportunistic.log
+launchctl unload ~/Library/LaunchAgents/com.swil.round.plist   # stop
 ```
 
-This matters for the drift experiment: its measurement protocol assumes rounds
-actually happen. With the heartbeat unloaded, no round occurs unless someone
-runs one. The per-account locks still make a loaded heartbeat and a manual round
-safe to overlap — whoever loses the race just SKIPs.
+Gates, in order — each one exits **0**, because "not now" is not an error:
+interval → round lock (PID-checked, reclaimed if the owner is dead) → AC power
+(`ALLOW_BATTERY=1` overrides) → `$SWIL_URL/health` == 200 → `claude` and `uv`
+on PATH. Then it sweeps dead-PID `lock_*` / `dream_lock_*`, pre-warms the
+embedder, and runs the roster 5-way under `caffeinate -i` with a 900 s
+per-account timeout that kills **by PGID, never by pattern**.
+
+Four things about it that are not obvious:
+
+- **The stamp is written at round START, not at the end.** The interval governs
+  cadence; a round that dies halfway must not immediately launch 23 more
+  accounts at a broken environment. A *precondition* failure writes no stamp,
+  so plugging the laptop in makes the next firing run.
+- **The caller's env outranks `agent/.env`.** `set -a; . .env` overwrites
+  anything you exported, which silently ignored `SWIL_URL=… bash …` and sent
+  the run to production anyway. The script snapshots the caller's values and
+  restores them after sourcing.
+- **The plist's PATH names the REAL binaries.** In an interactive shell
+  `claude` and `codex` resolve to cmux shims under
+  `/var/folders/…/T/cmux-cli-shims/<UUID>/` — a per-session temp path that does
+  not exist for a launchd job. A plist inheriting those fails every firing
+  silently.
+- **It commits the round's output locally and never pushes** (`AUTO_COMMIT=0`
+  disables). Otherwise fifteen rounds of `memory.md` / `personality.md` pile up
+  between reviews.
+
+**The old `com.swil.heartbeat.plist` is superseded — do not load it.** It runs
+`heartbeat.sh`, a `while true` daemon that calls `auto-run.sh`: **act-only, no
+dream, and the one path never cut over to Python**. Loading it now would inject
+a different *kind* of round into the series. `agent/logs/heartbeat.log` stops at
+2026-07-02 and should stay that way.
 
 ## Agent Behavior Lab (`/lab`) + Constitution-guarded dreams
 

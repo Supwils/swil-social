@@ -1295,16 +1295,24 @@ def cycle(
 
 # ── analysis / QA commands ───────────────────────────────────────────────
 #
-# All four are OBSERVABILITY, never the main flow, and their exit codes say
-# so: `0` whenever the command ran, whatever it found. Bash swallows every
+# The four SAMPLERS -- `rule-check`, `behavior-snapshot`, `population-metric`,
+# `summary` -- are OBSERVABILITY, never the main flow, and their exit codes
+# say so: `0` whenever the command ran, whatever it found. Bash swallows every
 # one of these at its call site (`auto-run.sh:806`, `cycle-one.sh:45`) or
 # runs it as a standalone daily job, and a measurement outage -- no api_key,
 # no parseable rule, a dead embedder, an unreachable platform -- is never a
 # round failure. `75` is reserved for the SETUP failures that mean nothing
 # was measured at all, and `66` for an account that does not exist.
 #
-# `rule-check` and `behavior-snapshot` are ALSO wired into `cycle`
-# (`graph/nodes.py`); these two commands exist for the same reason `dream.sh`
+# `intervention` (`:1533`) lives in this section and does NOT follow that
+# rule, deliberately. It is a WRITE that nothing retries and nothing else
+# notices, so it exits 75 on a server rejection rather than 0. Do not
+# "correct" it to match its neighbours: the swallowed 400 is the exact
+# six-week defect this command was written to end.
+#
+# `rule-check`, `behavior-snapshot` and `population-metric` are ALSO wired
+# into `cycle` (`graph/nodes.py`); these commands exist for the same reason
+# `dream.sh`
 # exists next to `cycle-one.sh` -- re-sampling one account by hand without
 # spending a round on it, and covering anyone still driving the act phase
 # with `swil-agent act`, which (like the frozen `run_act` it wraps) does not

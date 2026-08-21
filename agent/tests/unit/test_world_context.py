@@ -105,7 +105,7 @@ NOW_B = datetime(2026, 3, 4, 19, 5)
 #      no `#`.
 #
 # Rule 3 is deliberately not "cut each line at its first `#`". That rule
-# would truncate `swil.sh:398` -- `FEED_CONTENT+="## #${FT_TOPIC}\n…"` -- at
+# would truncate `swil.sh:397` -- `FEED_CONTENT+="## #${FT_TOPIC}\n…"` -- at
 # `## `, turning a live anchor into a false failure. Filtering match
 # POSITIONS instead never shortens anything: the `#`s in that line are all
 # AFTER the anchor, so it still matches, and its extracted fragment is
@@ -162,11 +162,19 @@ def _executable(text: str) -> str:
 
 
 def _is_code_position(view: str, at: int) -> bool:
-    """Rule 3: nothing before `at` on its joined line may be a `#`.
+    r"""Rule 3: nothing before `at` on its joined line may be a `#`.
 
     Without it, renaming the real assignment and parking the original text in
     a TRAILING comment passes every other check -- the anchor occurs exactly
     once, on an executable line, and it is the decoy.
+
+    That, and only that, is what rule 3 buys. It is NOT what closes the
+    hidden-DUPLICATE shapes (a `\`-terminated comment above a second
+    assignment, or a second executable one): those die on the uniqueness
+    assertion in `_the_code_hit` / `_the_code_match`, measured by re-running
+    that mutation with this rule removed and watching it die anyway. Worth
+    stating because crediting rule 3 there would tell the next person who
+    changes it that more depends on it than does.
     """
     return "#" not in view[view.rfind("\n", 0, at) + 1 : at]
 
@@ -220,6 +228,21 @@ def _executable_span(text: str, anchor: str, what: str = "the anchor") -> tuple[
 # ── the Bash heredoc, read out of the script ──────────────────────────────
 
 _HEREDOC_OPEN = 'cat > "$ROOT_DIR/context/now.md" <<EOF\n'
+
+# §7 -- this anchor is DELIMITER-SPECIFIC, and one shape gets past it.
+# RENAMING the delimiter fails loudly (`the now.md heredoc occurs 0 times`).
+# But a SECOND write to the same file through a different delimiter --
+# `cat > "$ROOT_DIR/context/now.md" <<EOF2` -- is not this anchor at all, so
+# the uniqueness assertion sees one hit, reads the FIRST heredoc and passes,
+# while bash's last write wins and `now.md` gets the second body. Measured:
+# green with a `\`-comment hiding it AND with no comment anywhere, so this is
+# not a §14 failure -- no comment need be involved.
+#
+# Recorded rather than closed. Closing it means detecting "any second write
+# to this file", which is a different check with its own false-failure risk:
+# a legitimate second write to `now.md` would then be a test failure with
+# nothing wrong. Expiry: the moment `swil.sh` writes `now.md` more than once,
+# this pin is reading the wrong body and the check has to be built.
 
 # The four shell expansions inside that heredoc. Everything else in it is
 # literal text -- including the `{topic}` / `{date}` in the swil-news URL,
@@ -652,6 +675,15 @@ _VIEW_FIXTURE = (
     "SPLIT=$(one | \\\n"
     "  two)\n"
     'TRAILING="kept"  # FEED_CONTENT="parked decoy"\n'
+    # The symmetric case, and the one shape the fixture was missing: a
+    # continuation line that BEGINS with `#`. Bash joins first and tokenises
+    # after, so this is not a comment and `JOINED` ends up `## #not-a-comment`.
+    # Without this row, testing every physical line for comment-ness -- the
+    # mistake that looks symmetric to the one above -- leaves the whole suite
+    # green while the readers return a wrong string.
+    'JOINED="## \\\n'
+    '#not-a-comment"\n'
+    'NEXT="its own line"\n'
 )
 
 
@@ -659,7 +691,7 @@ def test_the_view_drops_comments_and_keeps_the_hash_inside_executable_text() -> 
     """Both directions of §14, on the helper rather than only through its
     callers, and with a fixture that can actually fail.
 
-    `BLOCK+="## #${FT_TOPIC}\n"` is `swil.sh:398`'s shape and is the reason
+    `BLOCK+="## #${FT_TOPIC}\n"` is `swil.sh:397`'s shape and is the reason
     rule 3 filters match POSITIONS instead of cutting each line at its first
     `#`: a cutting rule would truncate that line at `## ` and turn a live
     anchor into a false failure.
@@ -698,6 +730,37 @@ def test_a_comment_does_not_continue_onto_the_line_below_it() -> None:
     # pin is looking for, so the pin fails for a reason that is not true.
     hidden = '# note \\\nFEED_CONTENT="real"\n'
     assert _bash_feed_fragment('FEED_CONTENT="', hidden) == "real"
+
+
+def test_a_continuation_line_that_begins_with_a_hash_is_still_code() -> None:
+    r"""The mistake that LOOKS symmetric to the one above, and is not.
+
+    Comment-ness is tested per physical line, but only on the line that
+    STARTS a logical line. Bash joins continuations first and tokenises
+    afterwards, so `JOINED="## \` followed by `#not-a-comment"` sets `JOINED`
+    to `## #not-a-comment`; the `#` is inside a quoted word that the line
+    below merely finishes. Verified against real bash (3.2.57, macOS), not
+    reasoned about.
+
+    Testing EVERY physical line instead does two things, and neither is a
+    loud failure. It deletes the continuation from the view, and it makes the
+    join reach past it and swallow the next executable line -- so
+    `_bash_feed_fragment` on `FEED_CONTENT="## \` / `#${FT_TOPIC}\n\n"` /
+    `printf "%b" "$FEED_CONTENT"` returns `'## printf "%b" "$FEED_CONTENT'`
+    with no exception raised. Measured, not predicted.
+
+    §7 -- inert today: no `agent/scripts/*.sh` has a `\`-continuation into a
+    `#`-leading line (`awk 'prev ~ /\\$/ && $0 ~ /^[[:space:]]*#/'` over all
+    23 of them returns nothing). It stops being inert the first time one
+    does, and `swil.sh:397` already assigns a `"## #..."` literal, so the
+    distance is one line break.
+    """
+    view = _executable(_VIEW_FIXTURE)
+    assert 'JOINED="## #not-a-comment"' in view
+    # ...and the line below the continuation is still a line of its own. Under
+    # the mistake above it becomes the continuation instead, which is how the
+    # wrong string gets built rather than an error raised.
+    assert '\nNEXT="its own line"' in view
 
 
 def test_continuations_are_joined_the_way_bash_joins_them() -> None:
@@ -776,6 +839,16 @@ _DOUBLED: dict[str, tuple[Callable[[str], object], str]] = {
         "(( waited > 120 )) && return 1\n"
         "(( waited > 30 )) && return 1\n"
         'NEWS_TIMEOUT="${NEWS_TIMEOUT:-45}"\n',
+    ),
+    # ...and a third, because the SHAPE of the second assignment is the other
+    # thing that has to stay pinned. The row above doubles the modelled
+    # `${NEWS_TIMEOUT:-N}` form; this one is a plain reassignment, which the
+    # narrower regex neither saw nor refused. It is the whole of N6: with it
+    # the ceiling read 165 while the script's own was 320 against a 180s
+    # bound, and the suite stayed green.
+    "the news ceiling / a second assignment of any shape": (
+        lambda src: _news_script_ceiling(src),
+        '(( waited > 120 )) && return 1\nNEWS_TIMEOUT="${NEWS_TIMEOUT:-45}"\nNEWS_TIMEOUT=200\n',
     ),
 }
 
@@ -1175,22 +1248,39 @@ def _news_script_ceiling(source: str | None = None) -> float:
     320s against a 180s bound.
 
     What this models is the `:-N` DEFAULT, not the effective value of
-    `NEWS_TIMEOUT` at the `curl`. Those differ the moment there are two
-    assignments -- `${NEWS_TIMEOUT:-200}` above `${NEWS_TIMEOUT:-45}` leaves
-    the variable at 200, because the second `:-` sees it already set -- and a
-    first-match reader would report 200 while a last-match reader reported
-    45, both confidently. Rather than pick, `_the_code_match` refuses: two
-    executable assignments fail the uniqueness assertion by name. That is
-    also why the env-var override is not modelled at all; a caller who
-    exports `NEWS_TIMEOUT` has left the budget this constant was derived
-    against, and no static read of the script can tell.
+    `NEWS_TIMEOUT` at the `curl`. The two agree only while the script assigns
+    the variable ONCE, so the count is guarded first and the value is read
+    out of the assignment that guard found -- one read, not two.
+
+    The guard counts `NEWS_TIMEOUT=` in ANY shape, and that width is the
+    whole point. Keying it on the `${NEWS_TIMEOUT:-N}` form caught
+    `${NEWS_TIMEOUT:-200}` above `${NEWS_TIMEOUT:-45}` (two matches, refused
+    by name) while a plain `NEWS_TIMEOUT=200` under the real line was neither
+    seen nor refused: this returned 165 while the script's own ceiling was
+    120 + 200 = 320s against a 180s bound. That is the F6 condition -- the
+    Python timeout fires first, SIGKILLs bash, the `EXIT` trap never runs and
+    the lock is orphaned -- reintroduced by a narrow regex, with the whole
+    suite green. Measured in bash (`NEWS_TIMEOUT="${NEWS_TIMEOUT:-45}"` then
+    `NEWS_TIMEOUT=200` leaves 200), not reasoned about.
+
+    Two things are still NOT modelled, and a static read cannot model either.
+    The env-var override: a caller who exports `NEWS_TIMEOUT` has left the
+    budget this constant was derived against and nothing in the script says
+    so. And reachability: an assignment inside a branch still counts as an
+    assignment, so a second one is REFUSED rather than analysed. Refusing is
+    the point -- once there are two, no static reader can say which one the
+    `curl` sees, and a first-match reader and a last-match reader disagree
+    while both sound certain.
     """
     view = _executable(NEWS_FETCH_SH.read_text(encoding="utf-8") if source is None else source)
     lock_wait = _the_code_match(view, r"\(\( waited > (\d+) \)\) && return 1", "the spinlock cap")
-    curl_timeout = _the_code_match(
-        view, r'NEWS_TIMEOUT="\$\{NEWS_TIMEOUT:-(\d+)\}"', "the NEWS_TIMEOUT default"
+    assignment = _the_code_match(view, r"(?<![\w$])NEWS_TIMEOUT=\S*", "a NEWS_TIMEOUT assignment")
+    default = re.fullmatch(r'NEWS_TIMEOUT="\$\{NEWS_TIMEOUT:-(\d+)\}"', assignment.group(0))
+    assert default is not None, (
+        f"the one NEWS_TIMEOUT assignment is {assignment.group(0)!r}, not the "
+        "`${NEWS_TIMEOUT:-N}` form this models"
     )
-    return float(lock_wait.group(1)) + float(curl_timeout.group(1))
+    return float(lock_wait.group(1)) + float(default.group(1))
 
 
 def test_the_news_fetch_timeout_clears_the_scripts_own_ceiling() -> None:

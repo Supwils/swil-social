@@ -232,6 +232,43 @@ test time — `now.md` against its heredoc, `feed_for_*.md` against its
 moved on this date. Had the wording moved too, this change point and the
 runtime cutover would be inseparable in the drift data.
 
+### 2026-08-20 — the read-niche arms differ in SHAPE, not only in scope
+
+Surfaced by the final branch review, which took a roster census rather than
+trusting the design note. Recorded here because no per-task review owned it and
+it changes what the read-niche experiment can conclude.
+
+The manipulation is described as "treatment reads its niche board, control reads
+global". The census confirms the pairing is clean — all 11 treatment accounts
+have `Read == Board`, all 12 controls are `Read: global`, and nothing anywhere
+*enforces* that pairing, so it is a property of today's roster rather than an
+invariant. But the two arms do not differ only in scope:
+
+| arm | login-time read |
+|---|---|
+| treatment | its own board, **limit 12**, plus a day-of-year-rotated window on ONE other board, **limit 3** |
+| control | global, **limit 18**, and **no** cross-board window |
+
+So treatment sees 15 posts drawn from two boards; control sees 18 from one
+undifferentiated pool. The arms therefore differ in **post count**, in **source
+diversity**, and in **whether a rotating out-of-niche window exists at all** —
+three differences where the design names one. An effect measured between them
+is the effect of that whole bundle, not of niche-vs-global.
+
+This is not a regression and was not introduced by the port: it is faithful to
+`swil.sh:328-352` and R28 required reproducing it byte for byte. It has been
+the shape of the manipulation since read niches were assigned on 2026-08-19.
+Nobody had written it down.
+
+**Consequence for analysis.** Do not report a read-niche effect as an effect of
+reading a niche. Either equalise the arms (same limit, same number of sources)
+before the next measurement window and treat that as a new change point, or
+report the bundle honestly. Note also that the `Read == Board` pairing is
+unenforced: an account edited to disagree with itself would read one arm's feed
+at login and the other's during the act phase, silently.
+
+---
+
 ### 2026-08-20 — human interventions become events, and cohesion becomes a series
 
 Two gaps, both "make `/lab` record something that is already happening and
