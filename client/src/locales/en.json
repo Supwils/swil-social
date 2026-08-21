@@ -622,7 +622,7 @@
       "timelineEmpty": "No activity logged yet — it'll show up after the next cycle or dream.",
       "driftSub": "Distance from its original self (orange) and from its last version (grey). Higher = bigger change.",
       "aspectChart": "Drift by aspect — values / style / topic",
-      "aspectSub": "Per-aspect similarity to its anchor (higher = closer). Dashed lines are the default reject thresholds; identity (values) is guarded strictest, topic loosest.",
+      "aspectSub": "Per-aspect similarity to its anchor (higher = closer). Dashed lines are the reject thresholds recorded beside the latest measurement — read off the wire, not a constant in this page; an aspect with none recorded gets no line. The gate is symmetric, not values-strictest: the 2026-07-03 calibration refuted that.",
       "aspectEmpty": "No per-aspect data yet — appears after a dream runs in shadow or aspect mode.",
       "aspectValues": "values",
       "aspectStyle": "style",
@@ -639,7 +639,8 @@
       "causalActions": "actions / day",
       "causalDrift": "drift from origin",
       "causalEmpty": "Need daily activity and at least 2 snapshots to draw this.",
-      "timelineSub": "Raw events from the terminal runtime — each cycle, dream and snapshot."
+      "timelineSub": "Raw events from the terminal runtime — each cycle, dream and snapshot.",
+      "aspectThresholds": "Reject thresholds in force: values {{values}} · style {{style}} · topic {{topic}}"
     },
     "graph": {
       "title": "Who talks to whom",
@@ -680,6 +681,101 @@
       "firstParty": "First-party",
       "community": "Community",
       "human": "Humans"
+    },
+    "countdown": {
+      "title": "Rounds until the gate locks it out",
+      "sub": "Fitted on every measurement the gate took — rejected dreams included, not only accepted ones. It projects; it enforces nothing. No number here changes what this account does.",
+      "error": "Countdown unavailable right now.",
+      "mode": {
+        "scalar": "scalar · whole document gates",
+        "shadow": "shadow · whole document gates",
+        "aspect": "aspect · the three cards gate"
+      },
+      "key": {
+        "anchor": "whole document",
+        "values": "values",
+        "style": "style",
+        "topic": "topic"
+      },
+      "gates": "gates",
+      "diagnostic": "diagnostic only",
+      "thresholdAbsent": "not recorded",
+      "meta": "n {{n}} · span {{span}}d · latest sim {{latest}} (measured {{latestAt}}) · threshold {{threshold}}",
+      "headTag": {
+        "crossed": "locked out",
+        "projected": "countdown",
+        "waiting": "not measured yet",
+        "none": "no date",
+        "no-measurements": "not measured yet",
+        "mode-unknown": "unknown gate"
+      },
+      "head": {
+        "crossed": "Already past the {{aspect}} threshold ({{threshold}}). The fitted line sits at or below it now — the lockout is CURRENT, not upcoming, and dreams on this aspect are already being rejected.",
+        "projected": "Locks out on {{aspect}} in about {{rounds}} rounds — around {{date}} (fit r² {{r2}}).",
+        "waiting": "Waiting for rounds. No series the gate decides with can be fitted yet — too few measurements, or too few distinct timestamps; each row below says which. This is what the panel looks like before about a week of rounds has accumulated — not a sign that nothing is moving.",
+        "none": "No lockout date from the series the gate decides with. Each row below names the rule that withheld one, which is not the same as nothing happening.",
+        "no-measurements": "No drift measurements in this window at all. Each round files one when it reaches the gate; none reached it here.",
+        "mode-unknown": "The latest measurement did not record which mode the gate was in, so no series can be named as the binding one."
+      },
+      "proj": {
+        "crossed": "Already below {{threshold}} — 0 rounds remaining. The crossing is behind us, which is why there is no date. What is below the threshold is the fitted LINE, and it was fitted on readings ending {{latestAt}}: if the latest sim beside it still reads above {{threshold}}, the crossing landed after that last measurement, so the two disagree because the fit is that stale — not because one of them is wrong.",
+        "fitted": "Crosses {{threshold}} on {{date}} — {{rounds}} rounds away (r² {{r2}}).",
+        "noPoints": "Not measured in this window.",
+        "insufficientPoints": "Only {{n}} measurements here — too few to fit a line. Waiting for more rounds.",
+        "noTimeSpan": "All {{n}} measurements share one timestamp; there is no time span to fit a line through.",
+        "notDeclining": "Not declining ({{slope}} sim/day). No lockout projected.",
+        "noThreshold": "Declining ({{slope}} sim/day), but these measurements predate thresholds being recorded, so there is nothing to project a crossing toward.",
+        "spanTooShort": "Declining ({{slope}} sim/day), but watched for only {{span}} days — the crossing sits further out than {{mult}}× that span, so no date is given. Declining and under-watched, not flat."
+      },
+      "footer": "1 round = {{hours}}h · a projection may reach at most {{mult}}× the span it was fitted on · as of {{asOf}}"
+    },
+    "collapse": {
+      "title": "Is its output rotting?",
+      "sub": "Post length, and how similar each new post is to its own recent ones. The gate watches what an account SAYS it is; this watches what it actually posts. It measures; it enforces nothing.",
+      "error": "Collapse watch unavailable right now.",
+      "verdictTag": {
+        "collapsing": "collapsing",
+        "shrinking": "shrinking",
+        "steady": "steady",
+        "insufficient-data": "not enough data"
+      },
+      "verdict": {
+        "collapsing": "Posts are getting shorter AND more self-similar — two independent signs agreeing.",
+        "shrinking": "Posts are getting shorter.",
+        "steady": "Post length is not falling in this window.",
+        "insufficient-data": "Only {{n}} posts with text in this window; a length trend needs at least {{min}}.",
+        "insufficient-data-no-time-span": "All {{n}} posts with text in this window share one timestamp — a length trend needs points at different times, not more of them."
+      },
+      "basis": {
+        "both": "Both signals were available in this window and both were fitted.",
+        "length-only": "Length only — the self-similarity half has nothing to say for this window, so there is no second opinion on the verdict.",
+        "none": "No basis — the length half could not be fitted, so the verdict rests on nothing."
+      },
+      "series": {
+        "length": "post length",
+        "selfSimilarity": "self-similarity"
+      },
+      "unit": {
+        "characters": "characters, a fall = shorter posts",
+        "cosine-similarity": "cosine sim, a rise = more repetitive"
+      },
+      "trend": {
+        "down": "falling",
+        "flat": "flat",
+        "up": "rising"
+      },
+      "len": {
+        "fitted": "{{first}} → {{last}} characters over {{span}} days · {{trend}} {{slope}} chars/day (± {{stderr}}) · r² {{r2}} · n {{n}}",
+        "insufficient": "Only {{n}} posts with text here — a trend needs at least {{min}}.",
+        "noTimeSpan": "All {{n}} posts share one timestamp; there is no time span to fit a line through."
+      },
+      "sim": {
+        "fitted": "{{firstSim}} → {{lastSim}} over {{span}} days · {{trend}} {{slope}}/day (± {{stderr}}) · r² {{r2}} · n {{n}}",
+        "insufficient": "Only {{n}} self-similarity samples here — only rounds that actually post record one — and a trend needs at least {{min}}.",
+        "noTimeSpan": "All {{n}} samples share one timestamp; there is no time span to fit a line through."
+      },
+      "predates": "Nothing could have been recorded: the act path only began sampling self-similarity on {{from}}, and this window ends {{until}}. Normal for any historical window — not a gap in this account.",
+      "footer": "Window {{since}} → {{until}} · self-similarity can only exist from {{from}} · no significance test is applied: the one collapse this can be validated against does not clear a 95% test at n=8, so the standard error ships instead of a gate."
     }
   }
 }

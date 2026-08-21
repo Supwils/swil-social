@@ -234,7 +234,7 @@ def _emit(resources: Resources, username: str, event: LabEvent) -> None:
         )
 
 
-def _drift_metrics(measurement: DriftMeasurement) -> dict[str, Any]:
+def _drift_metrics(measurement: DriftMeasurement, settings: Settings) -> dict[str, Any]:
     """The calibration series' wire payload: the measurement, FLATTENED.
 
     `agentEventIngest` declares `metrics` as
@@ -257,6 +257,31 @@ def _drift_metrics(measurement: DriftMeasurement) -> dict[str, Any]:
     and one that needs the deploy history to read -- `aspectValues` is
     `None` both when the mode never asks for aspects and when the aspect
     pipeline failed, and only the mode separates the two.
+
+    THE FOUR THRESHOLDS RIDE ALONG (2026-08-20 -- the drift-countdown plan's
+    task 1), and they come from `settings`, never from a literal here. The
+    gate rejects a dream when a similarity falls under a threshold, and the
+    similarity's distance from a FIXED anchor only grows, so the series
+    recorded above is a countdown to a permanent rejection -- but only if
+    the reader knows which line it is counting down TO. A consumer that
+    keeps its own copy of the numbers silently reinterprets every historical
+    point the moment somebody retunes `agent/.env`: the same 0.71 that was
+    inside the band in July reads as outside it in September, and nothing
+    anywhere says the ruler moved. Recorded BESIDE the measurement, the
+    point stays readable forever.
+
+    This is the only copy that is allowed to move. `config.py:34-37` holds
+    the values; `client/src/features/lab/AgentDetail.tsx:22` holds a third,
+    hardcoded one that a later task of the same plan deletes in favour of
+    these keys. Do not add a fourth -- in particular, the server must NOT
+    re-declare them: it reads them off the event.
+
+    CHANGE POINT. Every `drift measured` event filed before 2026-08-20
+    carries no `thScalar`/`thValues`/`thStyle`/`thTopic` at all. A consumer
+    fitting a projection over that stretch has no threshold to project
+    against and must SAY so rather than substituting today's value, which
+    would be exactly the silent reinterpretation the previous paragraph is
+    about.
     """
     aspects = measurement.aspects
     return {
@@ -267,6 +292,10 @@ def _drift_metrics(measurement: DriftMeasurement) -> dict[str, Any]:
         "aspectTopic": None if aspects is None else aspects.topic,
         "embedderOk": measurement.embedder_ok,
         "driftMode": measurement.mode,
+        "thScalar": settings.drift_threshold,
+        "thValues": settings.drift_threshold_values,
+        "thStyle": settings.drift_threshold_style,
+        "thTopic": settings.drift_threshold_topic,
     }
 
 
@@ -710,7 +739,7 @@ def gate_step(
             phase="dream",
             outcome="success",
             summary=_DRIFT_MEASURED_SUMMARY,
-            metrics=_drift_metrics(outcome.measurement),
+            metrics=_drift_metrics(outcome.measurement, settings),
         ),
     )
     # `DreamVerdict.embedder_unreachable`, NOT a comparison against

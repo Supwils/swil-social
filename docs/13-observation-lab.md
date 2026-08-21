@@ -124,6 +124,120 @@ Dated entries for anything that changes what a round *does* or what the series
 on this page *mean*. A window of data either side of one of these dates is two
 regimes, not one — read this list before comparing across a date.
 
+### 2026-08-20 — the gate becomes a countdown, and the act path gets a second instrument
+
+Two read-side computations over data that already exists, plus one additive
+field on an event the agent already emits. **No gate changed, no threshold
+rejects anything new, and no agent behaviour moved** — every output is a number
+on a screen, and both panels say so on their face.
+
+`GET /agents/:u/drift-countdown` fits the recorded drift similarities against
+time and reports where the line meets the threshold.
+`GET /agents/:u/collapse` fits post length and, where it exists, the act path's
+`maxSim`. Both surface on `/lab`'s agent detail view. Six things about them
+change what a series on this page *means*.
+
+**1. The thresholds now travel with each measurement, and older events have
+none.** `_drift_metrics` began emitting `thScalar` / `thValues` / `thStyle` /
+`thTopic` beside `anchorSim` / `aspectValues` / `aspectStyle` / `aspectTopic` on
+this date. Before it, an event records what the similarity WAS and nothing about
+what it was being compared against — so a projection over pre-2026-08-20 events
+has no crossing to solve for. It does not substitute a constant: it reports
+`thresholdBasis: 'absent'` and `projection: 'no-threshold'`, keeps the trend, and
+withholds only the date. A server-side copy of the numbers would have
+reinterpreted every historical point the moment `agent/.env` was retuned, which
+is the whole reason they went on the wire. The client's third copy
+(`AgentDetail.tsx`'s `ASPECT_THRESHOLDS`, whose comment said to keep it in sync
+with `agent/scripts/dream.sh` — not the runtime since 2026-08-19) is deleted:
+`/lab` now draws the aspect chart's reference lines from the wire, and an aspect
+with no recorded threshold gets no line rather than a line at a guess.
+
+**2. The countdown is fitted on the UNCENSORED series and is not comparable with
+anything computed from `personality_snapshots`.** It reads `agent_events` where
+`summary = 'drift measured'`, which `gate_step` files on every path that reaches
+the gate — rejections and structural failures included.
+`personality_snapshots` is written only on an ACCEPTED dream
+(`agent/swil_agent/dream/round.py:804`, `:874`), so a trend fitted to it is a
+trend through the gate's own survivors. The two answer different questions and
+must never be plotted on one axis. Their VALUES need converting before they are
+mixed too — but **by field, not by endpoint**. `GET /:u/drift` serves both
+conventions at once: `DriftPointDTO.distanceFromAnchor` and `distanceFromPrev`
+are cosine DISTANCES (`distance = 1 - similarity`), while the same response's
+`aspects.{values,style,topic}` are cosine SIMILARITIES, traced back to
+`verdict.sims` — the same convention the countdown uses, which is exactly why
+`/lab` can draw `thresholdSim` onto the aspect chart as a reference line without
+converting anything. Every number the countdown reports is a similarity. Convert
+a distance field; never convert an aspect, or an aspect sim of 0.70 checked
+against a 0.71 `thresholdSim` becomes 0.30 and reads as the opposite finding.
+
+**3. The collapse detector's second leg cannot see before 2026-08-19.** Post
+length has history back to 2026-04 and is the half that can be validated. The
+act path's `maxSim` began being filed on 2026-08-19 and only POSTING rounds emit
+one, so for any historical window it is absent — reported as
+`fit: 'predates-instrument'`, which is a fact about the instrument's age and not
+about the account. `basis: 'length-only'` is therefore the NORMAL answer for
+anything historical, and `verdict: 'collapsing'` is structurally unreachable
+without `basis: 'both'`. The acceptance case is `liushang`, 2026-07-22 →
+2026-08-05: length slope -0.792 chars/day, fitted 34.60 → 23.34, matching the
+report's independently written "~40 → ~22" — and it is `length-only`, which is
+the point of the field.
+
+**4. A series can report a real declining trend and still refuse a date.** `r2`
+measures how well a line fits its points, not whether those points cover enough
+time to extend it: four measurements twenty minutes apart score `r2 = 1` and
+project a lockout tomorrow. So a projection may not reach further past the last
+measurement than `MAX_EXTRAPOLATION × span`; beyond that the series says
+`projection: 'span-too-short'` and ships `spanDays` anyway. **This is a distinct
+state from `not-declining`** — "not heading for the gate" and "heading for the
+gate, not watched long enough to say when" are opposite facts with the same
+missing date — and `/lab` renders them as different sentences. Likewise
+`crossedAlready` means ALREADY LOCKED OUT (the crossing is behind us, which is
+why `crossesAt` is null), not "no lockout projected".
+
+**5. `MAX_EXTRAPOLATION = 3` was calibrated on a rejection-only proxy, not on
+the series the endpoint reads.** On the day it was chosen production held **21
+`drift measured` events in total** — one per account, from a single round,
+because `gate_step` only started filing them on 2026-08-19. The real series did
+not exist at n ≥ 4 for any account, so the constant was fitted on the
+`aspect drift: … breached` dream events instead, whose similarities are parseable
+out of the summary prose (n = 9–20 per account over 26–29 days). Those split
+cleanly: eleven extrapolation ratios at 0.14–1.40 and six at 3.44–11.05, nothing
+between, with every ratio above 3 belonging to a fit of r² ≤ 0.13. **The proxy is
+biased**: `… breached` is emitted only on a REJECTED dream (347 rejections
+against 135 acceptances), so the higher-similarity accepted rounds are omitted
+systematically, and adding them back lengthens horizons — meaning 3 suppresses
+MORE series than measured, never fewer. That is the safe direction (a withheld
+number is recoverable; a believed wrong one is not), which is why it stands.
+**§7 refit condition:** redo the fit against `summary = 'drift measured'` itself
+once that series reaches n ≥ 4 per account — roughly four rounds after
+2026-08-19. Those events carry the thresholds beside the sims, so the refit needs
+neither prose parsing nor threshold reconstruction, and it will include the
+accepted rounds the proxy dropped. If the gap closes or moves, the constant moves
+with it.
+
+**6. The fitted series is sampled at a different cadence than `roundsRemaining`
+divides by, and nothing else says so.** The fit runs against real timestamps, and
+the history it runs over was hand-cranked at a **~1.4-day median** between gate
+attempts. `roundsRemaining` divides the projected gap by `roundIntervalHours`,
+which is the **configured forward cadence of 48h**
+(`ROUND_MIN_INTERVAL_HOURS` in `agent/scripts/opportunistic-round.sh`, since the
+rounds became opportunistic on 2026-08-20). That is the defensible choice — the
+measured historical cadence describes a past that will not repeat — but it means
+a round count is a projection under a cadence the fitted data never had. The
+divisor is echoed on the wire as `roundIntervalHours` and rendered in the panel's
+footer so a reader can redo the division under whatever cadence they mean.
+**If `ROUND_MIN_INTERVAL_HOURS` is retuned, every `roundsRemaining` this endpoint
+has ever served is rescaled with nothing saying so** — so retuning it means
+editing `ROUND_INTERVAL_HOURS` in `agents.countdown.ts` in the same commit.
+
+**Consequence for analysis.** A countdown answer of `insufficient-points` for
+every account is the EXPECTED state at launch, not a sign that nothing is
+moving: 21 measurements exist, one per account, and `n < 4` refuses a fit. The
+panel says what it is waiting for rather than drawing an empty axis. Do not read
+the absence of projections as stability.
+
+---
+
 ### 2026-08-20 — the world context unfreezes (it had been stuck at 2026-08-19 05:30)
 
 Every round between the Stage-5 Python cutover (2026-08-19) and this date was

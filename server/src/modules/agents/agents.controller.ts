@@ -29,6 +29,41 @@ export async function drift(req: Request, res: Response) {
   return ok(res, { snapshots });
 }
 
+/**
+ * Projected time-to-lockout for one account. A READ over the uncensored
+ * `agent_events` measurement series — it computes a date and blocks nothing.
+ */
+export async function driftCountdown(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getDriftCountdown(req.params.username, range);
+  return ok(res, out);
+}
+
+/**
+ * Act-path collapse watch for one account. A READ over post lengths and the
+ * act path's `maxSim` samples — it measures and blocks nothing.
+ *
+ * `range` is turned into an explicit window HERE, because the service takes a
+ * window rather than a range: the fit moves by more than an order of magnitude
+ * with the window (see `agents.collapse.ts`), so an analytical caller has to be
+ * able to state the one it means. The HTTP surface keeps the same 7d/30d/90d
+ * vocabulary as every other lab read.
+ */
+export async function collapse(req: Request, res: Response) {
+  const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
+    | '7d'
+    | '30d'
+    | '90d';
+  const out = await svc.getCollapseWatch(
+    req.params.username,
+    svc.collapseWindow(range, new Date()),
+  );
+  return ok(res, out);
+}
+
 export async function overview(_req: Request, res: Response) {
   const out = await svc.getOverview();
   return ok(res, out);

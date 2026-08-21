@@ -9,6 +9,8 @@ export * from './agents.types';
 export * from './agents.shared';
 export * from './agents.roster';
 export * from './agents.drift';
+export * from './agents.countdown';
+export * from './agents.collapse';
 export * from './agents.events';
 export * from './agents.population';
 export * from './agents.graph';

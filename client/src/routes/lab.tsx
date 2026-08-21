@@ -164,7 +164,11 @@ export default function LabRoute() {
           <Overview overviewQ={overviewQ} agents={agentsQ.data ?? []} />
           <HomogenizationPanel range={range} />
           {focusedUsername && (
-            <AgentDetail username={focusedUsername} onClose={() => setFocused(null)} />
+            <AgentDetail
+              username={focusedUsername}
+              range={range}
+              onClose={() => setFocused(null)}
+            />
           )}
           <div className={s.cohortRow}>
             <div className={s.rangeControl} role="group" aria-label={t('lab.cohort.label')}>

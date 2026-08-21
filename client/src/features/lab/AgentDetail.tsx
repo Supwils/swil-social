@@ -6,22 +6,41 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Link } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Card, Skeleton } from '@/components/primitives';
 import { getAgentDrift, getAgentEvents, getAgentFidelity, getAgentStats, getInfluences } from '@/api/agents';
 import type { AgentEventDTO } from '@/api/types';
+import { CollapsePanel } from './CollapsePanel';
+import { DriftCountdownPanel, aspectThresholdsFrom, useDriftCountdown } from './DriftCountdownPanel';
 import s from '@/routes/lab.module.css';
 
 /**
- * Per-aspect reject thresholds the dream gate actually enforces.
- * Mirrors DRIFT_THRESHOLD_{VALUES,STYLE,TOPIC} in agent/scripts/dream.sh
- * (symmetric, calibrated 2026-07-03). Drawn as reference lines so a reader can
- * see which aspect a rejection breached.
+ * `range` reaches this component for the two panels at the bottom ONLY, and
+ * deliberately so. The charts above are pinned to 30 days by their own labels
+ * ("Daily activity (last 30 days)", "Attention it got · 30d"); the countdown and
+ * the collapse watch instead honour the page's range control, because for them
+ * the window is not a display preference — measured on `liushang`'s real posts,
+ * the same collapse reads slope -0.792 ch/day over its own 14 days, -0.046 over
+ * 30 (invisible), and +0.761 over 7 (the sign flips).
+ *
+ * There is no `ASPECT_THRESHOLDS` constant here any more. It was a third copy of
+ * the drift thresholds whose comment said to keep it in sync with
+ * `agent/scripts/dream.sh` — which stopped being the runtime on 2026-08-19. The
+ * thresholds now travel beside each measurement and are read off the wire by
+ * `aspectThresholdsFrom`; an aspect whose newest measurement carried none gets
+ * no reference line rather than a line drawn at a guess.
  */
-const ASPECT_THRESHOLDS = { values: 0.63, style: 0.72, topic: 0.71 } as const;
-
-export function AgentDetail({ username, onClose }: { username: string; onClose: () => void }) {
+export function AgentDetail({
+  username,
+  range,
+  onClose,
+}: {
+  username: string;
+  range: '7d' | '30d' | '90d';
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const statsQ = useQuery({
     queryKey: ['agent-stats', username, '30d'],
@@ -53,6 +72,11 @@ export function AgentDetail({ username, onClose }: { username: string; onClose: 
     queryFn: () => getInfluences(username, '30d'),
     staleTime: 60_000,
   });
+  // Same query key as `DriftCountdownPanel` below, so React Query serves both
+  // from one request: the panel needs the projection, the aspect chart needs
+  // only the thresholds that travel with it.
+  const countdownQ = useDriftCountdown(username, range);
+  const aspectThresholds = aspectThresholdsFrom(countdownQ.data);
   const partners = influencesQ.data?.partners ?? [];
   const totalActions = (influencesQ.data?.activity ?? []).reduce((sum, p) => sum + p.actions, 0);
 
@@ -255,6 +279,20 @@ export function AgentDetail({ username, onClose }: { username: string; onClose: 
             </span>
           </div>
           <p className={s.blockSub}>{t('lab.detail.aspectSub')}</p>
+          {/*
+            The thresholds as TEXT as well as as reference lines. They are the
+            numbers the gate actually used on the newest measurement, and a
+            reader should be able to read them off without measuring a dashed
+            line — especially since an aspect with none recorded has no line at
+            all, which is indistinguishable from a line off the top of the axis.
+          */}
+          <p className={s.blockSub}>
+            {t('lab.detail.aspectThresholds', {
+              values: fmtThreshold(aspectThresholds.values, t),
+              style: fmtThreshold(aspectThresholds.style, t),
+              topic: fmtThreshold(aspectThresholds.topic, t),
+            })}
+          </p>
           <div className={s.chartHeight}>
             {aspectSeries.length < 2 ? (
               <div className={s.emptyState}>{t('lab.detail.aspectEmpty')}</div>
@@ -273,16 +311,23 @@ export function AgentDetail({ username, onClose }: { username: string; onClose: 
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   {/*
-                    Reject thresholds, mirroring dream.sh. These were 0.88/0.80/0.70
-                    — the values from the ORIGINAL "guard values strictest" design,
-                    which the 2026-07-03 shadow round refuted. The live gate is
-                    symmetric (values 0.63 / style 0.72 / topic 0.71), so the old
-                    lines drew accepted dreams below a "reject" marker.
-                    Keep in sync with DRIFT_THRESHOLD_* in agent/scripts/dream.sh.
+                    Reject thresholds, read off the newest measurement rather than
+                    from a constant. A hardcoded copy here drew the ORIGINAL
+                    "guard values strictest" values (0.88/0.80/0.70), which the
+                    2026-07-03 calibration refuted, and then a second hand-synced
+                    copy of the symmetric ones. Both were wrong the moment
+                    `agent/.env` moved. An aspect with no recorded threshold gets
+                    no line — a missing line is honest, a guessed one is not.
                   */}
-                  <ReferenceLine y={ASPECT_THRESHOLDS.values} stroke="var(--color-accent)" strokeDasharray="4 4" strokeOpacity={0.5} />
-                  <ReferenceLine y={ASPECT_THRESHOLDS.style} stroke="#e0a458" strokeDasharray="4 4" strokeOpacity={0.5} />
-                  <ReferenceLine y={ASPECT_THRESHOLDS.topic} stroke="var(--color-text-muted)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  {aspectThresholds.values !== null && (
+                    <ReferenceLine y={aspectThresholds.values} stroke="var(--color-accent)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  )}
+                  {aspectThresholds.style !== null && (
+                    <ReferenceLine y={aspectThresholds.style} stroke="#e0a458" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  )}
+                  {aspectThresholds.topic !== null && (
+                    <ReferenceLine y={aspectThresholds.topic} stroke="var(--color-text-muted)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                  )}
                   <Line
                     type="monotone"
                     dataKey="values"
@@ -316,6 +361,9 @@ export function AgentDetail({ username, onClose }: { username: string; onClose: 
           </div>
         </section>
       )}
+
+      <DriftCountdownPanel username={username} range={range} />
+      <CollapsePanel username={username} range={range} />
 
       {driftPoints.some((p) => p.diffNarrative) && (
         <section className={s.chartBlock}>
@@ -565,6 +613,11 @@ export function AgentDetail({ username, onClose }: { username: string; onClose: 
       </section>
     </Card>
   );
+}
+
+/** A recorded threshold, or the reason there is none. Never a guessed number. */
+function fmtThreshold(value: number | null, t: TFunction): string {
+  return value === null ? t('lab.countdown.thresholdAbsent') : value.toFixed(3);
 }
 
 function EventTimeline({ events, loading }: { events: AgentEventDTO[]; loading: boolean }) {

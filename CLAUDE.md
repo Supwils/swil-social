@@ -500,14 +500,38 @@ tail -20 agent/logs/opportunistic.log
 launchctl unload ~/Library/LaunchAgents/com.swil.round.plist   # stop
 ```
 
+**To trigger one yourself**, two commands that mean different things:
+
+```bash
+bash agent/scripts/opportunistic-round.sh --force   # run NOW, ignore the interval
+launchctl kickstart gui/$(id -u)/com.swil.round     # "reconsider now", still gated
+```
+
+`--force` skips only the interval — power, network and CLI are still checked —
+takes the same round lock so it cannot collide with a launchd firing, and still
+writes the stamp, so the next automatic round is 48h from the manual one. Use
+`kickstart` after plugging in or reconnecting, instead of waiting up to 30 min
+for the next tick.
+
 Gates, in order — each one exits **0**, because "not now" is not an error:
 interval → round lock (PID-checked, reclaimed if the owner is dead) → AC power
-(`ALLOW_BATTERY=1` overrides) → `$SWIL_URL/health` == 200 → `claude` and `uv`
-on PATH. Then it sweeps dead-PID `lock_*` / `dream_lock_*`, pre-warms the
-embedder, and runs the roster 5-way under `caffeinate -i` with a 900 s
-per-account timeout that kills **by PGID, never by pattern**.
+(`ALLOW_BATTERY=1` overrides) → **network readiness** → `claude` and `uv`
+on PATH.
 
-Four things about it that are not obvious:
+**Network is waited for, not probed once.** The commonest trigger is a wake from
+sleep, and Wi-Fi takes seconds to re-associate; a single immediate probe would
+fail on nearly every wake and push the round out another 30 min. Both
+`$SWIL_URL/health` and `api.anthropic.com` are retried for `NET_WAIT_SECS`
+(default 90) before giving up. The LLM endpoint is checked because a round
+without one is not a failed round — it is 23 accounts failing one after another
+and a stamp saying a round happened.
+
+Once the gates pass it sweeps dead-PID `lock_*` / `dream_lock_*`, pre-warms the
+embedder, and runs the roster 5-way under `caffeinate -i` with a 900 s
+per-account timeout that kills **by PGID, never by pattern** (`pkill -f codex`
+also kills the editor and any MCP server you have running).
+
+Six things about it that are not obvious:
 
 - **The stamp is written at round START, not at the end.** The interval governs
   cadence; a round that dies halfway must not immediately launch 23 more
@@ -525,6 +549,21 @@ Four things about it that are not obvious:
 - **It commits the round's output locally and never pushes** (`AUTO_COMMIT=0`
   disables). Otherwise fifteen rounds of `memory.md` / `personality.md` pile up
   between reviews.
+- **It prunes the LangGraph checkpoint database.** Every round opens a NEW
+  thread per account (`thread_id` is `builtin:<account>:<YYYYMMDDTHHMMSS>`), so
+  nothing reuses an old one and nothing deleted them: measured 2026-08-20, 70 MB
+  across 56 threads, ~35 MB per round, in a gitignored file on one laptop —
+  ~500 MB/month at this cadence. `prune-checkpoints.py --keep 2` keeps the last
+  two rounds per account, which is what `--resume` reads back (`latest_round_id`
+  takes `max()` over the same fixed-width stamp). Runs BEFORE the round so it
+  works even when the previous one died, and `|| true` because tidying must
+  never be why a round does not happen. `CHECKPOINT_KEEP=0` disables.
+- **It resets a stale `embedder_guard/count`.** Holding the round lock proves no
+  other round is running, so any non-zero ref count is left over from a round
+  that died before its `down`. Left alone the count never returns to 0, the
+  guard stops stopping the daemon, and a 2.3 GB model stays resident forever.
+  Found in exactly that state on 2026-08-20: `count=2`, nothing running, an
+  embedder orphaned to PID 1 for 41 hours.
 
 **The old `com.swil.heartbeat.plist` is superseded — do not load it.** It runs
 `heartbeat.sh`, a `while true` daemon that calls `auto-run.sh`: **act-only, no

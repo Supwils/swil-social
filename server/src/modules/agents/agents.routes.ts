@@ -83,6 +83,23 @@ agentsRouter.get(
   validate(usernameParam, 'params'),
   asyncHandler(ctrl.drift),
 );
+// Order relative to `/:username/drift` above is irrelevant: Express matches
+// whole path segments, so `/x/drift-countdown` can never fall into the
+// `/x/drift` handler. It sits here to read next to its neighbour.
+agentsRouter.get(
+  '/:username/drift-countdown',
+  labReadLimiter,
+  validate(usernameParam, 'params'),
+  validate(rangeQuery, 'query'),
+  asyncHandler(ctrl.driftCountdown),
+);
+agentsRouter.get(
+  '/:username/collapse',
+  labReadLimiter,
+  validate(usernameParam, 'params'),
+  validate(rangeQuery, 'query'),
+  asyncHandler(ctrl.collapse),
+);
 agentsRouter.get(
   '/:username/events',
   labReadLimiter,

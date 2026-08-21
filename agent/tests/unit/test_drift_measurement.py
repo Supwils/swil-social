@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +47,7 @@ from swil_agent.api.dto import LabEvent
 from swil_agent.config import Settings
 from swil_agent.dream.distill import anchor_cache_key
 from swil_agent.dream.gate import evaluate_candidate
-from swil_agent.dream.round import gate_step
+from swil_agent.dream.round import _DRIFT_MEASURED_SUMMARY, gate_step
 from swil_agent.embedder.client import EmbedderUnavailable
 from swil_agent.models import AspectSims, Persona
 
@@ -207,6 +208,29 @@ def _persona(directory: Path) -> Persona:
 
 def _drift_events(resources: FakeResources) -> list[LabEvent]:
     return [e for e in resources.lab_events if e.summary == "drift measured"]
+
+
+# ── the ruler, tuned away from every default ────────────────────────────────
+#
+# The four drift thresholds ride on the wire beside the measurement (task 1 of
+# the 2026-08-20 drift-countdown plan).  `Settings()`'s own defaults are
+# 0.82 / 0.63 / 0.72 / 0.71, and a fixture that used them could not tell
+# `settings.drift_threshold_style` apart from a hardcoded `0.72` -- standing
+# constraint §4, which this plan has already paid for five times.  So every
+# value here is (a) different from its own default and (b) different from the
+# other three, which additionally makes the one-word slip between four adjacent
+# same-typed fields (`"thTopic": settings.drift_threshold_style`) observable.
+#
+# `drift_mode="scalar"` with a threshold of 0.11 accepts the pinned fixture's
+# 0.99 anchor similarity, so tuning the ruler does not change any VERDICT these
+# tests assert on -- only what is recorded about it.
+_TUNED = Settings(
+    drift_mode="scalar",
+    drift_threshold=0.11,
+    drift_threshold_values=0.22,
+    drift_threshold_style=0.33,
+    drift_threshold_topic=0.44,
+)
 
 
 # ── the three named tests ───────────────────────────────────────────────────
@@ -530,7 +554,7 @@ def test_gate_step_posts_the_measurement_as_a_lab_event(tmp_path: Path) -> None:
         resources=resources,
         embedder=_embedder(),
         runner=ScriptedRunner([]),
-        settings=Settings(drift_mode="scalar"),
+        settings=_TUNED,
     )
 
     events = _drift_events(resources)
@@ -545,6 +569,13 @@ def test_gate_step_posts_the_measurement_as_a_lab_event(tmp_path: Path) -> None:
         "aspectTopic": None,
         "embedderOk": True,
         "driftMode": "scalar",
+        # The gate's own ruler, recorded beside the reading it produced --
+        # `_TUNED`'s four values, none of them a `Settings()` default, so a
+        # literal in `_drift_metrics` cannot satisfy this line.
+        "thScalar": pytest.approx(0.11),
+        "thValues": pytest.approx(0.22),
+        "thStyle": pytest.approx(0.33),
+        "thTopic": pytest.approx(0.44),
     }
 
 
@@ -614,6 +645,23 @@ def test_the_metrics_payload_is_flat_and_wire_legal(tmp_path: Path) -> None:
     assert metrics["aspectStyle"] == pytest.approx(0.80)
     assert metrics["aspectTopic"] == pytest.approx(0.75)
     assert metrics["driftMode"] == "aspect"
+    # The whole key set, not a subset: a payload that grew a `thresholds`
+    # sub-object would still satisfy every `metrics[...]` line above (the
+    # existing keys are untouched), and only the type sweep below would catch
+    # it. Pinning the set catches it here, and names the offending key.
+    assert set(metrics) == {
+        "anchorSim",
+        "stepSim",
+        "aspectValues",
+        "aspectStyle",
+        "aspectTopic",
+        "embedderOk",
+        "driftMode",
+        "thScalar",
+        "thValues",
+        "thStyle",
+        "thTopic",
+    }
     for key, value in metrics.items():
         assert isinstance(value, str | float | int | bool | type(None)), (
             f"metrics[{key!r}] is {type(value).__name__}, which agentEventIngest rejects"
@@ -665,3 +713,151 @@ def test_an_events_outage_does_not_change_the_gates_outcome(tmp_path: Path) -> N
 
     assert outcome.verdict.accepted is True
     assert outcome.measurement.step_sim == pytest.approx(_EXPECTED_STEP_SIM)
+
+
+# ── the thresholds ride along ───────────────────────────────────────────────
+#
+# Why they are on the wire at all: the gate rejects a dream when a similarity
+# falls under a threshold, and similarity to a FIXED anchor only decays -- so
+# the series above is a countdown, and a countdown is unreadable without the
+# line it counts down to. A consumer holding its own copy of the four numbers
+# silently reinterprets every historical point the moment `agent/.env` is
+# retuned. These tests pin that the recorded copy comes from the `Settings`
+# the gate was actually run with.
+
+
+def test_the_event_carries_the_four_thresholds_the_gate_was_run_with(
+    tmp_path: Path,
+) -> None:
+    """Threading, not returning -- standing constraint §2: for this kind of
+    code the ARGUMENT is the behaviour, so the fixture tunes all four
+    thresholds away from their defaults and away from each other.
+
+    Mutations this kills: any of the four spelled as a literal (`0.82` etc.,
+    which is what a `Settings()` default fixture would have accepted); any of
+    the four wired to a neighbouring field (`thTopic: drift_threshold_style`);
+    and `_drift_metrics(measurement, Settings())` at the call site, which
+    would report the deployed defaults for a round that ran under an
+    operator's override.
+    """
+    directory = _pinned_account(tmp_path)
+    resources = FakeResources()
+
+    gate_step(
+        persona=_persona(directory),
+        candidate_text=CANDIDATE,
+        resources=resources,
+        embedder=_embedder(),
+        runner=ScriptedRunner([]),
+        settings=_TUNED,
+    )
+
+    metrics = _drift_events(resources)[0].metrics
+    assert metrics["thScalar"] == pytest.approx(_TUNED.drift_threshold)
+    assert metrics["thValues"] == pytest.approx(_TUNED.drift_threshold_values)
+    assert metrics["thStyle"] == pytest.approx(_TUNED.drift_threshold_style)
+    assert metrics["thTopic"] == pytest.approx(_TUNED.drift_threshold_topic)
+    # Re-stated as raw numbers as well: the four assertions above compare
+    # against the same object the code reads, so a `Settings` whose fields
+    # were themselves wrong would satisfy them. These are the values the
+    # fixture literally asked for.
+    assert (
+        metrics["thScalar"],
+        metrics["thValues"],
+        metrics["thStyle"],
+        metrics["thTopic"],
+    ) == (
+        pytest.approx(0.11),
+        pytest.approx(0.22),
+        pytest.approx(0.33),
+        pytest.approx(0.44),
+    )
+
+
+def test_the_thresholds_are_recorded_even_when_nothing_was_measured(
+    tmp_path: Path,
+) -> None:
+    """A structurally rejected dream never reaches an embed, so all three
+    similarities are `None` -- and the thresholds must still be there.
+
+    That row is not empty: it says "on this date, under these four
+    thresholds, this account produced a candidate that never got as far as
+    being measured". Attaching the thresholds only where a similarity exists
+    (`if measurement.anchor_sim is not None`) is the tidy-looking mutation
+    that re-censors exactly the tail the calibration series was created to
+    keep, and it would leave every other assertion in this file green.
+    """
+    directory = _pinned_account(tmp_path)
+    resources = FakeResources()
+    bad = CANDIDATE.replace("- **Username:** zenith", "- **Username:** someone_else")
+
+    gate_step(
+        persona=_persona(directory),
+        candidate_text=bad,
+        resources=resources,
+        embedder=_embedder(),
+        runner=ScriptedRunner([]),
+        settings=_TUNED,
+    )
+
+    metrics = _drift_events(resources)[0].metrics
+    # Precondition: this really is the path where nothing was measured.
+    assert metrics["anchorSim"] is None
+    assert metrics["stepSim"] is None
+    assert metrics["aspectValues"] is None
+    # ... and the ruler is on the row anyway.
+    assert metrics["thScalar"] == pytest.approx(0.11)
+    assert metrics["thValues"] == pytest.approx(0.22)
+    assert metrics["thStyle"] == pytest.approx(0.33)
+    assert metrics["thTopic"] == pytest.approx(0.44)
+
+
+# ── the two-language contract ───────────────────────────────────────────────
+#
+# `_DRIFT_MEASURED_SUMMARY` is prose, and this module's own comment tells
+# consumers not to key on it.  One consumer has to anyway:
+# `server/src/modules/agents/agents.countdown.ts` narrows its SQL on
+# `summary = 'drift measured'` because nothing else in `agent_events` is
+# indexable for the calibration series.  Renaming the constant here reddens
+# THIS suite loudly -- which is exactly the trap, because a contributor who
+# reads only a Python failure updates the expected string and moves on, while
+# the endpoint quietly starts answering `n: 0` for every account, a result
+# that reads like "no rounds yet" rather than like a defect.  So the pin below
+# reaches across the language boundary, and its mirror in
+# `server/src/modules/agents/agents.countdown.test.ts` reaches back.
+
+_COUNTDOWN_TS = (
+    Path(__file__).resolve().parents[3] / "server/src/modules/agents/agents.countdown.ts"
+)
+
+
+def _executable_ts(source: str) -> str:
+    """`source` with its comment LINES dropped (standing constraint §14).
+
+    The literal appears in that file's prose too -- the module header explains
+    which `agent_events` rows the query selects -- so a guard that greps the
+    raw text can be satisfied by a comment while the real constant is gone.
+    """
+    return "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith(("//", "*", "/*"))
+    )
+
+
+def test_the_summary_the_server_queries_on_is_the_summary_this_module_files() -> None:
+    """The calibration event's summary is a contract with the TypeScript side.
+
+    Both halves are asserted here: the literal this module files the event
+    under, and the literal the countdown endpoint selects on.  They must be
+    the same string, and a change to either one alone must fail.
+    """
+    assert _DRIFT_MEASURED_SUMMARY == "drift measured"
+
+    executable = _executable_ts(_COUNTDOWN_TS.read_text(encoding="utf-8"))
+    pattern = rf"^(?:export )?const \w+ = '{re.escape(_DRIFT_MEASURED_SUMMARY)}';$"
+    assert re.search(pattern, executable, re.MULTILINE), (
+        f"{_COUNTDOWN_TS.name} no longer selects on "
+        f'"{_DRIFT_MEASURED_SUMMARY}". That endpoint fits its trend to the rows '
+        "gate_step files under this summary: if the rename was deliberate, change "
+        "DRIFT_MEASURED_SUMMARY there in the same commit -- otherwise the drift "
+        "countdown silently reports n: 0 for every account."
+    )

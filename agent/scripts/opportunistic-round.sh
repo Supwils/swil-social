@@ -14,10 +14,22 @@
 #   bash agent/scripts/opportunistic-round.sh            # the gated run
 #   bash agent/scripts/opportunistic-round.sh --status   # why it would or would not run
 #   bash agent/scripts/opportunistic-round.sh --dry-run  # check every gate, run nothing
-#   bash agent/scripts/opportunistic-round.sh --force    # ignore the interval gate only
+#   bash agent/scripts/opportunistic-round.sh --force    # RUN NOW: skip the interval gate
+#                                                        # only -- power/network/CLI still checked
+#
+# Triggering it by hand, two ways with different meanings:
+#   bash agent/scripts/opportunistic-round.sh --force
+#       runs a round NOW in your terminal, whatever the interval says. It still
+#       takes the round lock, so it cannot collide with a launchd firing, and it
+#       still stamps -- so the next automatic round is 48h from this one, which
+#       is what you want: a manual round is a round.
+#   launchctl kickstart gui/$(id -u)/com.swil.round
+#       asks launchd to fire the job right now, still interval-gated. Use it
+#       after plugging in or reconnecting to say "reconsider now" rather than
+#       waiting up to 30 min for the next tick.
 #
 # Env: ROUND_MIN_INTERVAL_HOURS=48  PARALLEL=5  ACCOUNT_TIMEOUT=900
-#      ALLOW_BATTERY=0  AUTO_COMMIT=1
+#      NET_WAIT_SECS=90  ALLOW_BATTERY=0  AUTO_COMMIT=1
 #
 # NOT `set -e`. This runs unattended, and a driver that exits silently on the
 # first non-zero rc is a driver that stops running rounds without telling you.
@@ -131,10 +143,36 @@ if [[ "$ALLOW_BATTERY" != "1" ]]; then
     || fail_precondition "on battery (a full round is ~30 min; set ALLOW_BATTERY=1 to override)"
 fi
 
-# Probe the URL the agents will actually use. Probing localhost reports 000 and
-# reads as "the API is down" while SWIL_URL points at production.
-code=$(curl -s -o /dev/null -m 20 -w "%{http_code}" "$SWIL_URL/health" 2>/dev/null)
-[[ "$code" == "200" ]] || fail_precondition "API not healthy at $SWIL_URL/health (got ${code:-000})"
+# Network readiness, with retries rather than one probe. This job's most common
+# trigger is a wake from sleep, and Wi-Fi takes seconds to re-associate after
+# one. A single immediate probe would fail on almost every wake, skip, and then
+# wait a full StartInterval -- so the machine being "available" would reliably
+# NOT produce a round. Bounded: give up after NET_WAIT_SECS and let the next
+# firing try, because a hung driver is worse than a missed slot.
+NET_WAIT_SECS="${NET_WAIT_SECS:-90}"
+wait_for() {                       # wait_for <label> <url> <accept-any-http>
+  local label="$1" url="$2" any="$3" waited=0 code=""
+  while :; do
+    code=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "$url" 2>/dev/null)
+    if [[ "$any" == "any" ]]; then
+      [[ -n "$code" && "$code" != "000" ]] && { [[ "$waited" -gt 0 ]] && log "$label reachable after ${waited}s"; return 0; }
+    else
+      [[ "$code" == "200" ]] && { [[ "$waited" -gt 0 ]] && log "$label up after ${waited}s"; return 0; }
+    fi
+    [[ "$waited" -ge "$NET_WAIT_SECS" ]] && { echo "$code"; return 1; }
+    sleep 10; waited=$(( waited + 10 ))
+  done
+}
+
+code=$(wait_for "API" "$SWIL_URL/health" "200") \
+  || fail_precondition "API not healthy at $SWIL_URL/health after ${NET_WAIT_SECS}s (last ${code:-000})"
+
+# The LLM endpoint decides whether a round can do anything at all. Without it
+# every account fails one after another and the round burns 23 slots producing
+# nothing but FAIL lines. 401 counts as reachable -- we are testing the network,
+# not the credentials.
+code=$(wait_for "Anthropic API" "https://api.anthropic.com/v1/models" "any") \
+  || fail_precondition "api.anthropic.com unreachable after ${NET_WAIT_SECS}s (a round with no LLM is 23 failures)"
 
 command -v claude >/dev/null 2>&1 || fail_precondition "claude CLI not on PATH"
 command -v uv     >/dev/null 2>&1 || fail_precondition "uv not on PATH"
@@ -172,12 +210,36 @@ echo "$now_epoch" > "$STAMP"
 
 log "round start — ${#ACCOUNTS[@]} accounts, ${PARALLEL}-way, timeout ${ACCOUNT_TIMEOUT}s/account"
 
+# Housekeeping BEFORE the round, not after: it then runs even when the previous
+# round died, and it prunes before this round adds another ~35 MB. Keeping 2
+# rounds means the peak is 2 and `--resume` always has something to resume.
+# `|| true` on purpose -- a failure to tidy must never be why a round does not
+# happen. CHECKPOINT_KEEP=0 disables.
+if [[ "${CHECKPOINT_KEEP:-2}" != "0" ]]; then
+  python3 "$SCRIPT_DIR/prune-checkpoints.py" --keep "${CHECKPOINT_KEEP:-2}" 2>&1 \
+    | while IFS= read -r line; do log "$line"; done || true
+fi
+
 # ── 6. embedder ──────────────────────────────────────────────────────────────
 # Pre-warm before the fan-out. cycle-one.sh brackets its own ref-counted guard,
 # but with PARALLEL processes starting at once they serialise on the guard's
 # spinlock waiting for the first one to finish loading a 2.3GB model. Warming it
 # here makes the guard see an already-running daemon and treat it as external --
 # which also means it will NOT stop it, so we stop it ourselves below.
+# We hold the round lock, so no other round is running; any non-zero ref count
+# is therefore left over from a round that died before its `down`. Left alone it
+# never returns to 0 again, so the guard stops stopping the daemon and a 2.3GB
+# model stays resident forever. Found exactly that state on 2026-08-20: count=2
+# with nothing running.
+GUARD_COUNT_FILE="$STATE_DIR/embedder_guard/count"
+if [[ -f "$GUARD_COUNT_FILE" ]]; then
+  gc=$(tr -dc '0-9' < "$GUARD_COUNT_FILE")
+  if [[ -n "$gc" && "$gc" -gt 0 ]]; then
+    log "resetting a stale embedder-guard refcount ($gc → 0; no round was running)"
+    echo 0 > "$GUARD_COUNT_FILE"
+  fi
+fi
+
 owns_embedder=0
 if ! curl -s -m 3 -o /dev/null "${EMBEDDER_URL:-http://127.0.0.1:7777}/health" 2>/dev/null; then
   if bash "$SCRIPT_DIR/embedder-guard.sh" up >/dev/null 2>&1; then

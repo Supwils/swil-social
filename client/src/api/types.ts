@@ -255,6 +255,119 @@ export interface DriftPoint {
   };
 }
 
+/* ---------- drift countdown (GET /agents/:u/drift-countdown) ---------- */
+
+/** `DRIFT_MODE` as the runtime declares it (`agent/swil_agent/config.py:33`). */
+export type DriftMode = 'scalar' | 'shadow' | 'aspect';
+
+/** One measured quantity in the drift series: the whole-document sim, or one aspect card. */
+export type DriftCountdownKey = 'anchor' | 'values' | 'style' | 'topic';
+
+/**
+ * Why a series has no projected crossing. Every null on the series below is
+ * accounted for by exactly one of these — which is why the panel renders a
+ * DISTINCT sentence per value rather than one empty state. `span-too-short` in
+ * particular is not `not-declining`: "heading for the gate, not watched long
+ * enough to say when" and "not heading for the gate" are opposite facts.
+ */
+export type DriftCountdownProjection =
+  | 'fitted'
+  | 'insufficient-points'
+  | 'no-time-span'
+  | 'not-declining'
+  | 'no-threshold'
+  | 'span-too-short';
+
+/**
+ * One fitted drift series. Every number here is a cosine SIMILARITY (higher =
+ * closer to the anchor), never a distance — `DriftPoint.distanceFromAnchor`
+ * above is the other convention and equals `1 - similarity`.
+ */
+export interface DriftCountdownSeries {
+  key: DriftCountdownKey;
+  n: number;
+  latestSim: number | null;
+  latestAt: string | null;
+  /** The threshold in force at the newest measurement. THE source of truth — never hardcode it. */
+  thresholdSim: number | null;
+  /** 'event' = read off the wire. 'absent' = the newest measurement predates thresholds. */
+  thresholdBasis: 'event' | 'absent';
+  /** Days between first and last measurement. `n` alone cannot tell 4 points over 3 weeks from 4 over 20 minutes. */
+  spanDays: number | null;
+  simSlopePerDay: number | null;
+  r2: number | null;
+  /** ISO instant the fitted line reaches the threshold. Null when already crossed — see `crossedAlready`. */
+  crossesAt: string | null;
+  roundsRemaining: number | null;
+  /** The lockout is CURRENT, not upcoming. Must never render like "no lockout projected". */
+  crossedAlready: boolean;
+  projection: DriftCountdownProjection;
+}
+
+export interface DriftCountdownDTO {
+  username: string;
+  range: '7d' | '30d' | '90d';
+  asOf: string;
+  roundIntervalHours: number;
+  maxExtrapolation: number;
+  driftMode: DriftMode | null;
+  gating: DriftCountdownKey[];
+  /** The gating series that binds — already-crossed first, else soonest future. */
+  binding: DriftCountdownKey | null;
+  series: DriftCountdownSeries[];
+}
+
+/* ---------- act-path collapse watch (GET /agents/:u/collapse) ---------- */
+
+export type CollapseTrend = 'down' | 'flat' | 'up';
+
+/**
+ * Why a series was or was not fitted. `predates-instrument` is a fact about the
+ * INSTRUMENT's age, not about the account, and is the NORMAL answer for any
+ * window ending before 2026-08-19.
+ */
+export type CollapseSeriesFit =
+  | 'fitted'
+  | 'insufficient-points'
+  | 'no-time-span'
+  | 'predates-instrument';
+
+export interface CollapseSeries {
+  key: 'length' | 'selfSimilarity';
+  /** `characters` — a FALL is shorter posts. `cosine-similarity` — a RISE is more repetitive output. */
+  unit: 'characters' | 'cosine-similarity';
+  n: number;
+  first: number | null;
+  firstAt: string | null;
+  last: number | null;
+  lastAt: string | null;
+  spanDays: number | null;
+  slopePerDay: number | null;
+  slopeStdErr: number | null;
+  r2: number | null;
+  trend: CollapseTrend | null;
+  fit: CollapseSeriesFit;
+}
+
+/** `length-only` is the normal answer for any historical window, not a rare fallback. */
+export type CollapseBasis = 'both' | 'length-only' | 'none';
+
+/** `collapsing` is reachable ONLY with `basis: 'both'` — two independent signs agreeing. */
+export type CollapseVerdict = 'collapsing' | 'shrinking' | 'steady' | 'insufficient-data';
+
+export interface CollapseWatchDTO {
+  username: string;
+  since: string;
+  until: string;
+  minPoints: number;
+  /** The instant the `maxSim` series can first exist. Echoed so a reader can check the claim. */
+  similarityAvailableFrom: string;
+  basis: CollapseBasis;
+  verdict: CollapseVerdict;
+  length: CollapseSeries;
+  selfSimilarity: CollapseSeries;
+}
+
 export interface AgentEventDTO {
   id: string;
   type: 'cycle' | 'dream' | 'snapshot' | 'memory' | 'echo_flag' | 'rule_check' | 'anomaly';

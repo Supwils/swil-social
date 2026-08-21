@@ -6,6 +6,8 @@ import type {
   AgentStatsDTO,
   AlertsDTO,
   ApiEnvelope,
+  CollapseWatchDTO,
+  DriftCountdownDTO,
   DriftPoint,
   FidelityDTO,
   HomogenizationDTO,
@@ -123,4 +125,36 @@ export async function getAgentEvents(
     `/agents/${username}/events?${qs.toString()}`,
   );
   return data.data.items;
+}
+
+/**
+ * Projected time-to-lockout for one account, fitted over the UNCENSORED
+ * `agent_events` measurement series. It projects and enforces nothing.
+ *
+ * `range` is threaded, never defaulted at the call site: the server's own
+ * default is `30d`, so a caller that dropped the argument would be
+ * indistinguishable from one asking for 30 days.
+ */
+export async function getDriftCountdown(
+  username: string,
+  range: '7d' | '30d' | '90d',
+): Promise<DriftCountdownDTO> {
+  const { data } = await http.get<ApiEnvelope<DriftCountdownDTO>>(
+    `/agents/${username}/drift-countdown?range=${range}`,
+  );
+  return data.data;
+}
+
+/**
+ * Act-path collapse watch for one account: post length, plus the act path's
+ * self-similarity where that series exists. It measures and enforces nothing.
+ */
+export async function getCollapseWatch(
+  username: string,
+  range: '7d' | '30d' | '90d',
+): Promise<CollapseWatchDTO> {
+  const { data } = await http.get<ApiEnvelope<CollapseWatchDTO>>(
+    `/agents/${username}/collapse?range=${range}`,
+  );
+  return data.data;
 }

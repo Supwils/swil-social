@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -925,3 +926,60 @@ def test_the_plan_type_still_carries_no_similarity(tmp_path: Path) -> None:
     """
     assert "similarity" not in Plan.model_fields
     assert "max_sim" not in Action.model_fields
+
+
+# ── the two-language contract ───────────────────────────────────────────────
+#
+# The measured sample's summary is prose built inline in `_similarity_event`,
+# and one consumer has to key on it: `server/src/modules/agents/agents.collapse.ts`
+# narrows its SQL on `summary = 'act self-similarity measured'` because nothing
+# else in `agent_events` distinguishes these rows from the executor's own
+# `cycle`/`act` events.  Rewording it here reddens THIS suite loudly -- which is
+# exactly the trap, because a contributor who reads only a Python failure
+# updates the expected string and moves on, while the collapse watch quietly
+# starts answering `basis: 'length-only'` for every account, a result
+# indistinguishable from a window that predates the sampler.  So the pin below
+# reaches across the language boundary, and its mirror in
+# `server/src/modules/agents/agents.collapse.test.ts` reaches back.
+
+_COLLAPSE_TS = Path(__file__).resolve().parents[3] / "server/src/modules/agents/agents.collapse.ts"
+
+
+def _executable_ts(source: str) -> str:
+    """`source` with its comment LINES dropped (standing constraint §14).
+
+    The literal appears in that file's prose too -- its module header names the
+    rows the query selects -- so a guard that greps the raw text can be
+    satisfied by a comment while the real constant is gone.
+    """
+    return "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith(("//", "*", "/*"))
+    )
+
+
+def test_the_summary_the_server_queries_on_is_the_summary_this_module_files(
+    tmp_path: Path,
+) -> None:
+    """The measured sample's summary is a contract with the TypeScript side.
+
+    Both halves are asserted: the literal an actually-emitted event carries --
+    taken off a real `execute_step` run rather than restated, so a change to how
+    the summary is BUILT is caught as well as a change to the words -- and the
+    literal the collapse endpoint selects on.
+    """
+    resources = FakeResources()
+    resources.user_post_items = _own_posts(NEAR, FAR)
+    _run_execute(tmp_path, resources=resources, embedder=RecordingEmbedder())
+
+    summary = _similarity_events(resources)[0].summary
+    assert summary == "act self-similarity measured"
+
+    executable = _executable_ts(_COLLAPSE_TS.read_text(encoding="utf-8"))
+    pattern = rf"^export const \w+ = '{re.escape(summary)}';$"
+    assert re.search(pattern, executable, re.MULTILINE), (
+        f'{_COLLAPSE_TS.name} no longer selects on "{summary}". That endpoint joins '
+        "post length against the rows similarity_step files under this summary: if "
+        "the rename was deliberate, change ACT_SIMILARITY_SUMMARY there in the same "
+        "commit -- otherwise the collapse watch silently reports basis: 'length-only' "
+        "for every account, which reads as 'the window predates the sampler'."
+    )
