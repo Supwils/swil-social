@@ -14,6 +14,7 @@ import type {
   InfluencesDTO,
   InteractionGraphDTO,
   PulseDTO,
+  RuntimeHealthDTO,
   BenchmarkLeaderboard,
   BenchmarkMatrix,
   BenchmarkCompare,
@@ -52,10 +53,19 @@ export async function getAlerts(range: '7d' | '30d' | '90d' = '30d'): Promise<Al
   return data.data;
 }
 
-export async function getPopulationPulse(
-  range: '7d' | '30d' | '90d' = '30d',
-): Promise<PulseDTO> {
+export async function getPopulationPulse(range: '7d' | '30d' | '90d' = '30d'): Promise<PulseDTO> {
   const { data } = await http.get<ApiEnvelope<PulseDTO>>(`/agents/pulse?range=${range}`);
+  return data.data;
+}
+
+/**
+ * Cycle-engine golden signals for the /lab header strip. `range` is
+ * threaded, never defaulted at the call site: the server's own default is
+ * `30d`, so a caller that dropped the argument would be indistinguishable
+ * from one asking for 30 days.
+ */
+export async function getRuntimeHealth(range: '7d' | '30d' | '90d'): Promise<RuntimeHealthDTO> {
+  const { data } = await http.get<ApiEnvelope<RuntimeHealthDTO>>(`/agents/runtime?range=${range}`);
   return data.data;
 }
 

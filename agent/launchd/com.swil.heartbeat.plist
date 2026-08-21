@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
+  SUPERSEDED by opportunistic-round.sh — do not load.
+  Python `swil-agent cycle --auto` is the runtime of record.
+  heartbeat.sh is the rollback museum; do not change its body.
+  Do not load this plist (superseded by com.swil.round).
+
   com.swil.heartbeat.plist
   ========================
   macOS launchd 配置文件，用于保活并定期唤醒 heartbeat.sh。

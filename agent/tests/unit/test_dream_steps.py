@@ -980,7 +980,7 @@ def test_run_dream_reaches_both_write_steps_even_on_a_rejected_dream(
         resources=resources,
         backend=TwoCallBackend(
             candidate_response=ORIGINAL.replace(
-                "- **Username:** zenith", "- **Username:** someone_else"
+                "- **Follow Topics:** alpha,beta,gamma", "- **Follow Topics:** alpha"
             )
         ),
     )

@@ -5,7 +5,8 @@ import { agentsRouter } from './agents.routes';
 import { createApp } from '../../app';
 import { db } from '../../db/client';
 import { resetDb } from '../../test/db-reset';
-import { apiKeys, users } from '../../db/schema';
+import { agentEvents, apiKeys, users } from '../../db/schema';
+import { clearRuntimeHealthCache } from './agents.runtime';
 
 /**
  * The lab router is the one place in the API where reads are deliberately
@@ -189,5 +190,167 @@ describe('POST /agents/:username/events — occurredAt over HTTP', () => {
       .send(body({ metrics: { aspects: { values: 0.6 } } }));
 
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * `GET /agents/runtime` — spec §5. Public lab read over `cycle_run` cards.
+ * Discriminator is `metrics.kind = "cycle_run"`; per-action cycle events and
+ * missingSampler audit rows (same `type='cycle'`, no kind) must not count.
+ */
+describe('GET /agents/runtime — cycle_run aggregate (spec §5)', () => {
+  async function seedLabUser(username: string) {
+    const [user] = await db
+      .insert(users)
+      .values({
+        username,
+        usernameDisplay: username,
+        email: `${username}@example.test`,
+        displayName: username,
+        isAgent: true,
+      })
+      .returning();
+    return user;
+  }
+
+  async function seedCycle(
+    userId: string,
+    metrics: Record<string, unknown>,
+    over: { createdAt?: Date; summary?: string } = {},
+  ) {
+    await db.insert(agentEvents).values({
+      userId,
+      type: 'cycle',
+      phase: 'act',
+      outcome: 'warn',
+      summary: over.summary ?? 'cycle_run fixture',
+      metrics,
+      ...(over.createdAt ? { createdAt: over.createdAt } : {}),
+    });
+  }
+
+  beforeEach(async () => {
+    await resetDb();
+    clearRuntimeHealthCache();
+  });
+
+  it('registers GET /runtime as a literal path before /:username', () => {
+    const listed = routes();
+    const runtimeIdx = listed.findIndex((r) => r.method === 'get' && r.path === '/runtime');
+    const usernameIdx = listed.findIndex((r) => r.path.startsWith('/:username'));
+    expect(runtimeIdx).toBeGreaterThanOrEqual(0);
+    expect(usernameIdx).toBeGreaterThan(runtimeIdx);
+  });
+
+  it('returns zeros and a zero-filled series when no cycle_run cards exist', async () => {
+    const res = await request(createApp()).get('/api/v1/agents/runtime?range=7d');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      range: '7d',
+      rounds: 0,
+      accountsRun: 0,
+      failOpenGates: 0,
+      missingSamples: 0,
+      landedActions: 0,
+    });
+    expect(res.body.data.points).toHaveLength(7);
+    expect(
+      res.body.data.points.every(
+        (p: { rounds: number; failOpen: number; missingSamples: number; landed: number }) =>
+          p.rounds === 0 && p.failOpen === 0 && p.missingSamples === 0 && p.landed === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('defaults range to 30d', async () => {
+    const res = await request(createApp()).get('/api/v1/agents/runtime');
+    expect(res.status).toBe(200);
+    expect(res.body.data.range).toBe('30d');
+    expect(res.body.data.points).toHaveLength(30);
+  });
+
+  it('counts a cycle_run card with a missing sampler toward missingSamples', async () => {
+    const agent = await seedLabUser('zenith');
+    await seedCycle(agent.id, {
+      kind: 'cycle_run',
+      attempted: 1,
+      landed: 1,
+      actOutcome: 'POSTED',
+      grantsDream: true,
+      dreamAccepted: null,
+      gateStatus: 'skipped',
+      missingBehaviorSnapshot: true,
+      missingRuleCheck: false,
+      durationMs: 10,
+      backend: 'claude',
+      model: 'haiku',
+    });
+
+    const res = await request(createApp()).get('/api/v1/agents/runtime?range=30d');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.rounds).toBe(1);
+    expect(res.body.data.accountsRun).toBe(1);
+    expect(res.body.data.missingSamples).toBe(1);
+    expect(res.body.data.failOpenGates).toBe(0);
+    expect(res.body.data.landedActions).toBe(1);
+    const today = res.body.data.points.find(
+      (p: { date: string }) => p.date === new Date().toISOString().slice(0, 10),
+    );
+    expect(today).toMatchObject({ rounds: 1, missingSamples: 1, failOpen: 0, landed: 1 });
+  });
+
+  it('ignores cycle events that are not kind=cycle_run', async () => {
+    const agent = await seedLabUser('zenith');
+    // Per-action cycle event (the live act path).
+    await seedCycle(agent.id, {}, { summary: '→@someone' });
+    // missingSampler audit row from a raising sampler — same type, no kind.
+    await seedCycle(
+      agent.id,
+      { missingSampler: 'behavior_snapshot' },
+      { summary: 'missing sampler behavior_snapshot' },
+    );
+
+    const res = await request(createApp()).get('/api/v1/agents/runtime?range=90d');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      range: '90d',
+      rounds: 0,
+      accountsRun: 0,
+      failOpenGates: 0,
+      missingSamples: 0,
+      landedActions: 0,
+    });
+  });
+
+  it('rolls fail-open gates, dual missing flags, and landed across accounts', async () => {
+    const a = await seedLabUser('zenith');
+    const b = await seedLabUser('liushang');
+    await seedCycle(a.id, {
+      kind: 'cycle_run',
+      landed: 2,
+      gateStatus: 'fail_open',
+      missingBehaviorSnapshot: true,
+      missingRuleCheck: true,
+    });
+    await seedCycle(b.id, {
+      kind: 'cycle_run',
+      landed: 3,
+      gateStatus: 'accepted',
+      missingBehaviorSnapshot: false,
+      missingRuleCheck: false,
+    });
+
+    const res = await request(createApp()).get('/api/v1/agents/runtime?range=30d');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.rounds).toBe(2);
+    expect(res.body.data.accountsRun).toBe(2);
+    expect(res.body.data.failOpenGates).toBe(1);
+    // One card, both flags true → still one missing sample, not two.
+    expect(res.body.data.missingSamples).toBe(1);
+    expect(res.body.data.landedActions).toBe(5);
   });
 });

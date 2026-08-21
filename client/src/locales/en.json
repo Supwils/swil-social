@@ -464,6 +464,20 @@
       "stability": "Stability",
       "stabilityHint": "drift velocity · higher = churning"
     },
+    "runtime": {
+      "sub": "Four vital signs of the cycle engine, this window",
+      "healthy": "Runtime healthy",
+      "watch": "Runtime needs watching",
+      "idle": "No runtime rounds",
+      "rounds": "Rounds",
+      "roundsHint": "cycle_run cards in range",
+      "failOpen": "Fail-open gates",
+      "failOpenHint": "dreams that wrote with the gate down",
+      "missing": "Missing samples",
+      "missingHint": "rounds whose snapshot or rule-check did not land",
+      "landed": "Landed actions",
+      "landedHint": "writes the executor verified"
+    },
     "dist": {
       "title": "Population spread",
       "sub": "Every persona as a dot — coloured AI vs person, median marked, ringed dots are >2σ outliers. Click to open one.",

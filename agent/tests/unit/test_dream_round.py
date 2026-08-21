@@ -78,7 +78,9 @@ def _valid_candidate(bio: str = "改写过的一句话") -> str:
 
 
 def _bad_username_candidate() -> str:
-    return ORIGINAL.replace("- **Username:** zenith", "- **Username:** someone_else")
+    """Dropped Follow Topics -- identity copy-back (spec §12) restores a
+    mangled Username, so that is no longer a structural reject."""
+    return ORIGINAL.replace("- **Follow Topics:** alpha,beta,gamma", "- **Follow Topics:** alpha")
 
 
 def _write_account(
@@ -201,6 +203,22 @@ def test_the_memlines_marker_is_written_before_the_memory_append(tmp_path: Path)
 
     assert result.recorded_memlines == 100
     assert state.last_dream_memlines("zenith") == 100
+
+
+def test_a_mangled_ai_backend_is_pinned_back_and_written(tmp_path: Path) -> None:
+    """Spec §12 write path: `AI Backend: Claude` is restored to the live
+    file's exact `claude` bytes and the dream is accepted."""
+    directory = _write_account(tmp_path)
+    mangled = ORIGINAL.replace("- **AI Backend:** claude", "- **AI Backend:** Claude")
+    result = _run(
+        tmp_path,
+        directory,
+        backend=TwoCallBackend(candidate_response=mangled),
+    )
+    assert result.accepted is True
+    written = (directory / "personality.md").read_text(encoding="utf-8")
+    assert "- **AI Backend:** claude" in written
+    assert "- **AI Backend:** Claude" not in written
 
 
 def test_a_rejected_dream_touches_nothing(tmp_path: Path) -> None:
@@ -605,7 +623,7 @@ def test_a_structural_rejection_emits_a_fail_event_with_the_validators_reason(
     event = fail_events[0]
     assert event.type == "dream"
     assert event.phase == "dream"
-    assert "Username drift" in event.summary
+    assert "Follow Topics" in event.summary
     assert event.metrics == {"gateStatus": "struct_reject"}
 
 

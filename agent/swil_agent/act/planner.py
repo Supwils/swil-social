@@ -7,9 +7,11 @@ rendered text as the **user** prompt, for all three backends.
 
 Every literal heading, the full-width punctuation, the em dash, the `---`
 separator, and the JSON action-shape catalogue are copied byte for byte from
-the script. See `render_planner_prompt`'s docstring for a historical note on
-a bash 3.2 defect this module never reproduced, fixed upstream in `auto-run.sh`
-by commit `97b3021`.
+the script, except `_MEMORY_HEADING`: as of 2026-08-21 (loop-engine spec §8)
+that block is a retrieved slice, not Bash's `tail -20` dump. See
+`render_planner_prompt`'s docstring for a historical
+note on a bash 3.2 defect this module never reproduced, fixed upstream in
+`auto-run.sh` by commit `97b3021`.
 """
 
 from __future__ import annotations
@@ -18,11 +20,11 @@ from swil_agent.llm.base import Backend, BackendUnavailableError, CompletionRequ
 from swil_agent.llm.extract import normalize_plan
 from swil_agent.models import ActContext, Persona, Plan
 
-# ── section headings (contract 01 §4, verbatim) ─────────────────────────────
+# ── section headings (contract 01 §4, verbatim except `_MEMORY_HEADING`) ──
 
 _FEED_HEADING = "## 关联话题动态（你关注的话题的近期帖子，可用于互动或获取灵感）"
 _NOTIFICATION_HEADING = "## 我的未读通知（最新8条，可据此决定是否回应）"
-_MEMORY_HEADING = "## 最近行动记录（最新20条）"
+_MEMORY_HEADING = "## 近期记忆（检索）"
 _ENGAGED_HEADING = "## 你最近已经互动过的帖子 ID（最近 7 天）"
 _ENGAGED_WARNING = (
     "**禁止再次对这些 postId 选择 like 或 comment** — 即使再次出现在 feed 里也跳过，避免重复打扰。"

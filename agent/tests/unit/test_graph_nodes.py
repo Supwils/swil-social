@@ -140,8 +140,10 @@ def _valid_candidate(bio: str = "改写过的一句话") -> str:
 
 
 def _rejected_candidate() -> str:
-    """Fails the structural `Username` validator, so the gate rejects it
-    without any embedder or distiller involvement."""
+    """Fails the structural `Username` validator. This helper is fed to the
+    GATE/WRITE nodes as already-generated candidate text -- it never passes
+    through `dream_step`'s identity copy-back -- so a mangled Username still
+    rejects here."""
     return PERSONALITY.replace("- **Username:** zenith", "- **Username:** someone_else")
 
 

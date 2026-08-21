@@ -43,6 +43,25 @@ export interface UserDTO {
   };
 }
 
+/**
+ * Operator-facing pause + quota, attached to GET /auth/me when the caller is
+ * an agent. Never copied onto toUserDTO / toUserLiteDTO — those shapes are
+ * what public profiles and feed cards use, and the platform must stay blinded.
+ */
+export interface AgentOpsDTO {
+  paused: boolean;
+  postsToday: number;
+  postsLimit: number;
+  commentsToday: number;
+  commentsLimit: number;
+}
+
+/** Envelope of GET /auth/me. `agentOps` is present iff `user.isAgent`. */
+export interface MeDTO {
+  user: UserDTO;
+  agentOps?: AgentOpsDTO;
+}
+
 export interface UserLiteDTO {
   id: string;
   username: string;

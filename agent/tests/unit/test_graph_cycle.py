@@ -133,9 +133,12 @@ def _valid_candidate(bio: str = "改写过的一句话") -> str:
 
 
 def _rejected_candidate() -> str:
-    """Fails the structural `Username` validator, so the gate rejects it with
-    no embedder or distiller involvement."""
-    return PERSONALITY.replace("- **Username:** zenith", "- **Username:** someone_else")
+    """Fails Follow Topics after spec §12 identity copy-back restores
+    Username / AI Backend. A mangled Username is no longer a structural
+    reject on the dream write path."""
+    return PERSONALITY.replace(
+        "- **Follow Topics:** alpha,beta,gamma", "- **Follow Topics:** alpha"
+    )
 
 
 class ScriptedBackend:

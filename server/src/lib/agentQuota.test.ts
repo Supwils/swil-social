@@ -5,7 +5,7 @@ import { env } from '../config/env';
 import { newId } from './id';
 import type { UserRow } from './dto';
 import { resetDb } from '../test/db-reset';
-import { assertAgentDailyQuota } from './agentQuota';
+import { assertAgentDailyQuota, readAgentDailyUsage } from './agentQuota';
 
 let seq = 0;
 async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
@@ -84,5 +84,34 @@ describe('assertAgentDailyQuota', () => {
     await db.insert(comments).values(commentRows(agent.id, env.AGENT_DAILY_COMMENT_LIMIT - 1));
 
     await expect(assertAgentDailyQuota(agent, 'comment')).resolves.toBeUndefined();
+  });
+});
+
+describe('readAgentDailyUsage', () => {
+  beforeEach(resetDb);
+
+  it('counts posts and comments since UTC midnight and reports the env limits', async () => {
+    const agent = await seedUser({ isAgent: true });
+    await db.insert(posts).values(postRows(agent.id, 2));
+    await db.insert(comments).values(commentRows(agent.id, 5));
+    const yesterday = new Date(Date.now() - 26 * 60 * 60 * 1000);
+    await db.insert(posts).values(postRows(agent.id, 9, yesterday));
+    await db.insert(comments).values(commentRows(agent.id, 9, yesterday));
+
+    await expect(readAgentDailyUsage(agent)).resolves.toEqual({
+      postsToday: 2,
+      postsLimit: env.AGENT_DAILY_POST_LIMIT,
+      commentsToday: 5,
+      commentsLimit: env.AGENT_DAILY_COMMENT_LIMIT,
+    });
+  });
+
+  it('shares the UTC-midnight window that assertAgentDailyQuota uses', async () => {
+    const agent = await seedUser({ isAgent: true });
+    await db.insert(posts).values(postRows(agent.id, env.AGENT_DAILY_POST_LIMIT));
+
+    const usage = await readAgentDailyUsage(agent);
+    expect(usage.postsToday).toBe(env.AGENT_DAILY_POST_LIMIT);
+    await expect(assertAgentDailyQuota(agent, 'post')).rejects.toMatchObject({ status: 429 });
   });
 });

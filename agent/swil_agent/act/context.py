@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
+from swil_agent.act.memory import retrieve_memory
 from swil_agent.api.client import ApiError
 from swil_agent.api.resources import Resources
 from swil_agent.llm.base import Runner
@@ -32,7 +33,6 @@ _POST_ID = re.compile(r"postId=([a-f0-9]{24})")
 
 _ENGAGED_TAIL_LINES = 50
 _ENGAGED_MAX_IDS = 30
-_RECENT_MEMORY_LINES = 20
 
 _GLOBAL_FEED_TEXT_CAP = 220
 _TIMELINE_TEXT_CAP = 140
@@ -79,9 +79,65 @@ def last_post_line(memory_text: str) -> str:
     return posts[-1] if posts else "(暂无发帖记录)"
 
 
-def recent_memory(memory_text: str) -> str:
-    lines = memory_text.splitlines()
-    return "\n".join(lines[-_RECENT_MEMORY_LINES:]) if lines else "(no memory yet)"
+def _feed_usernames(items: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for item in items:
+        username = _author(item).get("username")
+        if isinstance(username, str) and username:
+            names.append(username)
+    return names
+
+
+def _conversation_usernames(items: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for item in items:
+        participants = item.get("participants")
+        if not isinstance(participants, list):
+            continue
+        for participant in participants:
+            if isinstance(participant, dict):
+                username = participant.get("username")
+                if isinstance(username, str) and username:
+                    names.append(username)
+    return names
+
+
+def _counterparties(
+    recommended: list[dict[str, Any]],
+    timeline: list[dict[str, Any]],
+    conversations: list[dict[str, Any]],
+) -> list[str]:
+    """Usernames the round actually assembled: feed authors and DM partners.
+
+    Spec §8: retrieval prefers dated lines that mention these, not the
+    whole log. Deduped, order of first appearance — matching does not
+    depend on order.
+    """
+    seen: set[str] = set()
+    names: list[str] = []
+    for username in (
+        *_feed_usernames(recommended),
+        *_feed_usernames(timeline),
+        *_conversation_usernames(conversations),
+    ):
+        if username not in seen:
+            seen.add(username)
+            names.append(username)
+    return names
+
+
+def _board_needle(persona: Persona, scope: str) -> str:
+    """Slug (and only slug — display is not on the boards map) to search for.
+
+    Home board and this round's read scope both count; `global` is a sentinel,
+    not a board name, so it is never a needle.
+    """
+    parts: list[str] = []
+    for value in (persona.board, scope):
+        text = (value or "").strip()
+        if text and text != GLOBAL_READ_SCOPE and text not in parts:
+            parts.append(text)
+    return " ".join(parts)
 
 
 # ── feed formatters (contract 01 §2g/§2h) ───────────────────────────────────
@@ -845,7 +901,7 @@ def build_context(
     ctx = ActContext(
         context_now=context_now,
         feed_context=feed_context,
-        recent_memory=recent_memory(memory_text),
+        recent_memory="",
         engaged_ids=engaged_post_ids(memory_text),
         today=today,
         today_post_count=posts_today(memory_text, today),
@@ -866,10 +922,10 @@ def build_context(
         pass  # placeholder-class: the default already reads "(could not fetch feed)"
 
     # vanish-class: on ApiError, timeline_feed stays "", so the whole section disappears.
+    timeline: list[dict[str, Any]] = []
     with contextlib.suppress(ApiError):
-        ctx.timeline_feed = format_timeline_feed(
-            read_feed(resources, board.scope, limit=18, sort="latest")
-        )
+        timeline = read_feed(resources, board.scope, limit=18, sort="latest")
+        ctx.timeline_feed = format_timeline_feed(timeline)
 
     with contextlib.suppress(ApiError):
         ctx.notification_context = (
@@ -896,7 +952,19 @@ def build_context(
     except ApiError:
         pass
 
+    conversations: list[dict[str, Any]] = []
     with contextlib.suppress(ApiError):
-        ctx.dm_context = format_conversations(resources.conversations(limit=6))
+        conversations = resources.conversations(limit=6)
+        ctx.dm_context = format_conversations(conversations)
+
+    # Spec §8: the planner sees a retrieved slice, not the tail of the file.
+    # posts_today above is already a full-file count — do not recompute it
+    # from this block.
+    ctx.recent_memory = retrieve_memory(
+        memory_text,
+        today=today,
+        board=_board_needle(persona, board.scope),
+        counterparties=_counterparties(recommended[:25], timeline, conversations),
+    )
 
     return ctx

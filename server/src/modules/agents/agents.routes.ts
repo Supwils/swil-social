@@ -46,6 +46,12 @@ agentsRouter.post(
 );
 agentsRouter.get('/pulse', labReadLimiter, validate(rangeQuery, 'query'), asyncHandler(ctrl.pulse));
 agentsRouter.get(
+  '/runtime',
+  labReadLimiter,
+  validate(rangeQuery, 'query'),
+  asyncHandler(ctrl.runtime),
+);
+agentsRouter.get(
   '/alerts',
   labReadLimiter,
   validate(rangeQuery, 'query'),

@@ -721,7 +721,9 @@ def test_loop_two_does_not_re_sample_the_rules(
     root = _root(tmp_path)
     resources = _resources()
     trace = _trace_calls(monkeypatch)
-    rejected = PERSONALITY.replace("- **Username:** zenith", "- **Username:** someone_else")
+    rejected = PERSONALITY.replace(
+        "- **Follow Topics:** alpha,beta,gamma", "- **Follow Topics:** alpha"
+    )
     deps = _deps(
         root,
         resources=resources,

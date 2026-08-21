@@ -104,7 +104,11 @@ def _valid_dream_candidate() -> str:
 
 
 def _bad_username_dream_candidate() -> str:
-    return ZENITH_PERSONALITY.replace("- **Username:** zenith", "- **Username:** someone_else")
+    """Dropped Follow Topics -- identity copy-back (spec §12) restores a
+    mangled Username, so that is no longer a structural reject."""
+    return ZENITH_PERSONALITY.replace(
+        "- **Follow Topics:** alpha,beta", "- **Follow Topics:** alpha"
+    )
 
 
 def _write_zenith(tmp_path: Path, *, personality: str = ZENITH_PERSONALITY) -> Path:
@@ -3357,3 +3361,208 @@ def test_the_two_log_filenames_are_the_ones_the_scripts_use() -> None:
     rather than as a silently-empty file someone greps months later."""
     assert cli.ACT_LOG_FILENAME == "auto-run.log"
     assert cli.DREAM_LOG_FILENAME == "dream.log"
+
+
+# ── doctor / measure-status / echo-calibrate / non-prod (spec §11) ─────────
+
+
+_PRODUCTION_URL = "https://swil-social-api-production.up.railway.app"
+
+
+def _doctor_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    url: str = "http://localhost:8899",
+) -> None:
+    """A doctor invocation whose only variables are the ones the test is
+    about: PATH, embedder, heartbeat, and the URL. Lock dir is tmp_path."""
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings(agent_root=tmp_path, swil_url=url))
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient())
+    monkeypatch.setattr(cli, "_on_path", lambda name: True)
+    monkeypatch.setattr(cli, "_heartbeat_launchctl_status", lambda: "not loaded")
+
+
+def test_doctor_exits_75_when_url_is_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §11: empty SWIL_URL is not ready."""
+    _doctor_ready(monkeypatch, tmp_path, url="")
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 75
+    assert "SWIL_URL" in result.stdout
+
+
+def test_doctor_warns_on_the_production_host_and_still_exits_0_when_otherwise_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production host is a warning, not a fail. doctor documents
+    SWIL_REQUIRE_NON_PROD rather than enforcing it."""
+    _doctor_ready(monkeypatch, tmp_path, url=_PRODUCTION_URL)
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0
+    output = result.stdout
+    assert "swil-social-api-production.up.railway.app" in output
+    assert "WARN" in output
+    assert "SWIL_REQUIRE_NON_PROD" in output
+
+
+def test_doctor_exits_75_when_claude_is_missing_from_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _doctor_ready(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_on_path", lambda name: name != "claude")
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 75
+    assert "claude" in result.stdout
+
+
+def test_doctor_missing_launchctl_is_not_a_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §11: `launchctl list` is best-effort; missing launchctl ≠ fail."""
+    _doctor_ready(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "_heartbeat_launchctl_status", lambda: "launchctl missing (not a fail)"
+    )
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0
+    assert "launchctl missing" in result.stdout
+
+
+def test_measure_status_builds_a_summary_from_a_fake_runtime_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §11: prints rounds / fail-open / missing samples. Default since
+    is the 2026-07-25 design date. Roster is counted from the local tree."""
+    _write_zenith(tmp_path)
+    monkeypatch.setattr(
+        cli, "load_settings", lambda: Settings(agent_root=tmp_path, swil_url="https://example.test")
+    )
+    payload = {
+        "range": "30d",
+        "rounds": 13,
+        "accountsRun": 3,
+        "failOpenGates": 10,
+        "missingSamples": 11,
+        "landedActions": 18,
+        "points": [
+            {"date": "2026-07-20", "rounds": 9, "failOpen": 9, "missingSamples": 9, "landed": 9},
+            {"date": "2026-08-01", "rounds": 4, "failOpen": 1, "missingSamples": 2, "landed": 9},
+        ],
+    }
+    monkeypatch.setattr(cli, "_fetch_runtime_health", lambda settings, *, since: payload)
+
+    result = runner.invoke(cli.app, ["measure-status"])
+
+    assert result.exit_code == 0
+    output = result.stdout
+    assert "2026-07-25" in output
+    assert "rounds: 4" in output
+    assert "fail-open" in output and "1" in output
+    assert "missing samples: 2" in output
+    # The 2026-07-20 point is before the default since and must not inflate
+    # the printed totals (9 would mean the filter never ran).
+    assert "rounds: 9" not in output
+    assert "roster: 1" in output
+
+
+def test_measure_status_exits_75_on_api_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli, "load_settings", lambda: Settings(agent_root=tmp_path, swil_url="https://example.test")
+    )
+
+    def _boom(settings: Settings, *, since: object) -> dict[str, object]:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(cli, "_fetch_runtime_health", _boom)
+    result = runner.invoke(cli.app, ["measure-status"])
+    assert result.exit_code == 75
+    assert (
+        "API" in result.stdout
+        or "API" in result.stderr
+        or "fail" in (result.stdout + result.stderr).lower()
+    )
+
+
+def test_echo_calibrate_does_not_write_echo_detect(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §11: never writes ECHO_DETECT. Calibration is read-only."""
+    env_path = tmp_agent / ".env"
+    env_path.write_text("ECHO_DETECT=0\nECHO_VARIANCE_THRESHOLD=0.04\n", encoding="utf-8")
+    resources = FakeResources()
+    resources.user_post_items = [{"text": "one"}, {"text": "two"}, {"text": "three"}]
+    monkeypatch.setattr(cli, "_resources_for", lambda persona, settings: resources)
+    before = env_path.read_text(encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["echo-calibrate", "zenith"])
+
+    assert result.exit_code == 0
+    assert env_path.read_text(encoding="utf-8") == before
+    assert not (tmp_agent / ".agent-state" / "echo_flag_zenith").exists()
+    output = result.stdout
+    assert "pairwise" in output.lower() or "variance" in output.lower()
+    assert "0.04" in output
+    assert "ECHO_DETECT=1" not in output or "not written" in output.lower()
+
+
+def test_echo_calibrate_exits_75_when_the_embedder_is_down(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_embedder_for", lambda settings: _FakeEmbedderClient(healthy=False))
+    result = runner.invoke(cli.app, ["echo-calibrate", "zenith"])
+    assert result.exit_code == 75
+    assert "embedder" in (result.stdout + result.stderr).lower()
+
+
+def test_echo_calibrate_on_an_unknown_account_exits_66(tmp_agent: Path) -> None:
+    result = runner.invoke(cli.app, ["echo-calibrate", "nosuchagent"])
+    assert result.exit_code == 66
+
+
+def test_require_non_prod_refuses_act_against_the_production_host_without_the_override(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §11: SWIL_REQUIRE_NON_PROD=1 + production host → exit 75 unless
+    --i-mean-production."""
+    monkeypatch.setenv("SWIL_REQUIRE_NON_PROD", "1")
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: Settings(agent_root=tmp_agent, swil_url=_PRODUCTION_URL),
+    )
+    result = runner.invoke(cli.app, ["act", "zenith"])
+    assert result.exit_code == 75
+    output = result.stdout + result.stderr
+    assert "swil-social-api-production.up.railway.app" in output
+    assert "--i-mean-production" in output
+    assert _memory_unchanged(tmp_agent)
+
+
+def test_require_non_prod_allows_act_with_the_override_flag(
+    tmp_agent: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SWIL_REQUIRE_NON_PROD", "1")
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: Settings(agent_root=tmp_agent, swil_url=_PRODUCTION_URL),
+    )
+    result = runner.invoke(cli.app, ["act", "zenith", "--i-mean-production", "--dry-run"])
+    assert result.exit_code == 0
+    assert "would execute" in result.stdout
+
+
+def test_require_non_prod_refuses_cycle_against_the_production_host(
+    tmp_cycle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SWIL_REQUIRE_NON_PROD", "1")
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: Settings(agent_root=tmp_cycle, swil_url=_PRODUCTION_URL, drift_mode="scalar"),
+    )
+    result = runner.invoke(cli.app, ["cycle", "zenith", "--dry-run"])
+    assert result.exit_code == 75
+    assert "--i-mean-production" in result.stdout + result.stderr

@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./client', () => ({ http: { get: vi.fn() } }));
 
 import { http } from './client';
-import { getCollapseWatch, getDriftCountdown } from './agents';
+import { getCollapseWatch, getDriftCountdown, getRuntimeHealth } from './agents';
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -40,5 +40,11 @@ describe('lab reads carry the caller’s range', () => {
     const payload = { username: 'liushang', verdict: 'shrinking' };
     vi.mocked(http.get).mockResolvedValue({ data: { data: payload } });
     await expect(getCollapseWatch('liushang', '30d')).resolves.toBe(payload);
+  });
+
+  it('asks the runtime endpoint for the range it was given', async () => {
+    vi.mocked(http.get).mockResolvedValue({ data: { data: { rounds: 17 } } });
+    await getRuntimeHealth('7d');
+    expect(vi.mocked(http.get).mock.calls[0][0]).toBe('/agents/runtime?range=7d');
   });
 });

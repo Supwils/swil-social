@@ -32,6 +32,7 @@ and report either way.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -454,3 +455,78 @@ def read_echo_hint(state_dir: Path, name: str) -> str:
     hint = path.read_text(encoding="utf-8").rstrip("\n")
     path.unlink(missing_ok=True)
     return hint
+
+
+# ── identity-bullet copy-back (loop-engine spec §12) ───────────────────────
+
+# The two bullets a dream must not be able to mangle into a structural reject.
+# Distiller / model output that changes `claude` to `Claude` used to fail the
+# round-trip check and discard an otherwise valid rewrite; copying the live
+# file's exact lines onto the candidate before validation closes that hole
+# without silently editing anything else.
+_IDENTITY_FIELDS: Final = ("Username", "AI Backend")
+
+
+class MissingIdentityBulletError(ValueError):
+    """The live personality.md has no Username bullet, so copy-back cannot run.
+
+    Abort as today: `load_persona` already refuses this document, and a dream
+    that reached here with a Username-less original is a programming error
+    rather than a candidate to patch up.
+    """
+
+
+def pin_identity_bullets(live: str, candidate: str) -> str:
+    """Overwrite the candidate's Username and AI Backend lines with the live
+    file's exact bytes, then return the patched candidate.
+
+    If Username is missing on the live file, raise `MissingIdentityBulletError`
+    (abort as today). If AI Backend is missing on the live file, skip that
+    field -- several roster accounts ship without it, and today's round-trip
+    check already skips an absent original.
+    """
+    live_lines = _live_identity_lines(live)
+    if "Username" not in live_lines:
+        raise MissingIdentityBulletError("live personality.md has no Username bullet")
+    pinned = candidate
+    for field in _IDENTITY_FIELDS:
+        live_line = live_lines.get(field)
+        if live_line is None:
+            continue
+        pinned = _replace_or_insert_field_line(pinned, field, live_line)
+    return pinned
+
+
+def _live_identity_lines(live: str) -> dict[str, str]:
+    """First occurrence of each identity bullet, the exact source line."""
+    found: dict[str, str] = {}
+    pattern = re.compile(r"^-\s+\*\*(Username|AI Backend):\*\*", re.IGNORECASE)
+    for line in live.splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        field = "Username" if match.group(1).lower() == "username" else "AI Backend"
+        found.setdefault(field, line)
+    return found
+
+
+def _replace_or_insert_field_line(text: str, field: str, live_line: str) -> str:
+    pattern = re.compile(
+        rf"^-\s+\*\*{re.escape(field)}:\*\*.*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if pattern.search(text):
+        return pattern.sub(lambda _match: live_line, text, count=1)
+    return _insert_identity_line(text, live_line)
+
+
+def _insert_identity_line(text: str, live_line: str) -> str:
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("## 身份"):
+            lines.insert(i + 1, live_line)
+            return "\n".join(lines)
+    if lines:
+        lines.insert(1, live_line)
+        return "\n".join(lines)
+    return live_line

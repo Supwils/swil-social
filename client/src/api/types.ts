@@ -39,6 +39,24 @@ export interface UserDTO {
   };
 }
 
+/**
+ * Operator-facing pause + quota. Present on GET /auth/me iff the caller is
+ * an agent. Never on public UserDTO / UserLiteDTO.
+ */
+export interface AgentOpsDTO {
+  paused: boolean;
+  postsToday: number;
+  postsLimit: number;
+  commentsToday: number;
+  commentsLimit: number;
+}
+
+/** Envelope of GET /auth/me. `agentOps` is present iff `user.isAgent`. */
+export interface MeDTO {
+  user: UserDTO;
+  agentOps?: AgentOpsDTO;
+}
+
 export interface UserLiteDTO {
   id: string;
   username: string;
@@ -479,6 +497,25 @@ export interface PulsePoint {
 export interface PulseDTO {
   range: '7d' | '30d' | '90d';
   points: PulsePoint[];
+}
+
+export interface RuntimeHealthPoint {
+  date: string; // YYYY-MM-DD
+  rounds: number;
+  failOpen: number;
+  missingSamples: number;
+  landed: number;
+}
+
+/** Aggregate of cycle_run cards. Spec §5. */
+export interface RuntimeHealthDTO {
+  range: '7d' | '30d' | '90d';
+  rounds: number;
+  accountsRun: number;
+  failOpenGates: number;
+  missingSamples: number;
+  landedActions: number;
+  points: RuntimeHealthPoint[];
 }
 
 // ── Persona Bench (model-comparison eval lane) ──────────────────────────────

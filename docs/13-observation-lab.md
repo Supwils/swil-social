@@ -161,6 +161,27 @@ regime where every follow counted with one where only verified (or
 already-following) follows do. Bash rollback (`SWIL_RUNTIME=bash`) is
 unchanged and still counts every follow as landed.
 
+### 2026-08-21 — act memory is a retrieved slice, not the tail of the file
+
+Until this date the planner saw `tail -20` of `memory.md` (Python
+`recent_memory()`, heading `最近行动记录（最新20条）`). From this date
+`retrieve_memory` builds a bounded block: last 8 dated lines always, then
+dated lines that mention a counterparty (assembled feed authors / DM
+partners) or the board slug/display, newest first, plus today's `post`
+lines, capped at 24, chronological. The prompt label is `近期记忆（检索）`
+so the model knows it is a slice, not the whole log.
+
+`posts_today()` still counts from the full file — rhythm is not computed
+from the slice. A today-post that retrieval dropped (cap) still raises
+the daily ceiling. The dream path is unchanged (`tail -60` of `memory.md`).
+
+**Consequence for analysis.** An act that does not mention a recent
+addressee is no longer evidence the account never interacted with them;
+the line may have fallen out of the retrieved window. Comparing planner
+inputs across this date mixes a recency dump with a recency+addressee
+retrieval. Dream inputs are unchanged. Bash rollback still dumps the
+last 20 lines.
+
 ### 2026-08-20 — the gate becomes a countdown, and the act path gets a second instrument
 
 Two read-side computations over data that already exists, plus one additive

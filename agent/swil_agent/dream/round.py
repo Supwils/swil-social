@@ -127,9 +127,11 @@ from swil_agent.api.resources import Resources, WriteNotVerifiedError
 from swil_agent.config import Settings
 from swil_agent.dream.candidate import (
     DreamState,
+    MissingIdentityBulletError,
     check_cooldown,
     clean_candidate,
     group_memory_digest,
+    pin_identity_bullets,
     read_echo_hint,
     render_dream_prompt,
 )
@@ -685,6 +687,17 @@ def dream_step(
             LabEvent(type="dream", phase="dream", outcome="fail", summary=_LLM_EMPTY_REASON),
         )
         return DreamStep(candidate="", failure_reason=_LLM_EMPTY_REASON)
+    try:
+        candidate_text = pin_identity_bullets(persona.raw, candidate_text)
+    except MissingIdentityBulletError as exc:
+        reason = str(exc)
+        logger.warning("FAIL %s — %s", name, reason)
+        _emit(
+            resources,
+            persona.username,
+            LabEvent(type="dream", phase="dream", outcome="fail", summary=reason),
+        )
+        return DreamStep(candidate="", failure_reason=reason)
     return DreamStep(candidate=candidate_text, failure_reason=None)
 
 

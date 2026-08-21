@@ -145,9 +145,12 @@ def _valid_candidate() -> str:
 
 
 def _rejected_candidate() -> str:
-    """Fails the structural `Username` validator, so the gate rejects before
-    the embedder or the distiller is involved."""
-    return PERSONALITY.replace("- **Username:** zenith", "- **Username:** someone_else")
+    """Fails Follow Topics after spec §12 identity copy-back restores
+    Username / AI Backend. A mangled Username is no longer a structural
+    reject on the dream write path."""
+    return PERSONALITY.replace(
+        "- **Follow Topics:** alpha,beta,gamma", "- **Follow Topics:** alpha"
+    )
 
 
 def _plan(*actions: str) -> str:

@@ -21,12 +21,15 @@ import pytest
 from swil_agent.dream.candidate import (
     DREAM_SYSTEM_PROMPT,
     FilesystemDreamState,
+    MissingIdentityBulletError,
     check_cooldown,
     clean_candidate,
     group_memory_digest,
+    pin_identity_bullets,
     read_echo_hint,
     render_dream_prompt,
 )
+from swil_agent.persona.validators import validate_candidate
 
 from ._runners import FakeState
 
@@ -456,3 +459,73 @@ def test_read_echo_hint_only_consumes_the_named_account(tmp_path: Path) -> None:
     (tmp_path / "echo_flag_zenith").write_text("hint", encoding="utf-8")
     assert read_echo_hint(tmp_path, "liushang") == ""
     assert (tmp_path / "echo_flag_zenith").exists()
+
+
+# ── identity-bullet copy-back (loop-engine spec §12) ────────────────────────
+
+
+_LIVE_IDENTITY = """# 测试
+
+## 身份
+- **Username:** zenith
+- **Display Name:** 测试
+- **Headline:** AI Agent
+- **Bio:** 一句话
+- **Follow Topics:** alpha,beta
+
+- **AI Backend:** claude
+
+## 发帖节律
+- 自由发挥，看心情
+"""
+
+
+def test_a_mangled_ai_backend_is_restored_to_the_live_bytes_and_then_validates() -> None:
+    """Spec §12: `AI Backend: claude` -> `AI Backend: Claude` is accepted
+    after copy-back and still carries the original bytes. Without the pin,
+    `_check_round_trip` treats the case change as identity drift."""
+    mangled = _LIVE_IDENTITY.replace("- **AI Backend:** claude", "- **AI Backend:** Claude")
+    pinned = pin_identity_bullets(_LIVE_IDENTITY, mangled)
+    assert "- **AI Backend:** claude" in pinned
+    assert "- **AI Backend:** Claude" not in pinned
+    assert validate_candidate(_LIVE_IDENTITY, pinned) is None
+
+
+def test_a_candidate_that_dropped_follow_topics_still_fails_after_copy_back() -> None:
+    """Copy-back is not a silent personality edit of anything else. Follow
+    Topics is free to change, and dropping it still fails structural
+    validation."""
+    dropped = _LIVE_IDENTITY.replace("- **Follow Topics:** alpha,beta\n", "")
+    pinned = pin_identity_bullets(_LIVE_IDENTITY, dropped)
+    failure = validate_candidate(_LIVE_IDENTITY, pinned)
+    assert failure is not None
+    assert failure.check == "Follow Topics"
+
+
+def test_copy_back_uses_the_live_line_byte_for_byte() -> None:
+    """The live file's exact line, not a reconstructed `- **Field:** value`.
+    Extra trailing spaces on the live bullet must survive."""
+    live = _LIVE_IDENTITY.replace("- **Username:** zenith", "- **Username:** zenith  ")
+    candidate = live.replace("- **Username:** zenith  ", "- **Username:** other")
+    pinned = pin_identity_bullets(live, candidate)
+    assert "- **Username:** zenith  " in pinned.splitlines()
+    assert "- **Username:** other" not in pinned
+
+
+def test_copy_back_aborts_when_username_is_missing_on_the_live_file() -> None:
+    """Spec §12: missing identity bullet on the live file aborts as today
+    (`load_persona` already refuses a Username-less document)."""
+    live = _LIVE_IDENTITY.replace("- **Username:** zenith\n", "")
+    with pytest.raises(MissingIdentityBulletError):
+        pin_identity_bullets(live, _LIVE_IDENTITY)
+
+
+def test_copy_back_skips_ai_backend_when_the_live_file_has_none() -> None:
+    """hodlge / lvchuang / zaofan ship no AI Backend bullet. Today the
+    round-trip check skips an absent original; copy-back must not invent
+    one and must not abort those dreams."""
+    live = _LIVE_IDENTITY.replace("- **AI Backend:** claude\n", "")
+    candidate = live.replace("- **Bio:** 一句话", "- **Bio:** 改写")
+    pinned = pin_identity_bullets(live, candidate)
+    assert "- **AI Backend:**" not in pinned
+    assert validate_candidate(live, pinned) is None

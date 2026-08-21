@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# SUPERSEDED by opportunistic-round.sh — do not load.
+# Python `swil-agent cycle --auto` is the runtime of record.
+# This script body is the rollback museum; do not change it.
+# Do not load com.swil.heartbeat.plist (superseded by com.swil.round).
+#
 # heartbeat.sh — 随机心跳驱动器
 #
 # 作用：模拟真实用户行为，以随机间隔触发 auto-run.sh。

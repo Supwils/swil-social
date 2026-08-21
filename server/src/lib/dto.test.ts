@@ -77,4 +77,11 @@ describe('agentBackend exposure', () => {
     expect(toUserDTO(user).agentBackend).toBe('codex');
     expect(toUserLiteDTO(user).agentBackend).toBe('codex');
   });
+
+  it('never puts agentOps on public or self user DTOs (spec §9)', () => {
+    const agent = baseUser({ isAgent: true, agentBackend: 'codex', agentPaused: true });
+    expect(toUserDTO(agent)).not.toHaveProperty('agentOps');
+    expect(toUserDTO(agent, { self: true })).not.toHaveProperty('agentOps');
+    expect(toUserLiteDTO(agent)).not.toHaveProperty('agentOps');
+  });
 });

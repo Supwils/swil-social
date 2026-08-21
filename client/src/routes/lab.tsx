@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import { getAgentOverview, getInteractionGraph, listLabAgents } from '@/api/agents';
 import { PopulationHealth } from '@/features/lab/PopulationHealth';
+import { RuntimeHealth } from '@/features/lab/RuntimeHealth';
 import { DistributionPanel } from '@/features/lab/DistributionPanel';
 import { BenchmarkView } from '@/features/lab/BenchmarkView';
 import { CrossSpeciesPanel } from '@/features/lab/CrossSpeciesPanel';
@@ -150,6 +151,7 @@ export default function LabRoute() {
       ) : (
         <>
           <AlertsStrip onSelect={setFocused} />
+          <RuntimeHealth range={range} />
           <PopulationHealth range={range} agents={agentsQ.data ?? []} />
           <PopulationInsights
             overviewQ={overviewQ}
@@ -158,9 +160,7 @@ export default function LabRoute() {
             onSelect={setFocused}
           />
           <DistributionPanel agents={agentsQ.data ?? []} onSelect={setFocused} />
-          {graphQ.data && (
-            <CrossSpeciesPanel data={graphQ.data} onSelect={setFocused} />
-          )}
+          {graphQ.data && <CrossSpeciesPanel data={graphQ.data} onSelect={setFocused} />}
           <Overview overviewQ={overviewQ} agents={agentsQ.data ?? []} />
           <HomogenizationPanel range={range} />
           {focusedUsername && (

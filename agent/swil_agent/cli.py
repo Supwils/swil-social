@@ -72,14 +72,18 @@ exercised through a monkeypatched stand-in for themselves.
 from __future__ import annotations
 
 import logging
+import os
 import random
+import shutil
 import sqlite3
+import subprocess
 from collections.abc import Iterator
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, Final, Protocol
+from typing import Annotated, Any, Final, Protocol
+from urllib.parse import urlparse
 
 import httpx
 import typer
@@ -112,6 +116,7 @@ from swil_agent.api.client import ApiClient
 from swil_agent.api.resources import Resources
 from swil_agent.config import Settings, load_settings
 from swil_agent.dream.candidate import DreamState, FilesystemDreamState
+from swil_agent.dream.drift import pairwise_variance
 from swil_agent.dream.round import run_dream
 from swil_agent.embedder.client import EmbedderClient, EmbedderUnavailable
 from swil_agent.embedder.guard import EmbedderGuard
@@ -150,6 +155,11 @@ dream_logger = logging.getLogger(f"{__name__}.dream")
 EXIT_OK = 0
 EXIT_NO_SUCH_ACCOUNT = 66
 EXIT_NO_ACTION = 75
+
+# Spec §3 / §11. Compared as a hostname, never as a substring of SWIL_URL.
+PRODUCTION_HOST: Final = "swil-social-api-production.up.railway.app"
+DEFAULT_MEASURE_SINCE: Final = "2026-07-25"
+_HEARTBEAT_LABEL: Final = "com.swil.heartbeat"
 
 _HEALTH_TIMEOUT = 10.0
 
@@ -1067,6 +1077,151 @@ def _skip_for_exception(name: str, exc: Exception) -> None:
         typer.echo(f"SKIP {name} -- UNEXPECTED {type(exc).__name__}: {exc}")
 
 
+# ── operator health (spec §11) ───────────────────────────────────────────
+
+
+def _url_host(url: str) -> str:
+    return urlparse(url).hostname or ""
+
+
+def _is_production_url(url: str) -> bool:
+    return _url_host(url) == PRODUCTION_HOST
+
+
+def _env_flag(name: str) -> bool:
+    """A process-env safety flag. Read from os.environ, not Settings: this
+    is an invocation gate, and Settings lets agent/.env outrank the caller
+    (file-wins). SWIL_REQUIRE_NON_PROD=1 on the command line must always
+    win."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _refuse_production_writes(settings: Settings, *, i_mean_production: bool) -> None:
+    if i_mean_production or not _env_flag("SWIL_REQUIRE_NON_PROD"):
+        return
+    if not _is_production_url(settings.swil_url):
+        return
+    typer.echo(
+        f"SWIL_REQUIRE_NON_PROD=1: SWIL_URL host is the production host "
+        f"({PRODUCTION_HOST}). Pass --i-mean-production, or point SWIL_URL "
+        "at staging.",
+        err=True,
+    )
+    raise typer.Exit(EXIT_NO_ACTION)
+
+
+def _on_path(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def _heartbeat_launchctl_status() -> str:
+    """Best-effort: missing launchctl is not a doctor failure (spec §11)."""
+    launchctl = shutil.which("launchctl")
+    if launchctl is None:
+        return "launchctl missing (not a fail)"
+    try:
+        completed = subprocess.run(
+            [launchctl, "list", _HEARTBEAT_LABEL],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "launchctl missing (not a fail)"
+    if completed.returncode == 0:
+        return "loaded (superseded — do not load; opportunistic-round.sh is the record)"
+    return "not loaded"
+
+
+def _lock_dir_writable(agent_root: Path) -> tuple[bool, str]:
+    lock_dir = agent_root / ".agent-state"
+    probe = lock_dir / ".doctor-write-probe"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        return False, f"not writable ({lock_dir}: {exc})"
+    return True, f"writable ({lock_dir})"
+
+
+def _parse_iso_date(raw: str) -> date:
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"--since={raw!r} is not YYYY-MM-DD") from exc
+
+
+def _range_covering(since: date, today: date) -> str:
+    days = max(0, (today - since).days)
+    if days <= 7:
+        return "7d"
+    if days <= 30:
+        return "30d"
+    return "90d"
+
+
+def _fetch_runtime_health(settings: Settings, *, since: date) -> dict[str, Any]:
+    """GET /api/v1/agents/runtime — public lab read, no credentials."""
+    range_ = _range_covering(since, date.today())
+    try:
+        with httpx.Client(timeout=_HEALTH_TIMEOUT) as client:
+            response = client.get(
+                f"{settings.swil_url}/api/v1/agents/runtime",
+                params={"range": range_},
+            )
+            response.raise_for_status()
+            parsed: Any = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"unexpected runtime payload: {parsed!r}")
+    data = parsed.get("data", parsed)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"unexpected runtime payload: {parsed!r}")
+    data.setdefault("range", range_)
+    return data
+
+
+def _runtime_totals(payload: dict[str, Any], *, since: date) -> tuple[int, int, int, int]:
+    """Sum points on/after `since`. Falls back to the DTO totals when the
+    payload has no points (a fake/summary-only body)."""
+    points = payload.get("points")
+    if isinstance(points, list) and points:
+        rounds = fail_open = missing = landed = 0
+        since_s = since.isoformat()
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            day = point.get("date")
+            if not isinstance(day, str) or day < since_s:
+                continue
+            rounds += int(point.get("rounds") or 0)
+            fail_open += int(point.get("failOpen") or 0)
+            missing += int(point.get("missingSamples") or 0)
+            landed += int(point.get("landed") or 0)
+        return rounds, fail_open, missing, landed
+    return (
+        int(payload.get("rounds") or 0),
+        int(payload.get("failOpenGates") or 0),
+        int(payload.get("missingSamples") or 0),
+        int(payload.get("landedActions") or 0),
+    )
+
+
+def _roster_count(agent_root: Path) -> int:
+    n = 0
+    for cohort in COHORTS:
+        root = agent_root / cohort
+        if not root.is_dir():
+            continue
+        for child in root.iterdir():
+            if child.is_dir() and (child / "personality.md").is_file():
+                n += 1
+    return n
+
+
 # ── commands ─────────────────────────────────────────────────────────────
 
 
@@ -1077,6 +1232,11 @@ def act(
     budget: int = typer.Option(5, "--budget"),
     seed: int | None = typer.Option(
         None, "--seed", help="Seed the rhythm roll for reproducibility."
+    ),
+    i_mean_production: bool = typer.Option(
+        False,
+        "--i-mean-production",
+        help="Allow writes against the production host when SWIL_REQUIRE_NON_PROD=1.",
     ),
 ) -> None:
     """Python port of `auto-run.sh`'s act path, for one account.
@@ -1105,6 +1265,7 @@ def act(
     it.
     """
     settings = load_settings()
+    _refuse_production_writes(settings, i_mean_production=i_mean_production)
     _attach_round_log(settings, ACT_LOG_FILENAME)
     persona_source = _persona_source_for(settings)
     try:
@@ -1211,6 +1372,11 @@ def cycle(
     seed: int | None = typer.Option(
         None, "--seed", help="Seed the rhythm roll for reproducibility."
     ),
+    i_mean_production: bool = typer.Option(
+        False,
+        "--i-mean-production",
+        help="Allow writes against the production host when SWIL_REQUIRE_NON_PROD=1.",
+    ),
 ) -> None:
     """Python port of `cycle-one.sh`: login -> act -> dream -> logout, for one
     account, as ONE LangGraph run.
@@ -1242,6 +1408,7 @@ def cycle(
     would produce a different thread and silently start a fresh cycle.
     """
     settings = load_settings()
+    _refuse_production_writes(settings, i_mean_production=i_mean_production)
     _attach_cycle_logs(settings)
     persona_source = _persona_source_for(settings)
     try:
@@ -1737,3 +1904,153 @@ def summary(
 def version() -> None:
     """Print the installed `swil-agent` package version."""
     typer.echo(f"swil-agent {__version__}")
+
+
+@app.command()
+def doctor() -> None:
+    """Print operator readiness: URL, production-host warning, PATH, embedder,
+    lock dir, heartbeat launchctl (spec §11). Exit 0 ready, 75 not.
+
+    Documents SWIL_REQUIRE_NON_PROD; does not enforce it. Missing launchctl
+    is not a failure.
+    """
+    settings = load_settings()
+    ready = True
+
+    url = settings.swil_url
+    typer.echo(f"SWIL_URL: {url or '(empty)'}")
+    if not url.strip():
+        typer.echo("  FAIL: SWIL_URL is empty")
+        ready = False
+    elif _is_production_url(url):
+        typer.echo(f"  WARN: host is production ({PRODUCTION_HOST})")
+        typer.echo(
+            "  SWIL_REQUIRE_NON_PROD=1 refuses cycle/act against this host "
+            "unless --i-mean-production"
+        )
+    else:
+        typer.echo("  ok (not production)")
+
+    for binary in ("claude", "uv"):
+        if _on_path(binary):
+            found = shutil.which(binary) or binary
+            typer.echo(f"{binary}: {found}")
+        else:
+            typer.echo(f"{binary}: not on PATH")
+            ready = False
+
+    try:
+        health = _embedder_for(settings).health()
+        typer.echo(f"embedder: ok {health}")
+    except EmbedderUnavailable as exc:
+        typer.echo(f"embedder: FAIL ({exc})")
+        ready = False
+
+    writable, lock_msg = _lock_dir_writable(settings.agent_root)
+    typer.echo(f"lock dir: {lock_msg}")
+    if not writable:
+        ready = False
+
+    typer.echo(f"{_HEARTBEAT_LABEL}: {_heartbeat_launchctl_status()}")
+
+    if ready:
+        typer.echo("doctor: ready")
+        raise typer.Exit(EXIT_OK)
+    typer.echo("doctor: not ready")
+    raise typer.Exit(EXIT_NO_ACTION)
+
+
+@app.command("measure-status")
+def measure_status(
+    since: str | None = typer.Option(
+        None, "--since", help="YYYY-MM-DD. Default 2026-07-25 (design date)."
+    ),
+) -> None:
+    """Print rounds / fail-open / missing samples from GET /agents/runtime
+    plus the local roster (spec §11). Exit 0, or 75 on API fail."""
+    settings = load_settings()
+    try:
+        since_date = _parse_iso_date(since or DEFAULT_MEASURE_SINCE)
+    except ValueError as exc:
+        typer.echo(f"measure-status: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+    try:
+        payload = _fetch_runtime_health(settings, since=since_date)
+    except Exception as exc:
+        typer.echo(f"measure-status: API fail ({exc})", err=True)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    rounds, fail_open, missing, landed = _runtime_totals(payload, since=since_date)
+    range_ = payload.get("range", "?")
+    accounts = payload.get("accountsRun", 0)
+    roster = _roster_count(settings.agent_root)
+    typer.echo(f"measure-status since={since_date.isoformat()} range={range_}")
+    typer.echo(f"  rounds: {rounds}")
+    typer.echo(f"  fail-open gates: {fail_open}")
+    typer.echo(f"  missing samples: {missing}")
+    typer.echo(f"  landed actions: {landed}")
+    typer.echo(f"  accounts run: {accounts}")
+    typer.echo(f"  roster: {roster}")
+    raise typer.Exit(EXIT_OK)
+
+
+@app.command("echo-calibrate")
+def echo_calibrate(
+    name: str,
+    limit: int = typer.Option(12, "--limit", help="Recent posts to embed. Default 12."),
+) -> None:
+    """Embed last N posts, print pairwise variance vs ECHO_VARIANCE_THRESHOLD.
+
+    Never writes ECHO_DETECT (spec §11). Exit 75 if the embedder is down.
+    """
+    settings = load_settings()
+    persona_source = _persona_source_for(settings)
+    try:
+        persona = _load_persona_or_raise_setup_error(persona_source, name)
+    except FileNotFoundError as exc:
+        typer.echo(f"no such account: {name}", err=True)
+        raise typer.Exit(EXIT_NO_SUCH_ACCOUNT) from exc
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    embedder = _embedder_for(settings)
+    try:
+        embedder.health()
+    except EmbedderUnavailable as exc:
+        typer.echo(f"echo-calibrate {name}: embedder down ({exc})", err=True)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    try:
+        posts = _resources_for(persona, settings).user_posts(persona.username, limit=limit)
+    except Exception as exc:
+        _skip_for_exception(name, exc)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    texts: list[str] = []
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        text = post.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+    try:
+        vectors = embedder.embed(texts) if texts else []
+    except EmbedderUnavailable as exc:
+        typer.echo(f"echo-calibrate {name}: embedder down ({exc})", err=True)
+        raise typer.Exit(EXIT_NO_ACTION) from exc
+
+    variance = pairwise_variance(vectors)
+    threshold = settings.echo_variance_threshold
+    if variance < threshold:
+        rec = "would FLAG this account; do not enable ECHO_DETECT until the threshold is calibrated"
+    else:
+        rec = "would NOT flag this account at the current threshold"
+    typer.echo(
+        f"echo-calibrate {name} posts={len(texts)} "
+        f"pairwise_variance={variance:.6f} "
+        f"ECHO_VARIANCE_THRESHOLD={threshold} "
+        f"ECHO_DETECT={settings.echo_detect} (not written)"
+    )
+    typer.echo(f"  recommendation: {rec}")
+    raise typer.Exit(EXIT_OK)

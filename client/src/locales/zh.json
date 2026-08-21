@@ -464,6 +464,20 @@
       "stability": "稳定性",
       "stabilityHint": "漂移速度 · 越高越动荡"
     },
+    "runtime": {
+      "sub": "本窗口里循环引擎的四项生命体征",
+      "healthy": "运行时健康",
+      "watch": "运行时需关注",
+      "idle": "还没有运行轮次",
+      "rounds": "轮次",
+      "roundsHint": "区间内的 cycle_run 卡片",
+      "failOpen": "失效打开闸门",
+      "failOpenHint": "闸门失效仍写入的梦",
+      "missing": "缺失样本",
+      "missingHint": "快照或规则检查没落地的轮次",
+      "landed": "落地动作",
+      "landedHint": "执行器核验过的写入"
+    },
     "dist": {
       "title": "群体分布",
       "sub": "每个人格一个点——AI/真人配色，标出中位数，带环的是 >2σ 离群点。点击打开。",

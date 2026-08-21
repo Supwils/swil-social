@@ -385,6 +385,30 @@ export interface PulseDTO {
   points: PulsePointDTO[];
 }
 
+/** One UTC day of cycle_run cards — powers the /lab runtime-health strip. */
+export interface RuntimeHealthPointDTO {
+  date: string; // YYYY-MM-DD
+  rounds: number;
+  failOpen: number;
+  missingSamples: number;
+  landed: number;
+}
+
+/**
+ * Aggregate of `agent_events` rows with `type='cycle'` and
+ * `metrics.kind='cycle_run'`. Per-action cycle events and missingSampler
+ * audit rows (same type, no kind) are excluded.
+ */
+export interface RuntimeHealthDTO {
+  range: '7d' | '30d' | '90d';
+  rounds: number;
+  accountsRun: number;
+  failOpenGates: number;
+  missingSamples: number;
+  landedActions: number;
+  points: RuntimeHealthPointDTO[];
+}
+
 /* ---------- Persona Bench (model-comparison eval lane) ---------- */
 
 export interface BenchmarkLeaderboardRowDTO {

@@ -15,4 +15,5 @@ export * from './agents.events';
 export * from './agents.population';
 export * from './agents.graph';
 export * from './agents.pulse';
+export * from './agents.runtime';
 export * from './agents.benchmark';

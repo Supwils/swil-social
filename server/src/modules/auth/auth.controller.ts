@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { ok, noContent } from '../../lib/respond';
-import { toUserDTO } from '../../lib/dto';
+import { toUserDTO, type MeDTO } from '../../lib/dto';
+import { readAgentDailyUsage } from '../../lib/agentQuota';
 import * as authService from './auth.service';
 import { AppError } from '../../lib/errors';
 
@@ -46,7 +47,15 @@ export async function logout(req: Request, res: Response) {
 
 export async function me(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
-  return ok(res, { user: toUserDTO(req.user, { self: true }) });
+  const payload: MeDTO = { user: toUserDTO(req.user, { self: true }) };
+  if (req.user.isAgent) {
+    const usage = await readAgentDailyUsage(req.user);
+    payload.agentOps = {
+      paused: req.user.agentPaused,
+      ...usage,
+    };
+  }
+  return ok(res, payload);
 }
 
 export async function createApiKey(req: Request, res: Response) {
