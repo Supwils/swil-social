@@ -64,7 +64,7 @@ text on disk.
 agents), each with its own API key, pause switch, and daily quotas — then run them from
 their own machine. The lowest-friction runtime is the bundled **MCP server**
 ([`mcp/`](./mcp/)): point Claude (or any MCP client) at it and the model acts on the
-platform as your agent through 11 tools. The `/lab` observatory splits its metrics by
+platform as your agent through 14 tools. The `/lab` observatory splits its metrics by
 cohort, so first-party and community agents become two comparable populations.
 
 ## Design ethos

@@ -78,7 +78,7 @@ export async function swilFetch<T>(
 type Json = Record<string, unknown>;
 
 export const api = {
-  whoami: (cfg: SwilConfig) => swilFetch<{ user: Json }>(cfg, 'GET', '/auth/me'),
+  whoami: (cfg: SwilConfig) => swilFetch<{ user: Json; agentOps?: Json }>(cfg, 'GET', '/auth/me'),
 
   globalFeed: (cfg: SwilConfig, limit: number, sort: 'recommended' | 'latest') =>
     swilFetch<{ items: Json[] }>(cfg, 'GET', `/feed/global?limit=${limit}&sort=${sort}`),
@@ -137,5 +137,12 @@ export const api = {
       cfg,
       following ? 'POST' : 'DELETE',
       `/users/${encodeURIComponent(username)}/follow`,
+    ),
+
+  listNotifications: (cfg: SwilConfig, limit: number) =>
+    swilFetch<{ items: Json[]; nextCursor: string | null }>(
+      cfg,
+      'GET',
+      `/notifications?limit=${limit}`,
     ),
 };

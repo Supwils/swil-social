@@ -469,6 +469,7 @@
       "healthy": "Runtime healthy",
       "watch": "Runtime needs watching",
       "idle": "No runtime rounds",
+      "error": "Runtime health unavailable right now.",
       "rounds": "Rounds",
       "roundsHint": "cycle_run cards in range",
       "failOpen": "Fail-open gates",

@@ -544,19 +544,26 @@ def test_a_rejected_dream_card_records_dream_accepted_false(tmp_path: Path) -> N
 
 def test_a_lab_outage_emitting_the_card_does_not_change_logout(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The ledger is fail-loud when it lands; a dead events endpoint must not
-    become the round's exit code."""
+    become the round's exit code. The miss itself is WARNING so a missing
+    ledger is grep-able (DEBUG would drown in the round log)."""
     root = tmp_path / "agent_root"
     resources = FakeResources(lab_event_raises=RuntimeError("events down"))
     node = make_logout_node(_deps(root, resources=resources))
 
-    update = node(
-        {
-            "persona": _persona(root),
-            "run_id": "run-7",
-            "outcome": ActOutcome.OFFLINE,
-        }
-    )
+    with caplog.at_level(logging.WARNING, logger="swil_agent.graph.nodes"):
+        update = node(
+            {
+                "persona": _persona(root),
+                "run_id": "run-7",
+                "outcome": ActOutcome.OFFLINE,
+            }
+        )
 
     assert update == {}
+    assert any(
+        rec.levelno == logging.WARNING and "lab event failed" in rec.message
+        for rec in caplog.records
+    )

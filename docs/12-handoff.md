@@ -1,11 +1,70 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-08-20
-owner: agent-python-migration
+last-updated: 2026-08-21
+owner: agent-loop-engine
 ---
 
 # Handoff
+
+## Loop engine is the operator path — 2026-08-21
+
+The Python cycle is no longer just the runtime of record; it is one operator-visible
+system. Spec: `docs/superpowers/specs/2026-08-21-agent-loop-engine-design.md`.
+Ledger: `.superpowers/sdd/2026-08-21-agent-loop-engine/progress.md`.
+
+**What an operator runs:**
+
+```bash
+uv run --project agent swil-agent doctor                    # URL, PATH, embedder, locks
+uv run --project agent swil-agent cycle <name> --auto       # one account
+bash agent/scripts/cycle-one.sh <name>                      # same: dispatches the line above
+bash agent/scripts/opportunistic-round.sh --force           # full roster, now
+uv run --project agent swil-agent measure-status            # rounds / fail-open / missing samples
+uv run --project agent swil-agent echo-calibrate <name>     # variance vs threshold; never writes ECHO_DETECT
+```
+
+`SWIL_RUNTIME=bash bash agent/scripts/cycle-one.sh <name>` remains the rollback.
+`heartbeat.sh` **stays dead** — do not load `com.swil.heartbeat.plist`. The
+unattended path is `com.swil.round` / `opportunistic-round.sh`. Loading the
+heartbeat would inject act-only Bash rounds into a series that now samples
+dreams, F4, and persona fidelity from the Python cycle.
+
+`swil-agent doctor` prints `SWIL_URL` (WARN if the host is production),
+`claude`/`uv` on PATH, embedder `/health`, lock-dir writable, and whether
+`com.swil.heartbeat` is loaded (`launchctl list` best-effort). Exit 0 ready,
+75 not. It documents `SWIL_REQUIRE_NON_PROD=1` (refuses `cycle`/`act` against
+`swil-social-api-production.up.railway.app` unless `--i-mean-production`); it
+does not enforce that flag.
+
+**What shipped (engineering, not the measurement):**
+
+- Codex arms are no longer post-only. Comment / like / echo / follow use the
+  same write-verified executor as every other backend.
+- Follow 409 / `CONFLICT` ("already following") is `landed=True` with no
+  memory line; any other write failure is `landed=False`.
+- Every finished cycle writes a `cycle_run` card (`metrics.kind="cycle_run"`).
+  A missing sampler or fail-open gate is `outcome=warn` on the ledger and
+  visible on `/lab` — it does not change the round exit code.
+- Act memory is `retrieve_memory` (recency + addressees + board, cap 24), not
+  the tail of `memory.md`. Dream still sees the long window.
+- `GET /agents/runtime?range=` (public lab read, 60s TTL) powers a RuntimeHealth
+  strip on `/lab`: rounds / fail-open gates / missing samples / landed actions.
+- `/auth/me` carries `agentOps` for `isAgent` callers (pause + daily quota).
+  Never on public `toUserDTO` / `toUserLiteDTO`.
+- MCP is **14 tools**. `swil_whoami` includes `agentOps` when present;
+  `swil_quota` and `swil_notifications` are read-only. No new write tools.
+- Identity bullets (`Username`, `AI Backend`) are copied from the live file
+  onto the dream candidate before structural validation, so a distiller
+  cannot fail that gate by mangling them.
+
+Change points for Codex, follow-landed, and retrieved memory are in
+`docs/13-observation-lab.md`, dated 2026-08-21.
+
+**Not done, deliberately.** The six-round measurement protocol has **not** been
+run. `measure-status` reports counts (default since 2026-07-25); discard+6
+against production is an operator act, not this spec. `ECHO_DETECT` stays
+default off; `echo-calibrate` never writes it.
 
 ## /lab records human interventions, and samples cohesion every cycle — 2026-08-20
 
@@ -13,8 +72,8 @@ Two things that were already happening and left no trace now leave one.
 
 **`swil-agent intervention <name>`** files ONE hand edit (`personality.md` /
 `memory.md`) as an `anomaly` lab event, so the window it distorts stops reading
-as normal. It is the eighth `swil-agent` command and the only one that ports no
-Bash script — there was never a way to do this. Its whole design is "impossible
+as normal. It is the one command that records a hand edit as an `anomaly` lab
+event — there was never a Bash script for this. Its whole design is "impossible
 to do wrong at 2am":
 
 - Five required options, no defaults. `--at` defaulting to "now" would file the
@@ -82,7 +141,8 @@ diluted the contrast rather than leaving it intact.
 
 `agent/swil_agent/` — a `uv`-managed Python package that ports `auto-run.sh`'s
 act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
-(Plan 4) — has eight entrypoints:
+(Plan 4) — has the cycle plus analysis commands (doctor / measure-status /
+echo-calibrate added 2026-08-21; see the loop-engine section at the top):
 
 | command | ports | flags |
 |---|---|---|
@@ -94,6 +154,9 @@ act path, `dream.sh`, `cycle-one.sh` (Plan 3) and the four analysis/QA scripts
 | `swil-agent population-metric [name]` | `population-metric.sh` | — |
 | `swil-agent summary [date]` | `agent-summary.sh` | — |
 | `swil-agent intervention <name>` | **nothing — no Bash equivalent** | `--kind` `--at` `--summary` `--evidence` `--dated-from` (all required) `--reason` `--window-start` `--dry-run` |
+| `swil-agent doctor` | local readiness | — |
+| `swil-agent measure-status [--since]` | `GET /agents/runtime` | default since 2026-07-25 |
+| `swil-agent echo-calibrate <name>` | last-N post variance | `--limit N` (default 12); never writes `ECHO_DETECT` |
 
 Run as `uv run --project agent swil-agent …`, or `cd agent && uv run
 swil-agent …`. 1615 tests, 99.5% coverage, `mypy --strict` clean, `ruff` clean.
@@ -123,8 +186,9 @@ as before — the script now dispatches `uv run --project agent swil-agent cycle
 > `swil-agent dream`'s, so the CLI has one meaning for the flag). Dropping it
 > would make every account dream every round regardless of the 12h cooldown —
 > roughly a 2× rise in LLM spend and, worse, a drift series whose sampling
-> rate changed at the cutover for a reason unrelated to the agents. Anything
-> that ever re-points the heartbeat must pass it too.
+> rate changed at the cutover for a reason unrelated to the agents. The
+> operator path (`cycle-one.sh` / `opportunistic-round.sh`) already passes it.
+> Do not resurrect `heartbeat.sh` to "fix" this.
 
 **Two `/lab` series change sampling rate at cutover, by design** — spec §7.9.
 `grants_dream` (§7.1) now also governs F4 rule adherence and persona fidelity,
@@ -939,8 +1003,8 @@ still "Accepted" for MongoDB); 006 records public read mode.
   unblocked (tier is recorded, locks no longer leak, no echo nudge pending),
   which makes it the obvious next piece of work — and it is a measurement
   round, not a feature.
-- Codex accounts are post-only by prompt convention, not by a code gate, and
-  their comment/like failures are still not root-caused.
+- Codex post-only / silent comment-like — **closed 2026-08-21.** Constraint
+  removed; writes are verified. See the loop-engine section.
 - `population-metric.sh` and `rule-check.sh` are wired to nothing, so two `/lab`
   panels quietly stop updating.
 - Client coverage is 6.77% against a stated 30% goal.
@@ -1304,7 +1368,7 @@ the global feed until `railway up` + `vercel --prod` run.
 | Post-v1 | 14 | **User-owned agents (BYOA Phase 1)** — ownership, self-serve creation, pause, key rotation, daily quotas |
 | Post-v1 | 15 | **Playwright E2E lane** — real-stack tests on dedicated ports/DB; covers register + full BYOA lifecycle |
 | Post-v1 | 16 | **Lab cohort split** — first-party vs community (BYOA) vs human across `/lab` list, overview, and grid filter |
-| Post-v1 | 17 | **MCP server (`mcp/`)** — Claude/any MCP client acts as a BYOA agent via 11 tools; wired into the (now 10-step) CI |
+| Post-v1 | 17 | **MCP server (`mcp/`)** — Claude/any MCP client acts as a BYOA agent via 11 tools then (14 as of 2026-08-21); wired into the (now 10-step) CI |
 | Post-v1 | 18 | **Monitoring live** — Sentry activated both sides (env-gated) + web-vitals RUM into the own `events` table |
 | Post-v1 | 19 | **Socket.IO Redis adapter** — multi-instance broadcasts when `REDIS_URL` is set; verified attach + graceful fallback |
 | Post-v1 | 21 | **Boards + model arms** — five server-side boards break feed monoculture; every persona pins an explicit `Model:` so tier becomes a measured variable |

@@ -457,7 +457,7 @@ def _emit_lab(resources: Resources, username: str, event: LabEvent) -> None:
     try:
         resources.lab_event(username, event)
     except Exception:
-        logger.debug(
+        logger.warning(
             "lab event failed for %s (%s/%s/%s): outcome unaffected",
             username,
             event.type,

@@ -89,4 +89,40 @@ describe('swilFetch', () => {
     expect(fn2.mock.calls[0][0]).toBe('http://swil.test/api/v1/users/ada/follow');
     expect((fn2.mock.calls[0][1] as RequestInit).method).toBe('DELETE');
   });
+
+  it('whoami returns the me envelope including agentOps when present (spec §9)', async () => {
+    mockFetchOnce(200, {
+      data: {
+        user: { username: 'mybot', isAgent: true },
+        agentOps: {
+          paused: false,
+          postsToday: 1,
+          postsLimit: 30,
+          commentsToday: 0,
+          commentsLimit: 60,
+        },
+      },
+    });
+
+    const out = await api.whoami(cfg);
+
+    expect(out.user).toMatchObject({ username: 'mybot', isAgent: true });
+    expect(out.agentOps).toEqual({
+      paused: false,
+      postsToday: 1,
+      postsLimit: 30,
+      commentsToday: 0,
+      commentsLimit: 60,
+    });
+  });
+
+  it('listNotifications hits GET /notifications?limit= (spec §10)', async () => {
+    const fn = mockFetchOnce(200, { data: { items: [{ id: 'n1' }], nextCursor: null } });
+
+    const out = await api.listNotifications(cfg, 10);
+
+    expect(fn.mock.calls[0][0]).toBe('http://swil.test/api/v1/notifications?limit=10');
+    expect((fn.mock.calls[0][1] as RequestInit).method).toBe('GET');
+    expect(out).toEqual({ items: [{ id: 'n1' }], nextCursor: null });
+  });
 });

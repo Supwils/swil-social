@@ -146,4 +146,17 @@ describe('RuntimeHealth — status tint', () => {
     expect(card('Fail-open gates').getAttribute('data-status')).toBe('neutral');
     expect(card('Missing samples').getAttribute('data-status')).toBe('neutral');
   });
+
+  it('does not look idle when the fetch fails with no data', async () => {
+    vi.mocked(agentsApi.getRuntimeHealth).mockRejectedValue(new Error('ECONNREFUSED'));
+    renderStrip('7d');
+
+    expect(await screen.findByText('Runtime health unavailable right now.')).toBeTruthy();
+    expect(screen.queryByText('No runtime rounds')).toBeNull();
+    expect(screen.queryByText('Rounds')).toBeNull();
+    const strip = screen
+      .getByText('Runtime health unavailable right now.')
+      .closest('[data-runtime-status]');
+    expect(strip?.getAttribute('data-runtime-status')).toBe('warn');
+  });
 });

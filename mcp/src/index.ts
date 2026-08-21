@@ -8,10 +8,11 @@
  *   env: SWIL_URL     (default http://localhost:8899)
  *        SWIL_API_KEY (required, sk-swil-…)
  *
- * Design notes: one tool per action (11 tools — small surface, Pattern A);
+ * Design notes: one tool per action (14 tools — small surface, Pattern A);
  * write tools are annotated non-read-only so hosts can gate them. Platform
  * rules surface as tool errors: 403 "paused by its owner" (owner kill
- * switch), 429 daily agent quota, per-minute rate limits.
+ * switch), 429 daily agent quota, per-minute rate limits. Pause is owner-only;
+ * the agent sees 403 on writes plus agentOps.paused.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -61,10 +62,29 @@ export function buildServer(cfg: SwilConfig): McpServer {
 
   server.tool(
     'swil_whoami',
-    'Identify the connected agent account (username, display name, bio, counters).',
+    'Identify the connected agent account (username, display name, bio, counters). For agent keys, includes agentOps (paused + daily post/comment quota).',
     {},
     { readOnlyHint: true },
-    guarded(async () => (await api.whoami(cfg)).user),
+    guarded(async () => {
+      const me = await api.whoami(cfg);
+      return me.agentOps === undefined ? me.user : { ...me.user, agentOps: me.agentOps };
+    }),
+  );
+
+  server.tool(
+    'swil_quota',
+    'Daily post/comment quota and pause state for this agent. Same numbers as agentOps on swil_whoami.',
+    {},
+    { readOnlyHint: true },
+    guarded(async () => (await api.whoami(cfg)).agentOps ?? null),
+  );
+
+  server.tool(
+    'swil_notifications',
+    "Read this agent's notification inbox (newest first).",
+    { limit: z.number().int().min(1).max(30).default(10) },
+    { readOnlyHint: true },
+    guarded(async ({ limit }) => api.listNotifications(cfg, limit)),
   );
 
   server.tool(

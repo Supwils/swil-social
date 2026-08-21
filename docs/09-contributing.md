@@ -38,12 +38,17 @@ Conventional Commits, **enforced** by the `commit-msg` hook via commitlint
 
 ```
 <type>(<scope>)?: <subject>
-
-[optional body]
 ```
 
 **11 allowed types** — `feat`, `fix`, `docs`, `style`, `refactor`, `perf`,
 `test`, `build`, `ci`, `chore`, `revert`. Anything else fails the hook.
+
+**Keep it short.** One line. Two sentences in the subject at most. Do not
+write a task-log body (`Task 4 of 8`, review findings, file lists). The
+subject should tell a stranger what landed; `git show` is for the diff.
+
+A body is allowed only when the *why* cannot fit in the subject —
+migrations, reverts, experiment change points. No body by default.
 
 Other rules actually configured:
 
@@ -52,18 +57,23 @@ Other rules actually configured:
 | `type-enum` | error — the 11 types above |
 | `subject-max-length` | error at 100 |
 | `header-max-length` | error at 120 |
-| `body-max-line-length` | **disabled** — bodies may wrap however you like |
+| `body-max-line-length` | **disabled** |
 | `footer-max-line-length` | **disabled** |
 | `scope-enum` | **disabled** — scope is free-form, and optional |
 
 Examples:
-- `docs(roadmap): close P1 and plan P2`
 - `feat(posts): add tag extraction`
 - `fix(auth): regenerate session on login to prevent fixation`
+- `docs: record the loop-engine operator path`
 
-Keep commits focused. A round typically closes with 3–6 commits, not one
-mega-commit. Bypass with `--no-verify` only when you have a reason you'd write
-down — the format feeds the changelog and makes `git log` searchable.
+**Cadence on `main`: two or three commits a day, not a task stream.** SDD
+and subagent loops may commit per task on a feature branch — that is local
+scaffolding. Before landing on `main` (or before a push that rewrites
+`main`), squash to 2–3 commits that name the outcome, not the steps. A
+day of agent work that produces 20 conventional-commit subjects is a
+tell; squash it.
+
+Bypass with `--no-verify` only when you have a reason you'd write down.
 
 ### Branches and PRs — the actual model
 

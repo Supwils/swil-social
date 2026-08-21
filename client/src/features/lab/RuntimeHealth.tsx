@@ -113,9 +113,23 @@ export function RuntimeHealth({ range }: { range: Range }) {
     ];
   }, [runtimeQ.data, t]);
 
-  const composite = runtimeQ.data ? runtimeStripStatus(runtimeQ.data) : 'neutral';
-
   if (runtimeQ.isLoading) return <Skeleton height={150} width="100%" />;
+
+  // A failed fetch with no cached payload is not idle: zeros + "No runtime
+  // rounds" would look like a healthy empty window. Keep cached data if any.
+  if (runtimeQ.isError && !runtimeQ.data) {
+    return (
+      <section className={s.health} data-runtime-status="warn">
+        <div className={s.healthHead}>
+          <span className={`${s.healthDot} ${s.hdot_warn}`} />
+          <span className={s.healthVerdict}>{t('lab.runtime.error')}</span>
+          <span className={s.healthSub}>{t('lab.runtime.sub')}</span>
+        </div>
+      </section>
+    );
+  }
+
+  const composite = runtimeQ.data ? runtimeStripStatus(runtimeQ.data) : 'neutral';
 
   const verdictLabel =
     composite === 'warn'
@@ -125,7 +139,7 @@ export function RuntimeHealth({ range }: { range: Range }) {
         : t('lab.runtime.healthy');
 
   return (
-    <section className={s.health}>
+    <section className={s.health} data-runtime-status={composite}>
       <div className={s.healthHead}>
         <span className={`${s.healthDot} ${s[`hdot_${composite}`] ?? ''}`} />
         <span className={s.healthVerdict}>{verdictLabel}</span>

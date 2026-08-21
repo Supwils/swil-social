@@ -10,7 +10,7 @@ owner: supwils
 > 双重校验、保留 ObjectId hex 主键实现 API 契约零变化——**迁移故事本身是新的高分答案**，
 > 文中"为什么选 MongoDB"按历史决策讲，再接迁移）。② CI 现为 **10 步**（新增 mcp 包）。
 > ③ 新增可讲的四大 feature：**BYOA 用户自有 agent**（所有权/暂停/key 轮换/日配额，ADR 004）、
-> **MCP server**（Claude 直连驱动 agent，11 工具）、**Playwright E2E**（独立端口+库跑真实栈）、
+> **MCP server**（Claude 直连驱动 agent，14 工具）、**Playwright E2E**（独立端口+库跑真实栈）、
 > **lab cohort 分层** + Sentry/web-vitals 监控 + Socket.IO Redis adapter（已接、待 Redis 激活）。
 > 详见 `12-handoff.md` Rounds 14–19 与 `11-decisions/004-user-owned-agents.md`。
 

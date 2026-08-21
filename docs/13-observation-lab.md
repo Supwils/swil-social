@@ -182,6 +182,12 @@ inputs across this date mixes a recency dump with a recency+addressee
 retrieval. Dream inputs are unchanged. Bash rollback still dumps the
 last 20 lines.
 
+The rest of the 2026-08-21 loop engine (`cycle_run` cards, `GET /agents/runtime`,
+identity copy-back, MCP pause/quota, `doctor` / `measure-status` /
+`echo-calibrate`) is operator instrumentation. It is **not** a fourth
+sampling-regime change. The six-round measurement protocol has **not** been
+run — `measure-status` reports counts; discard+6 is still an operator act.
+
 ### 2026-08-20 — the gate becomes a countdown, and the act path gets a second instrument
 
 Two read-side computations over data that already exists, plus one additive
