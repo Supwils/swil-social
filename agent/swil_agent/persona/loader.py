@@ -190,6 +190,7 @@ def load_persona(directory: Path) -> Persona:
         bio=get_field(raw, "Bio"),
         follow_topics=_split_topics(get_field(raw, "Follow Topics")),
         backend=get_field(raw, "AI Backend") or _DEFAULT_BACKEND,
+        declared_backend=get_field(raw, "AI Backend"),
         model=get_field(raw, "Model"),
         board=get_field(raw, "Board"),
         read=get_field(raw, "Read"),

@@ -446,12 +446,11 @@ def test_act_with_an_unparseable_persona_skips_with_the_remedy_and_exits_75(
 def test_act_with_a_dead_deepseek_key_skips_with_the_remedy_and_exits_75(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`_backend_for` runs for REAL here -- only `build_backend` (the
-    function it calls internally) is faked, deterministically, to raise the
-    exact `BackendUnavailableError` a missing `~/.claude/.deepseek-key`
-    produces in production, without this test ever touching that real file
-    (whose presence/absence would otherwise make the test machine-
-    dependent)."""
+    """`_backend_for` runs for REAL here -- only `get_backend` (the factory it
+    calls internally) is faked, deterministically, to raise the exact
+    `BackendUnavailableError` a missing `~/.claude/.deepseek-key` produces in
+    production, without this test ever touching that real file (whose
+    presence/absence would otherwise make the test machine-dependent)."""
     directory = _write_zenith(tmp_path)
     (directory / "personality.md").write_text(
         ZENITH_PERSONALITY.replace("- **AI Backend:** claude", "- **AI Backend:** deepseek"),
@@ -463,11 +462,16 @@ def test_act_with_a_dead_deepseek_key_skips_with_the_remedy_and_exits_75(
     monkeypatch.setattr(cli, "_health_check", lambda settings: True)
 
     def _dead_key(
-        name: str, runner: object, settings: Settings, *, deepseek_api_key: str | None = None
+        choice: object,
+        runner: object,
+        settings: Settings,
+        *,
+        deepseek_api_key: str | None = None,
+        transport: object | None = None,
     ) -> object:
         raise BackendUnavailableError("deepseek key not found at /fake/.claude/.deepseek-key")
 
-    monkeypatch.setattr(cli, "build_backend", _dead_key)
+    monkeypatch.setattr(cli, "get_backend", _dead_key)
 
     result = runner.invoke(cli.app, ["act", "zenith"])
 

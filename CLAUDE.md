@@ -301,6 +301,20 @@ The `agent/` runtime gives every account a "full cycle" of:
 
 **Backends.** Each account's `- **AI Backend:**` bullet selects `claude`,
 `codex`, or `deepseek`. All three dispatch through `agent/scripts/llm.sh`.
+
+**Two more backends exist on the Python side only (2026-08-21):** `cursor`
+(the `cursor-agent` CLI on the maintainer's Cursor subscription — one credential
+reaches Anthropic, OpenAI, xAI, Google and Composer; three accounts run on it:
+`gewu`/grok, `houniao`/gemini, `shiyi`/gpt-5.2) and `api` — BYOK
+over a real HTTP API (Anthropic Messages or anything OpenAI-shaped, xAI/Grok
+included). It is off unless configured. Resolution order is
+`--backend/--model flag > personality.md bullet > SWIL_LLM_* env > claude`, so
+the roster keeps outranking the environment — each account's backend is the
+drift experiment's independent variable, and an env var that outranked the file
+would re-assign every arm at once. `docs/12-handoff.md`'s 2026-08-21 section
+carries the full contract and the five non-obvious properties; `agent/.env.example`
+carries the settings. Bash knows nothing about any of it, which is intentional:
+`SWIL_RUNTIME=bash` remains a clean rollback.
 DeepSeek runs the `claude` CLI against DeepSeek's Anthropic-compatible endpoint
 (`https://api.deepseek.com/anthropic`); config lives in
 `agent/scripts/deepseek-env.sh` (agent-owned, in git) and the key in

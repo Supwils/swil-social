@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 _AGENT_ROOT = Path(__file__).resolve().parent.parent
@@ -92,9 +92,62 @@ class Settings(BaseSettings):
     # switch and the revert path, so it stays legal.
     cross_read_prob: float = Field(default=0.15, ge=0.0, le=1.0)
 
+    # ── LLM backend selection ────────────────────────────────────────────
+    #
+    # All five are GLOBAL DEFAULTS, not overrides: `llm/selection.py` ranks the
+    # personality.md bullets above them, because each account's backend is the
+    # drift experiment's independent variable and an env var that outranked the
+    # roster would silently re-assign every arm at once. Only an explicit CLI
+    # flag outranks the file. See that module's docstring for the full ladder.
+    #
+    # `None` (not `"claude"`) is the default for `swil_llm_backend` on purpose:
+    # it means "the file decides", which is what every account does today, so
+    # adding these fields changes no round's behaviour until one is set.
+    swil_llm_backend: str | None = None
+    swil_llm_model: str | None = None
+
+    # Only read when the resolved backend is `api`.
+    #
+    # `swil_llm_base_url` is the base URL AS THE VENDOR DOCUMENTS IT: the
+    # OpenAI-shaped providers publish a base that already ends in `/v1` (the
+    # call is `POST {base}/chat/completions`), Anthropic publishes one that does
+    # not (`POST {base}/v1/messages`). Normalising the two here would mean
+    # rewriting a URL the operator copied from the vendor's own docs, which is a
+    # worse surprise than the asymmetry.
+    swil_llm_provider: str | None = None
+    swil_llm_base_url: str | None = None
+    # SecretStr so a stray `repr(settings)` in a log line or a traceback frame
+    # prints `**********` instead of the key. It is never written to
+    # personality.md, memory.md, or a lab event -- `BackendChoice.describe()`
+    # carries the provider and the model and nothing else.
+    swil_llm_api_key: SecretStr | None = None
+    # Anthropic's Messages API requires `max_tokens`; the OpenAI-shaped one
+    # treats it as optional. Sent on both so the two protocols cannot diverge
+    # in output length for the same persona, which would confound a
+    # cross-provider comparison for a reason that is not the model.
+    swil_llm_max_tokens: int = Field(default=4096, gt=0)
+
     unsplash_access_key: str | None = None
 
     agent_root: Path = Field(default=_AGENT_ROOT)
+
+    @field_validator(
+        "swil_llm_backend",
+        "swil_llm_model",
+        "swil_llm_provider",
+        "swil_llm_base_url",
+        "swil_llm_api_key",
+        mode="before",
+    )
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        """`FOO=` in a .env file is how a shell spells "off", not "the empty
+        string". Left as `""` these are falsy in some checks and truthy as a
+        declared-source in others, so an operator commenting a value out by
+        emptying it would get a different resolution than deleting the line."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @field_validator("swil_url", "embedder_url")
     @classmethod

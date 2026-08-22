@@ -133,10 +133,17 @@ from swil_agent.graph.state import BUILTIN_TENANT, CycleState
 from swil_agent.llm.base import (
     Backend,
     BackendBinaryMissingError,
+    BackendConfigurationError,
     BackendUnavailableError,
     Runner,
     SubprocessRunner,
-    build_backend,
+)
+from swil_agent.llm.factory import get_backend
+from swil_agent.llm.selection import (
+    BackendChoice,
+    apply_choice,
+    cli_choice_for,
+    resolve_backend_choice,
 )
 from swil_agent.locks import LockBusy
 from swil_agent.models import ActResult, DreamResult, Persona
@@ -519,6 +526,60 @@ def _backend_setup_remedy(persona: Persona, exc: Exception) -> str:
     )
 
 
+def _select_backend(
+    persona: Persona,
+    settings: Settings,
+    *,
+    backend_override: str | None = None,
+    model_override: str | None = None,
+) -> tuple[Persona, Backend]:
+    """Resolve which model this round runs, build it, and say so in the log.
+
+    Returns the persona with the resolution applied (see
+    `llm/selection.py`'s `apply_choice` for why the answer travels on the
+    Persona rather than as a tenth parameter) alongside the built backend.
+
+    The log line is not decoration. `agentBackend` records what ran, but only
+    on the profile, only for a round that got as far as the act path's sync,
+    and only as a value with no provenance -- so a round that ran opus because
+    someone left `SWIL_LLM_MODEL` exported is indistinguishable, after the
+    fact, from one that ran opus because the persona file says opus. The
+    experiment's independent variable deserves a line in the round's own log
+    naming the value AND where it came from.
+    """
+    try:
+        choice, warnings = resolve_backend_choice(
+            persona,
+            settings,
+            backend_override=backend_override,
+            model_override=model_override,
+        )
+    except BackendConfigurationError as exc:
+        raise AccountSetupError(_backend_setup_remedy(persona, exc)) from exc
+
+    for warning in warnings:
+        logger.warning("WARN %s", warning)
+    logger.info("%s — %s", persona.username, choice.describe())
+
+    resolved = apply_choice(persona, choice)
+    # The api kind goes straight to the factory; every CLI kind goes through
+    # `_backend_for`, which is the name ~18 tests replace to keep a unit test
+    # from shelling out to the real `claude` binary. Routing the CLI kinds past
+    # it would silently un-fake all of them -- which is exactly what happened
+    # the first time this function was written, and it showed up as the suite
+    # hanging on a live `claude -p` rather than as a failure.
+    if choice.kind == "api":
+        return resolved, _api_backend_for(resolved, choice, settings)
+    return resolved, _backend_for(resolved, settings)
+
+
+def _api_backend_for(persona: Persona, choice: BackendChoice, settings: Settings) -> Backend:
+    try:
+        return get_backend(choice, SubprocessRunner(), settings)
+    except (BackendConfigurationError, BackendUnavailableError) as exc:
+        raise AccountSetupError(_backend_setup_remedy(persona, exc)) from exc
+
+
 def _backend_for(persona: Persona, settings: Settings) -> Backend:
     """Wraps `build_backend`'s `BackendUnavailableError` (`llm/base.py` --
     raised for a `deepseek` account with no or empty
@@ -526,10 +587,19 @@ def _backend_for(persona: Persona, settings: Settings) -> Backend:
     is a known, remediable setup problem, not a bug, and a missing
     `~/.claude/.deepseek-key` silently dropping every DeepSeek account from
     a round is already in this project's operational history (CLAUDE.md).
+
+    **The signature is frozen at `(persona, settings)`.** Roughly eighteen
+    tests in `test_cli.py` replace this exact name with a two-argument lambda,
+    and that substitution is what stops a unit test from spawning a real
+    `claude`/`codex` process. An extra parameter here -- even a defaulted one
+    -- makes every one of those stubs raise TypeError; on the act path the
+    round would then build a REAL backend and dial out. Anything the builder
+    needs beyond the persona has to arrive on the persona (see
+    `llm/selection.py`'s `apply_choice`) or through `settings`.
     """
     try:
-        return build_backend(persona.backend, SubprocessRunner(), settings)
-    except BackendUnavailableError as exc:
+        return get_backend(cli_choice_for(persona), SubprocessRunner(), settings)
+    except (BackendConfigurationError, BackendUnavailableError) as exc:
         raise AccountSetupError(_backend_setup_remedy(persona, exc)) from exc
 
 
@@ -559,7 +629,11 @@ def _backend_setup_guard(persona: Persona) -> Iterator[None]:
     """
     try:
         yield
-    except (BackendBinaryMissingError, BackendUnavailableError) as exc:
+    except (
+        BackendBinaryMissingError,
+        BackendConfigurationError,
+        BackendUnavailableError,
+    ) as exc:
         raise AccountSetupError(_backend_setup_remedy(persona, exc)) from exc
 
 
@@ -704,16 +778,28 @@ def _probe_embedder(embedder: EmbedderClient, settings: Settings) -> None:
 
 
 def _do_dream(
-    persona: Persona, persona_source: PersonaSource, settings: Settings, *, auto: bool
+    persona: Persona,
+    persona_source: PersonaSource,
+    settings: Settings,
+    *,
+    auto: bool,
+    backend_override: str | None = None,
+    model_override: str | None = None,
 ) -> DreamResult:
     embedder = _embedder_for(settings)
     _probe_embedder(embedder, settings)
 
+    persona, backend = _select_backend(
+        persona,
+        settings,
+        backend_override=backend_override,
+        model_override=model_override,
+    )
     return run_dream(
         persona=persona,
         persona_source=persona_source,
         resources=_resources_for(persona, settings),
-        backend=_backend_for(persona, settings),
+        backend=backend,
         runner=_runner_for(settings),
         embedder=embedder,
         state=_state_for(settings),
@@ -816,6 +902,7 @@ def _cycle_deps_for(
     auto: bool,
     budget: int,
     seed: int | None,
+    backend: Backend,
 ) -> CycleDeps:
     """Everything the nine nodes need, built once per cycle.
 
@@ -828,6 +915,13 @@ def _cycle_deps_for(
     `captured_at` are frozen ONCE here, where `act` and `dream` are two
     processes taking a fresh `datetime.now()` each. Within one cycle that is
     minutes in an archive stamp.
+
+    The backend is the one exception to "built once per cycle, here": it is
+    resolved and built by the command body and passed in, because `run_cycle`
+    takes the persona separately from the deps and the resolution has to reach
+    both halves (see `_select_backend`). Building it here would give the graph
+    a persona whose `backend`/`model` disagree with the backend beside it --
+    and `agentBackend` is projected from the persona.
 
     `_probe_embedder` runs here for the same reason `_do_dream` runs it: once
     per invocation, right after `guard.up()`, before any account work --
@@ -850,7 +944,7 @@ def _cycle_deps_for(
     now = datetime.now()
     return CycleDeps(
         resources=resources,
-        backend=_backend_for(persona, settings),
+        backend=backend,
         persona_source=persona_source,
         runner=runner,
         embedder=embedder,
@@ -1233,6 +1327,14 @@ def act(
     seed: int | None = typer.Option(
         None, "--seed", help="Seed the rhythm roll for reproducibility."
     ),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="Override the backend: claude | codex | deepseek | api. Outranks personality.md.",
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Override the model id. Outranks personality.md."
+    ),
     i_mean_production: bool = typer.Option(
         False,
         "--i-mean-production",
@@ -1283,13 +1385,16 @@ def act(
             # `Resources` (a second `_resources_for` would re-authenticate an
             # account on the `SWIL_PASS` fallback) and ONE `now`, so the
             # world-context block and the round's own `today` cannot disagree.
+            persona, llm = _select_backend(
+                persona, settings, backend_override=backend, model_override=model
+            )
             resources = _resources_for(persona, settings)
             runner = _runner_for(settings)
             now = datetime.now()
             result = run_act(
                 persona=persona,
                 resources=resources,
-                backend=_backend_for(persona, settings),
+                backend=llm,
                 memory_text=persona_source.read_memory(name),
                 agent_root=settings.agent_root,
                 now=now,
@@ -1316,6 +1421,14 @@ def act(
 def dream(
     name: str,
     auto: bool = typer.Option(False, "--auto", help="Honour the 12h cooldown."),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="Override the backend: claude | codex | deepseek | api. Outranks personality.md.",
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Override the model id. Outranks personality.md."
+    ),
 ) -> None:
     """Python port of `dream.sh`, for one account.
 
@@ -1349,7 +1462,14 @@ def dream(
     try:
         guard.up()
         with _backend_setup_guard(persona):
-            result = _do_dream(persona, persona_source, settings, auto=auto)
+            result = _do_dream(
+                persona,
+                persona_source,
+                settings,
+                auto=auto,
+                backend_override=backend,
+                model_override=model,
+            )
     except Exception as exc:
         _skip_for_exception(name, exc)
         raise typer.Exit(EXIT_NO_ACTION) from exc
@@ -1371,6 +1491,14 @@ def cycle(
     budget: int = typer.Option(5, "--budget"),
     seed: int | None = typer.Option(
         None, "--seed", help="Seed the rhythm roll for reproducibility."
+    ),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="Override the backend: claude | codex | deepseek | api. Outranks personality.md.",
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Override the model id. Outranks personality.md."
     ),
     i_mean_production: bool = typer.Option(
         False,
@@ -1434,6 +1562,12 @@ def cycle(
             _backend_setup_guard(persona),
             _lease_busy_guard(name),
         ):
+            # Resolved here rather than inside `_cycle_deps_for` because
+            # `run_cycle` takes the persona separately from the deps, and both
+            # have to carry the same answer -- see `_select_backend`.
+            persona, llm = _select_backend(
+                persona, settings, backend_override=backend, model_override=model
+            )
             final = run_cycle(
                 persona=persona,
                 deps=_cycle_deps_for(
@@ -1444,6 +1578,7 @@ def cycle(
                     auto=auto,
                     budget=budget,
                     seed=seed,
+                    backend=llm,
                 ),
                 lease_db=stores.lease_db,
                 checkpointer=stores.checkpointer,
@@ -2029,8 +2164,10 @@ def echo_calibrate(
 
     texts: list[str] = []
     for post in posts:
-        if not isinstance(post, dict):
-            continue
+        # No `isinstance(post, dict)` guard: `_items` (api/resources.py) already
+        # drops non-dict entries, so `user_posts` is typed `list[dict[str, Any]]`
+        # and the guard was provably dead -- which `mypy --strict`'s
+        # `warn_unreachable` reports as an error, failing ci:check step 12.
         text = post.get("text")
         if isinstance(text, str) and text.strip():
             texts.append(text)
