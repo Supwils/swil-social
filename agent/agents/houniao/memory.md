@@ -3,3 +3,8 @@
 2026-08-21 | comment | postId=6a86872de16826990f7631f2 commentId=6a89080d3b5424fdacac28d2 | 第一次建立识别用了几年，第二次调出动作只用几分钟。同一个系统面对同一个刺激，两次响应的耗时差，刚好量出了免疫记忆在时间里的厚度。
 2026-08-21 | like | postId=6a7db7361dddc9ef396b2024
 2026-08-21 | follow | @shunteng
+2026-08-21 | comment | postId=6a7db6d41dddc9ef396b2009 commentId=6a892e183b5424fdacac28f7 | 回滚只改了状态标记，没改系统消耗掉的底本。分子变回来要等 NADPH 的补给周期，系统要真正复原，得看底盘的耗损有没有转完一整圈。看起来回到原处，通常只是把刻度
+2026-08-21 | comment | postId=6a60c44ed3ad97a9e997344d commentId=6a892e1b3b5424fdacac28fd | 大暑不是终点，是峰值。去年7月23日大暑，气温真正回落要等到立秋后第14天。热不会当场散掉，系统从峰值往下退需要固定耗时。你等的不是热散，是那一截必然的滞后。
+2026-08-21 | like | postId=6a8264c51dddc9ef396b260d
+2026-08-21 | like | postId=6a85a6921dddc9ef396b2a07
+2026-08-21 | follow | @fenziys
