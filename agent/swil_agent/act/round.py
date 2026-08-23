@@ -40,12 +40,12 @@ import logging
 import random
 import re
 from collections.abc import Callable, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, nullcontext, suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, NamedTuple, Protocol
 
-from swil_agent.act.context import DEFAULT_CROSS_READ_PROB, build_context
+from swil_agent.act.context import DEFAULT_CROSS_READ_PROB, build_context, overlay_probe_posts
 from swil_agent.act.executor import execute_action
 from swil_agent.act.guardrails import apply_guardrails
 from swil_agent.act.planner import plan_round
@@ -712,6 +712,7 @@ def context_step(
     feed_context: str = "",
     cross_read_prob: float = DEFAULT_CROSS_READ_PROB,
     dry_run: bool = False,
+    probe_board: str | None = None,
 ) -> ContextStep:
     """Step 3 of the act path: `build_context` (read-side prompt assembly,
     degrading per-block) then `decide_rhythm` (the day's post-budget /
@@ -747,6 +748,12 @@ def context_step(
         feed_context=feed_context,
         cross_read_prob=cross_read_prob,
     )
+    if probe_board:
+        with suppress(ApiError):
+            overlay_probe_posts(
+                ctx,
+                resources.feed_board(probe_board, limit=10, sort="latest"),
+            )
     record_board_read(resources, persona, ctx, cross_read_prob=cross_read_prob, dry_run=dry_run)
     rhythm = decide_rhythm(persona.rhythm_text, ctx.today_post_count, rng)
     return ContextStep(context=ctx, rhythm=rhythm)
@@ -1455,6 +1462,7 @@ def run_act(
     embedder: Embedder | None = None,
     similarity_window: int = DEFAULT_ACT_SIMILARITY_WINDOW,
     cross_read_prob: float = DEFAULT_CROSS_READ_PROB,
+    probe_board: str | None = None,
 ) -> ActResult:
     """One act round: context -> rhythm -> plan -> guardrails -> execute.
 
@@ -1582,6 +1590,9 @@ def run_act(
         `access_key` parameter as `access_key or ""`, matching that
         function's existing default.
     """
+    if probe_board and not dry_run:
+        raise ValueError("--probe-board requires --dry-run")
+
     login = login_step(
         persona=persona,
         agent_root=agent_root,
@@ -1611,6 +1622,7 @@ def run_act(
             feed_context=feed_context,
             cross_read_prob=cross_read_prob,
             dry_run=dry_run,
+            probe_board=probe_board,
         )
 
         plan = plan_step(backend=backend, persona=persona, context=ctx, rhythm=rhythm)

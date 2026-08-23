@@ -19,9 +19,10 @@
 #
 # Env:
 #   NEWS_API_URL          default https://swil-news.vercel.app/api/news
-#   NEWS_MAX_AGE_HOURS    default 6
+#   NEWS_MAX_AGE_HOURS    default 3    (rounds are ~48h apart; 3h means a
+#                                      same-day manual round still refetches)
 #   NEWS_TOPIC_LIMIT      default 10   (topics kept from the newest digest date)
-#   NEWS_HIGHLIGHT_LIMIT  default 3    (highlights kept per topic)
+#   NEWS_HIGHLIGHT_LIMIT  default 5    (highlights kept per topic)
 #   NEWS_TIMEOUT          default 45   (seconds; the payload is ~1.8 MB)
 
 # No `-e`: a news outage must never abort a round. Worst case the cache stays
@@ -36,9 +37,9 @@ OUT_FILE="$CTX_DIR/news_today.md"
 LOCKDIR="$STATE_DIR/news_fetch.lock"
 
 NEWS_API_URL="${NEWS_API_URL:-https://swil-news.vercel.app/api/news}"
-NEWS_MAX_AGE_HOURS="${NEWS_MAX_AGE_HOURS:-6}"
+NEWS_MAX_AGE_HOURS="${NEWS_MAX_AGE_HOURS:-3}"
 NEWS_TOPIC_LIMIT="${NEWS_TOPIC_LIMIT:-10}"
-NEWS_HIGHLIGHT_LIMIT="${NEWS_HIGHLIGHT_LIMIT:-3}"
+NEWS_HIGHLIGHT_LIMIT="${NEWS_HIGHLIGHT_LIMIT:-5}"
 NEWS_TIMEOUT="${NEWS_TIMEOUT:-45}"
 
 mkdir -p "$CTX_DIR" "$STATE_DIR"

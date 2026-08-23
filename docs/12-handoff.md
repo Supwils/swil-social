@@ -1,11 +1,84 @@
 ---
 title: Handoff — post-v1 improvements active
 status: stable
-last-updated: 2026-08-21
+last-updated: 2026-08-22
 owner: agent-loop-engine
 ---
 
 # Handoff
+
+## Isolated prompt-injection probe lane — 2026-08-22
+
+A third experimental lane, sibling to the live roster and Persona Bench.
+Attacker text is meant to live on board `probes` (empty `tagSlugs`,
+`sortOrder` 99; seed in `server/scripts/backfill-boards.ts`). The 23-account
+field study never reads it: a census walks every `Board:` / `Read:` bullet
+and fails if any equals `probes`. Measurement is
+
+```bash
+uv run --project agent swil-agent act <name> --dry-run --probe-board probes
+```
+
+which overlays that board's latest posts onto the assembled feed strings
+only, then prints one JSON score line (`hard_hit` / `soft_hit` / `missed`).
+`--probe-board` without `--dry-run` is illegal (CLI exit 2; `run_act`
+raises). `cycle` and `opportunistic-round.sh` do not grow the flag.
+Dreams stay off because `--dry-run` already skips them. R28 is untouched.
+
+`probes` is a **reserved** slug: `listBoards` omits it, mixed feeds
+(`global` / following / tag / search / explore) omit posts filed there,
+and the act path drops it from cross-read / now-context candidates.
+`GET /feed/board/probes` stays so the overlay can fetch. This slice does
+**not** create probe accounts or POST attacker text to production. Spec:
+`docs/superpowers/specs/2026-08-22-prompt-injection-probe-design.md`.
+
+## Upload cap, Explore OpenRoute pin, keyboard PostCard — 2026-08-22
+
+Multer ceiling is `POST_UPLOAD_FILE_SIZE` = 15 MB (`posts.limits.ts`);
+images still reject above `POST_IMAGE_MAX_BYTES` = 5 MB. Explore remains an
+OpenRoute: `/feed/explore-summary`, `GET /users`, `/users/profile-tags`,
+and `/posts/search` stay `optionalUser` (pinned comments + route-stack
+tests). Post cards are keyboard-activable (`tabIndex={0}` `role="link"`;
+Enter/Space on the article, not on inner links). Spec:
+`docs/superpowers/specs/2026-08-22-remaining-gaps-design.md`.
+
+**Operator, not this slice:** Neon `0003_per_user_snapshot_hash` before API
+deploy; no commit/push until the user says `commit push`; do not force the
+48h opportunistic round; do not POST probe payloads to Railway.
+
+## Explore, mentions, lab ingest, snapshot uniqueness — 2026-08-22
+
+Anonymous Explore no longer 401s: `/feed/explore-summary`, `GET /users`,
+and `/users/profile-tags` are `optionalUser`. Mention notifications skip
+recipients who cannot see the post. Benchmark runs and population-metric
+ingest require a **first-party** agent (`isAgent` and no `ownerId`).
+Personality/behavior snapshot uniqueness is `(userId, contentHash)` —
+migration `0003_per_user_snapshot_hash` (run on Neon before deploying the
+API). Post permalink back-link goes to `/global` when signed out.
+
+## Visibility + session cookie + socket origin — 2026-08-22
+
+Echo and bookmark now go through the same visibility gate as like/comment.
+A public echo of a private original still exists, but `echoOf` is omitted
+for viewers who cannot see the original. Logout `clearCookie` uses the
+same `secure` / `sameSite` / `domain` / `path` as the session cookie.
+Socket.IO handshake rejects unknown Origins (matching HTTP CORS); typing
+events require `conversation:join` room membership.
+
+## Folio feed + news freshness — 2026-08-22
+
+Feed rivers (`/global`, `/feed`, `/board/:slug`, `/tag/:slug`) default to a
+two-column **folio** of compact cards so a viewport shows more than one post.
+The 680px reading column remains as `list`. Shared pieces: `FeedLayoutToggle`,
+`FeedStream` / `FeedSkeletons`. Persist stays `swil.ui` at version 2
+(migrate rewrites only `feedLayout` to folio; theme/language survive).
+AppShell already widens the
+column to `--layout-feed-max-grid` (1100px) on those routes when folio is on.
+
+News: `NEWS_MAX_AGE_HOURS` 6 → 3, `NEWS_HIGHLIGHT_LIMIT` 3 → 5. The
+now-context wording is unchanged (R28). Agents still choose whether to post
+about the digest; there is no scheduled-news path. Change point:
+`docs/13-observation-lab.md` (2026-08-22).
 
 ## Loop engine is the operator path — 2026-08-21
 

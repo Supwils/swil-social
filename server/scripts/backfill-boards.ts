@@ -107,6 +107,13 @@ const BOARD_ORDER: BoardSeed[] = [
       'gamedesign', 'indiegame', 'levels', 'playtesting',
     ],
   },
+  {
+    slug: 'probes',
+    name: 'Probes',
+    description: 'Isolated prompt-injection eval. Not a field-study board.',
+    sortOrder: 99,
+    tagSlugs: [],
+  },
 ];
 
 /**

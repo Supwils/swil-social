@@ -14,7 +14,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, NamedTuple
@@ -314,6 +314,28 @@ def format_conversations(items: list[dict[str, Any]]) -> str:
 
 # ── read scope + cross-reads (Phase B task 3, spec §8.3) ──────────────────
 
+RESERVED_BOARD_SLUGS: Final = frozenset({"probes"})
+"""Boards a production round must never treat as a read candidate.
+
+`probes` is the isolated prompt-injection eval board. Overlay fetches it
+by slug under `--dry-run --probe-board`; field-study `get_boards()`
+enumeration (cross-read + now-context window) must drop it even if the
+API still lists it.
+"""
+
+
+def field_study_board_slugs(slugs: Iterable[str], *, home: str | None = None) -> list[str]:
+    """Boards a production round may read, preserving input order."""
+    out: list[str] = []
+    for slug in slugs:
+        if home is not None and slug == home:
+            continue
+        if slug.casefold() in RESERVED_BOARD_SLUGS:
+            continue
+        out.append(slug)
+    return out
+
+
 DEFAULT_CROSS_READ_PROB: Final = 0.15
 """Probability that one round reads a board OUTSIDE the account's niche.
 
@@ -420,7 +442,7 @@ def choose_read_scope(
         return BoardRead(scope=home, home=home, cross=False)
 
     try:
-        slugs = sorted(slug for slug in resources.get_boards() if slug != home)
+        slugs = sorted(field_study_board_slugs(resources.get_boards(), home=home))
     except ApiError:
         return BoardRead(scope=home, home=home, cross=False)
     if not slugs:
@@ -649,7 +671,7 @@ def _cross_board(resources: Resources, home: str, *, now: datetime) -> str:
     call means a boards outage costs the cross-board window and nothing else.
     """
     try:
-        slugs = [slug for slug in resources.get_boards() if slug != home]
+        slugs = field_study_board_slugs(resources.get_boards(), home=home)
     except ApiError:
         return ""
     if not slugs:
@@ -851,6 +873,29 @@ def render_follow_topics_feed(resources: Resources, persona: Persona, *, now: da
         if rows:
             text += f"## #{topic}\n{rows}\n\n"
     return text
+
+
+def overlay_probe_posts(ctx: ActContext, items: list[dict[str, Any]]) -> ActContext:
+    """Prepend probe-board posts onto the already-assembled feed strings.
+
+    Does not change `board_read` / `home_board` / `cross_read` — those remain
+    the field-study record of what the account would have read.
+    """
+    if not items:
+        return ctx
+    block = format_global_feed(items)
+    if block:
+        ctx.global_feed = f"{block}\n{ctx.global_feed}"
+    # Only overlay the following-timeline block when the account already has
+    # one. An empty string is load-bearing: the planner prompt drops that
+    # heading, and filling it here would invent a timeline the field study
+    # never assembled.
+    if ctx.timeline_feed:
+        time_block = format_timeline_feed(items)
+        if time_block:
+            ctx.timeline_feed = f"{time_block}\n{ctx.timeline_feed}"
+    ctx.probe_post_ids = [str(item["id"]) for item in items if item.get("id")]
+    return ctx
 
 
 # ── build_context (contract 01 §4 — the asymmetry, enforced) ───────────────

@@ -398,6 +398,7 @@ class ActContext(BaseModel):
     backend_action_constraint: str = ""
 
     contacts: list[str] = Field(default_factory=list)
+    probe_post_ids: list[str] = Field(default_factory=list)
 
     # ── what this round actually READ (Phase B task 3, spec §8.3) ──────────
     #

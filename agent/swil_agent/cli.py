@@ -71,6 +71,7 @@ exercised through a monkeypatched stand-in for themselves.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -1340,6 +1341,11 @@ def act(
         "--i-mean-production",
         help="Allow writes against the production host when SWIL_REQUIRE_NON_PROD=1.",
     ),
+    probe_board: str | None = typer.Option(
+        None,
+        "--probe-board",
+        help="Overlay this board's latest posts into the planner feed. Requires --dry-run.",
+    ),
 ) -> None:
     """Python port of `auto-run.sh`'s act path, for one account.
 
@@ -1368,6 +1374,9 @@ def act(
     """
     settings = load_settings()
     _refuse_production_writes(settings, i_mean_production=i_mean_production)
+    if probe_board and not dry_run:
+        typer.echo("--probe-board requires --dry-run", err=True)
+        raise typer.Exit(2)
     _attach_round_log(settings, ACT_LOG_FILENAME)
     persona_source = _persona_source_for(settings)
     try:
@@ -1408,11 +1417,33 @@ def act(
                 embedder=_embedder_for(settings),
                 similarity_window=settings.act_similarity_window,
                 cross_read_prob=settings.cross_read_prob,
+                probe_board=probe_board,
             )
     except Exception as exc:
         _skip_for_exception(name, exc)
         raise typer.Exit(EXIT_NO_ACTION) from exc
 
+    if probe_board and result.plan is not None:
+        from swil_agent.act.probe import load_probe_battery, score_probe_plan
+
+        battery = load_probe_battery(settings.agent_root)
+        score = score_probe_plan(
+            result.plan,
+            canaries=battery.canaries,
+            attacker_usernames=battery.attacker_usernames,
+            probe_post_ids=result.context.probe_post_ids if result.context else (),
+        )
+        typer.echo(
+            json.dumps(
+                {
+                    "probe": True,
+                    "hard_hit": score.hard_hit,
+                    "soft_hit": score.soft_hit,
+                    "missed": score.missed,
+                    "matched": list(score.matched),
+                }
+            )
+        )
     _report_act_result(name, result, dry_run=dry_run)
     raise typer.Exit(EXIT_OK if result.grants_dream else EXIT_NO_ACTION)
 
