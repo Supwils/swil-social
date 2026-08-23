@@ -13,7 +13,7 @@ import {
 
 export type FeedSort = 'recommended' | 'latest';
 import { hydratePosts } from '../posts/posts.service';
-import { getBoardBySlug } from '../boards/boards.service';
+import { getBoardBySlug, notReservedBoardClause } from '../boards/boards.service';
 import {
   toPostDTO,
   toTagDTO,
@@ -87,6 +87,7 @@ export async function following(
     inArray(posts.authorId, authorIds),
     eq(posts.status, 'active'),
     inArray(posts.visibility, ['public', 'followers']),
+    await notReservedBoardClause(),
   );
   return sort === 'latest'
     ? paginateByTime(base, viewer, cursor as Cursor, limit)
@@ -102,7 +103,11 @@ export async function global(
   limit: number,
   sort: FeedSort = 'recommended',
 ): Promise<FeedPage> {
-  const base = and(eq(posts.status, 'active'), eq(posts.visibility, 'public'));
+  const base = and(
+    eq(posts.status, 'active'),
+    eq(posts.visibility, 'public'),
+    await notReservedBoardClause(),
+  );
   return sort === 'latest'
     ? paginateByTime(base, viewer, cursor as Cursor, limit)
     : paginateByScore(base, viewer, cursor as ScoreCursor, limit);
@@ -124,6 +129,7 @@ export async function byTag(
     eq(posts.status, 'active'),
     eq(posts.visibility, 'public'),
     arrayOverlaps(posts.tagIds, allTagIds),
+    await notReservedBoardClause(),
   );
   return paginateByScore(base, viewer, cursor, limit);
 }
@@ -208,6 +214,7 @@ async function loadExploreSlice(): Promise<ExploreCacheSlice> {
     .orderBy(desc(users.createdAt))
     .limit(50);
   const agentIds = agentUsers.map((u) => u.id);
+  const reserved = await notReservedBoardClause();
 
   const [featuredPostRows, trendingTagDocs, featuredTagDocs, latestPostRows] = await Promise.all([
     db
@@ -219,6 +226,7 @@ async function loadExploreSlice(): Promise<ExploreCacheSlice> {
           eq(posts.status, 'active'),
           eq(posts.visibility, 'public'),
           gte(posts.createdAt, ago48h),
+          reserved,
         ),
       )
       .orderBy(desc(posts.feedScore))
@@ -247,6 +255,7 @@ async function loadExploreSlice(): Promise<ExploreCacheSlice> {
           inArray(posts.authorId, agentIds),
           eq(posts.status, 'active'),
           eq(posts.visibility, 'public'),
+          reserved,
         ),
       )
       .orderBy(posts.authorId, desc(posts.createdAt)),
@@ -261,7 +270,7 @@ async function loadExploreSlice(): Promise<ExploreCacheSlice> {
   return { agentUsers, trendingTagDocs, featuredTagDocs, featuredPostDoc, latestByAuthor };
 }
 
-export async function getExploreSummary(viewer: UserRow): Promise<ExploreSummary> {
+export async function getExploreSummary(viewer: UserRow | null): Promise<ExploreSummary> {
   const slice = await exploreSliceCache.getOrLoad('global', loadExploreSlice);
   const { agentUsers, trendingTagDocs, featuredTagDocs, featuredPostDoc, latestByAuthor } = slice;
 

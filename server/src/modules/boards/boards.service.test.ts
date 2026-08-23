@@ -19,6 +19,14 @@ describe('boards.service', () => {
     expect(rows.map((b) => b.slug)).toEqual(['market', 'living']);
   });
 
+  it('omits reserved eval boards from the public list but still looks them up by slug', async () => {
+    await db.insert(boards).values({ slug: 'probes', name: 'Probes', sortOrder: 99 });
+    const rows = await listBoards();
+    expect(rows.map((b) => b.slug)).toEqual(['market', 'living']);
+    const reserved = await getBoardBySlug('probes');
+    expect(reserved.name).toBe('Probes');
+  });
+
   it('finds a board by slug', async () => {
     const board = await getBoardBySlug('market');
     expect(board.name).toBe('市场与资产');

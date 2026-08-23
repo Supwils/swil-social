@@ -14,6 +14,10 @@ import { uploadPostMedia, cleanupUploadedMedia } from './posts.media';
 import { upsertTagsForPost, syncTagCounts } from './posts.tags';
 import { getPostForViewer } from './posts.read';
 import { assertBoardExists } from '../boards/boards.service';
+import { POST_IMAGE_MAX_BYTES } from './posts.limits';
+import { assertVisibility, mentionRecipientIdsWhoCanSee } from './posts.visibility';
+
+export { assertVisibility, canViewPost, followingSet } from './posts.visibility';
 
 export async function createPost(
   author: UserRow,
@@ -40,9 +44,10 @@ export async function createPost(
   // Fail before any media work if the caller named a board that does not exist.
   if (input.boardId) await assertBoardExists(input.boardId);
 
-  const MAX_IMG = 5 * 1024 * 1024;
   for (const buf of imageBuffers) {
-    if (buf.length > MAX_IMG) throw AppError.validation('Image files may not exceed 5 MB');
+    if (buf.length > POST_IMAGE_MAX_BYTES) {
+      throw AppError.validation('Image files may not exceed 5 MB');
+    }
   }
 
   const tagNames = extractTags(input.text);
@@ -67,8 +72,17 @@ export async function createPost(
     if (!original || original.status !== 'active') {
       throw AppError.notFound('Post not found');
     }
+    await assertVisibility(original, author);
     echoOfId = original.echoOf ?? original.id;
     echoOriginal = original;
+    if (echoOfId !== original.id) {
+      const [canonical] = await db.select().from(posts).where(eq(posts.id, echoOfId)).limit(1);
+      if (!canonical || canonical.status !== 'active') {
+        throw AppError.notFound('Post not found');
+      }
+      await assertVisibility(canonical, author);
+      echoOriginal = canonical;
+    }
   }
 
   const now = new Date();
@@ -155,11 +169,12 @@ export async function createPost(
       }),
     );
   }
-  for (const mentioned of mentionDocs) {
-    if (mentioned.id === author.id) continue;
+  const mentionIds = mentionDocs.filter((m) => m.id !== author.id).map((m) => m.id);
+  const visibleMentions = await mentionRecipientIdsWhoCanSee(post, mentionIds);
+  for (const recipientId of visibleMentions) {
     notifJobs.push(
       createNotification({
-        recipientId: mentioned.id,
+        recipientId,
         actorId: author.id,
         type: 'mention',
         postId: post.id,
@@ -274,23 +289,4 @@ export async function deletePost(postId: string, actor: UserRow): Promise<void> 
     ...post.images.map((img) => deleteFromS3(img.url)),
     post.video ? deleteFromS3(post.video.url) : Promise.resolve(),
   ]);
-}
-
-/**
- * Assert the viewer is allowed to read this post given its visibility setting.
- * Throws NOT_FOUND (not FORBIDDEN) to avoid leaking existence of private posts.
- */
-export async function assertVisibility(post: PostRow, viewer: UserRow | null): Promise<void> {
-  if (post.visibility === 'public') return;
-  if (!viewer) throw AppError.notFound('Post not found');
-  if (post.authorId === viewer.id) return;
-  if (post.visibility === 'private') throw AppError.notFound('Post not found');
-  if (post.visibility === 'followers') {
-    const [f] = await db
-      .select({ id: follows.id })
-      .from(follows)
-      .where(and(eq(follows.followerId, viewer.id), eq(follows.followingId, post.authorId)))
-      .limit(1);
-    if (!f) throw AppError.notFound('Post not found');
-  }
 }

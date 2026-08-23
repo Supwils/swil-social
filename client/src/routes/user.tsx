@@ -15,28 +15,22 @@ import { PostCard } from '@/features/posts/PostCard';
 import { FollowListModal } from '@/features/users/FollowListModal';
 import { AgentDriftWidget } from '@/features/lab/AgentDriftWidget';
 import type { UserDTO, ApiError } from '@/api/types';
-import {
-  Avatar,
-  Button,
-  EmptyState,
-  PostCardSkeleton,
-  Skeleton,
-} from '@/components/primitives';
+import { Avatar, Button, EmptyState, PostCardSkeleton, Skeleton } from '@/components/primitives';
 import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import s from './user.module.css';
 
 // Positions form a loose orbit around the avatar (top-center of header)
 const STICKER_POSITIONS = [
-  { x: '15%', y: '5%',  rot: -8  },
-  { x: '65%', y: '3%',  rot:  7  },
-  { x: '7%',  y: '28%', rot:  13 },
-  { x: '77%', y: '22%', rot: -5  },
+  { x: '15%', y: '5%', rot: -8 },
+  { x: '65%', y: '3%', rot: 7 },
+  { x: '7%', y: '28%', rot: 13 },
+  { x: '77%', y: '22%', rot: -5 },
   { x: '12%', y: '54%', rot: -12 },
-  { x: '71%', y: '50%', rot:  9  },
-  { x: '26%', y: '68%', rot:  5  },
-  { x: '60%', y: '66%', rot: -9  },
-  { x: '32%', y: '10%', rot:  10 },
-  { x: '73%', y: '38%', rot: -4  },
+  { x: '71%', y: '50%', rot: 9 },
+  { x: '26%', y: '68%', rot: 5 },
+  { x: '60%', y: '66%', rot: -9 },
+  { x: '32%', y: '10%', rot: 10 },
+  { x: '73%', y: '38%', rot: -4 },
 ];
 
 // Soft, muted pastels — cohesive with the warm off-white design
@@ -44,10 +38,10 @@ const STICKER_COLORS = [
   { bg: 'rgba(154, 189, 138, 0.25)', border: 'rgba(120, 162, 104, 0.38)' },
   { bg: 'rgba(200, 155, 155, 0.25)', border: 'rgba(170, 118, 118, 0.38)' },
   { bg: 'rgba(150, 148, 200, 0.25)', border: 'rgba(115, 112, 170, 0.38)' },
-  { bg: 'rgba(200, 175, 118, 0.25)', border: 'rgba(170, 145, 86, 0.38)'  },
-  { bg: 'rgba(118, 165, 200, 0.25)', border: 'rgba(86, 132, 170, 0.38)'  },
-  { bg: 'rgba(118, 192, 175, 0.25)', border: 'rgba(86, 162, 145, 0.38)'  },
-  { bg: 'rgba(200, 188, 118, 0.25)', border: 'rgba(170, 158, 86, 0.38)'  },
+  { bg: 'rgba(200, 175, 118, 0.25)', border: 'rgba(170, 145, 86, 0.38)' },
+  { bg: 'rgba(118, 165, 200, 0.25)', border: 'rgba(86, 132, 170, 0.38)' },
+  { bg: 'rgba(118, 192, 175, 0.25)', border: 'rgba(86, 162, 145, 0.38)' },
+  { bg: 'rgba(200, 188, 118, 0.25)', border: 'rgba(170, 158, 86, 0.38)' },
   { bg: 'rgba(178, 138, 200, 0.25)', border: 'rgba(148, 104, 170, 0.38)' },
 ];
 
@@ -63,14 +57,16 @@ function TagWallpaper({ tags }: { tags: string[] }) {
             key={tag}
             to={`/explore?tab=people&tag=${encodeURIComponent(tag)}`}
             className={s.stickerTag}
-            style={{
-              left: pos.x,
-              top: pos.y,
-              '--rot': `${pos.rot}deg`,
-              transform: `rotate(${pos.rot}deg)`,
-              background: col.bg,
-              border: `1px solid ${col.border}`,
-            } as React.CSSProperties}
+            style={
+              {
+                left: pos.x,
+                top: pos.y,
+                '--rot': `${pos.rot}deg`,
+                transform: `rotate(${pos.rot}deg)`,
+                background: col.bg,
+                border: `1px solid ${col.border}`,
+              } as React.CSSProperties
+            }
           >
             {t(`tags.labels.${tag}`, tag)}
           </Link>
@@ -197,9 +193,11 @@ export default function UserRoute() {
           </div>
           {u.headline && <p className={s.headline}>{u.headline}</p>}
           {u.bio && <p className={s.bio}>{u.bio}</p>}
-          <AgentDriftWidget username={u.username} />
+          <AgentDriftWidget username={u.username} enabled={u.isAgent} />
           <div className={s.meta}>
-            <span><strong>{u.postCount}</strong> {t('profile.posts')}</span>
+            <span>
+              <strong>{u.postCount}</strong> {t('profile.posts')}
+            </span>
             <button type="button" className={s.metaBtn} onClick={() => setFollowModal('followers')}>
               <strong>{u.followerCount}</strong> {t('profile.followers')}
             </button>
@@ -226,11 +224,7 @@ export default function UserRoute() {
                   {t('profile.follow')}
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                onClick={() => message.mutate()}
-                disabled={message.isPending}
-              >
+              <Button variant="ghost" onClick={() => message.mutate()} disabled={message.isPending}>
                 {t('profile.message')}
               </Button>
             </div>
@@ -278,7 +272,9 @@ export default function UserRoute() {
             <EmptyState title="No posts yet." description="Nothing to see here — yet." />
           )}
 
-          {postItems.map((post) => <PostCard key={post.id} post={post} />)}
+          {postItems.map((post) => (
+            <PostCard key={post.id} post={post} />
+          ))}
 
           <InfiniteScrollSentinel
             hasNextPage={posts.hasNextPage}

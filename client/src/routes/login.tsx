@@ -41,9 +41,7 @@ function LangToggle() {
 export default function AuthPage() {
   const { t } = useTranslation();
   const loc = useLocation();
-  const [panel, setPanel] = useState<Panel>(
-    loc.pathname === '/register' ? 'register' : 'login'
-  );
+  const [panel, setPanel] = useState<Panel>(loc.pathname === '/register' ? 'register' : 'login');
 
   useEffect(() => {
     setPanel(loc.pathname === '/register' ? 'register' : 'login');
@@ -110,14 +108,22 @@ function LoginPanel() {
   const qc = useQueryClient();
   const loc = useLocation();
 
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<LoginFields>({
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginFields>({
     resolver: zodResolver(loginSchema),
   });
 
   const onSubmit = async (data: LoginFields) => {
     setGlobalError(null);
     try {
-      const user = await authApi.login({ usernameOrEmail: data.usernameOrEmail, password: data.password });
+      const user = await authApi.login({
+        usernameOrEmail: data.usernameOrEmail,
+        password: data.password,
+      });
+      qc.clear();
       setUser(user);
       qc.setQueryData(qk.auth.me, user);
       toast.success(`Welcome back, ${user.usernameDisplay}`);
@@ -132,7 +138,9 @@ function LoginPanel() {
   return (
     <div className={`${s.formContainer} ${s.signIn}`}>
       <div className={s.brand}>Swil Social</div>
-      <Link to="/" className={s.showcaseLink}>{t('auth.browseCommunity')}</Link>
+      <Link to="/" className={s.showcaseLink}>
+        {t('auth.browseCommunity')}
+      </Link>
       <h1 className={s.title}>{t('auth.signIn')}</h1>
 
       <form onSubmit={handleSubmit(onSubmit)} className={s.form} noValidate>
@@ -149,12 +157,15 @@ function LoginPanel() {
           error={errors.password ? t('auth.fieldRequired') : undefined}
           {...register('password')}
         />
-        {globalError && <div className={s.errorBanner} role="alert">{globalError}</div>}
+        {globalError && (
+          <div className={s.errorBanner} role="alert">
+            {globalError}
+          </div>
+        )}
         <Button variant="primary" type="submit" disabled={isSubmitting} fullWidth>
           {isSubmitting ? t('auth.signingIn') : t('auth.signIn')}
         </Button>
       </form>
-
     </div>
   );
 }
@@ -192,7 +203,12 @@ function RegisterPanel() {
   const [challengeAnswer, setChallengeAnswer] = useState('');
   const [challengeError, setChallengeError] = useState<string | null>(null);
 
-  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<RegisterFields>({
+  const {
+    register,
+    handleSubmit,
+    setError,
+    formState: { errors, isSubmitting },
+  } = useForm<RegisterFields>({
     resolver: zodResolver(registerSchema),
   });
 
@@ -240,7 +256,9 @@ function RegisterPanel() {
   return (
     <div className={`${s.formContainer} ${s.signUp}`}>
       <div className={s.brand}>Swil Social</div>
-      <Link to="/" className={s.showcaseLink}>{t('auth.browseCommunity')}</Link>
+      <Link to="/" className={s.showcaseLink}>
+        {t('auth.browseCommunity')}
+      </Link>
       <h1 className={s.title}>{t('auth.createAccount')}</h1>
 
       <form onSubmit={handleSubmit(onSubmit)} className={s.form} noValidate>
@@ -299,7 +317,11 @@ function RegisterPanel() {
           />
           {challengeError && <p className={s.challengeError}>{challengeError}</p>}
         </div>
-        {globalError && <div className={s.errorBanner} role="alert">{globalError}</div>}
+        {globalError && (
+          <div className={s.errorBanner} role="alert">
+            {globalError}
+          </div>
+        )}
         <Button variant="primary" type="submit" disabled={isSubmitting} fullWidth>
           {isSubmitting ? t('auth.creating') : t('auth.createAccount')}
         </Button>

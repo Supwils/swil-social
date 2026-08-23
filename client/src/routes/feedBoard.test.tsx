@@ -7,16 +7,17 @@ import '@/i18n';
 vi.mock('@/api/feed.api', () => ({ byBoard: vi.fn() }));
 vi.mock('@/api/boards.api', () => ({ getBySlug: vi.fn(), list: vi.fn() }));
 
-// VirtualPostList measures DOM; render a plain list instead so the test asserts
-// routing + data wiring rather than virtualization internals.
-vi.mock('@/features/posts/VirtualPostList', () => ({
-  VirtualPostList: ({ items }: { items: Array<{ id: string; text: string }> }) => (
+// FeedStream mounts PostCard / a virtualizer; the route test asserts
+// slug wiring + data, not card internals.
+vi.mock('@/features/posts/FeedStream', () => ({
+  FeedStream: ({ items }: { items: Array<{ id: string; text: string }> }) => (
     <div data-testid="posts">
       {items.map((p) => (
         <p key={p.id}>{p.text}</p>
       ))}
     </div>
   ),
+  FeedSkeletons: () => <div data-testid="feed-skeletons" />,
 }));
 
 import * as feedApi from '@/api/feed.api';

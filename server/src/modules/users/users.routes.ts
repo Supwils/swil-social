@@ -25,9 +25,10 @@ export const usersRouter = Router();
 // GET /:username route so "me" is never captured as a username.
 usersRouter.use('/me/agents', ownedAgentsRouter);
 
+// Explore people tab. OpenRoute — anonymous visitors browse this list.
 usersRouter.get(
   '/',
-  requireUser,
+  optionalUser,
   validate(searchUsersQuerySchema, 'query'),
   asyncHandler(ctrl.search),
 );
@@ -36,7 +37,8 @@ usersRouter.patch('/me', requireUser, validate(updateMeSchema), asyncHandler(ctr
 
 usersRouter.put('/me/avatar', requireUser, upload.single('image'), asyncHandler(ctrl.updateAvatar));
 
-usersRouter.get('/profile-tags', requireUser, asyncHandler(ctrl.getPopularProfileTags));
+// Explore people-tab filters. OpenRoute — same anonymous contract as GET /.
+usersRouter.get('/profile-tags', optionalUser, asyncHandler(ctrl.getPopularProfileTags));
 
 usersRouter.get('/profile-tags/presets', asyncHandler(ctrl.getProfileTagPresets));
 

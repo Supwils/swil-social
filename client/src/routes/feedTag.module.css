@@ -13,10 +13,20 @@
 
 .simpleHeader {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-border);
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .simpleHeader h1 {
@@ -47,7 +57,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, transparent 40%, rgba(0,0,0,0.55));
+  background: linear-gradient(to bottom, transparent 40%, rgba(0, 0, 0, 0.55));
 }
 
 .headerBody {

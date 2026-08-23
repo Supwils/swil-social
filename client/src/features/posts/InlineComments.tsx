@@ -1,11 +1,4 @@
-import {
-  type FormEvent,
-  type KeyboardEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { Link } from 'react-router-dom';
 import {
@@ -86,19 +79,23 @@ export function InlineComments({ postId, open, indented = true }: Props) {
 
   const bumpCount = (delta: 1 | -1) => {
     const updater = (old: InfiniteData<Paginated<PostDTO>> | undefined) => {
-      if (!old) return old;
+      if (!old?.pages) return old;
       return {
         ...old,
         pages: old.pages.map((pg) => ({
           ...pg,
-          items: pg.items.map((p) =>
+          items: (pg.items ?? []).map((p) =>
             p.id === postId ? { ...p, commentCount: p.commentCount + delta } : p,
           ),
         })),
       };
     };
     qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>({ queryKey: ['feed'] }, updater);
-    qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>({ queryKey: ['users'] }, updater);
+    // Only the author's posts infinite query — not byUsername / followStatus.
+    qc.setQueriesData<InfiniteData<Paginated<PostDTO>>>(
+      { predicate: (q) => q.queryKey[0] === 'users' && q.queryKey[2] === 'posts' },
+      updater,
+    );
   };
 
   const submit = useMutation({
@@ -113,8 +110,7 @@ export function InlineComments({ postId, open, indented = true }: Props) {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, text }: { id: string; text: string }) =>
-      commentsApi.update(id, text),
+    mutationFn: ({ id, text }: { id: string; text: string }) => commentsApi.update(id, text),
     onSuccess: () => {
       setEditingId(null);
       setEditText('');
@@ -220,17 +216,16 @@ export function InlineComments({ postId, open, indented = true }: Props) {
   const items = useMemo(() => comments.data?.pages.flatMap((p) => p.items) ?? [], [comments.data]);
 
   return (
-    <div className={clsx(s.panel, indented && s.panelIndented, open && s.open)} aria-hidden={!open}>
+    <div
+      className={clsx(s.panel, indented && s.panelIndented, open && s.open)}
+      aria-hidden={!open}
+      data-comments
+    >
       <div className={s.inner}>
         <div className={s.content}>
           {me ? (
             <form onSubmit={onSubmit} className={s.compose}>
-              <Avatar
-                src={me.avatarUrl}
-                name={me.displayName || me.username}
-                size="sm"
-                alt=""
-              />
+              <Avatar src={me.avatarUrl} name={me.displayName || me.username} size="sm" alt="" />
               <div className={s.composeField}>
                 <div className={s.autocompleteWrap}>
                   <textarea
@@ -242,9 +237,7 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                       setCursorPos(e.target.selectionStart);
                       setAcActiveIndex(0);
                     }}
-                    onSelect={(e) =>
-                      setCursorPos((e.target as HTMLTextAreaElement).selectionStart)
-                    }
+                    onSelect={(e) => setCursorPos((e.target as HTMLTextAreaElement).selectionStart)}
                     onKeyDown={onKeyDown}
                     placeholder={t('post.commentPlaceholder')}
                     rows={1}
@@ -262,18 +255,10 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                 </div>
                 {text.trim().length > 0 && (
                   <div className={s.composeActions}>
-                    <button
-                      type="button"
-                      className={s.cancelBtn}
-                      onClick={() => setText('')}
-                    >
+                    <button type="button" className={s.cancelBtn} onClick={() => setText('')}>
                       {t('post.cancel')}
                     </button>
-                    <button
-                      type="submit"
-                      className={s.submitBtn}
-                      disabled={submit.isPending}
-                    >
+                    <button type="submit" className={s.submitBtn} disabled={submit.isPending}>
                       {submit.isPending ? <Spinner /> : t('post.postComment')}
                     </button>
                   </div>
@@ -296,11 +281,7 @@ export function InlineComments({ postId, open, indented = true }: Props) {
           {items.length > 0 && (
             <ul className={s.list}>
               {items.map((c, i) => (
-                <li
-                  key={c.id}
-                  className={s.item}
-                  style={{ animationDelay: `${i * 30}ms` }}
-                >
+                <li key={c.id} className={s.item} style={{ animationDelay: `${i * 30}ms` }}>
                   <Avatar
                     src={c.author.avatarUrl}
                     name={c.author.displayName || c.author.username}
@@ -321,9 +302,7 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                           <button
                             type="button"
                             className={s.menuTrigger}
-                            onClick={() =>
-                              setMenuOpenId(menuOpenId === c.id ? null : c.id)
-                            }
+                            onClick={() => setMenuOpenId(menuOpenId === c.id ? null : c.id)}
                             onBlur={() =>
                               window.setTimeout(
                                 () => setMenuOpenId((id) => (id === c.id ? null : id)),
@@ -375,19 +354,13 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                           autoFocus
                         />
                         <div className={s.composeActions}>
-                          <button
-                            type="button"
-                            className={s.cancelBtn}
-                            onClick={cancelEdit}
-                          >
+                          <button type="button" className={s.cancelBtn} onClick={cancelEdit}>
                             {t('post.cancel')}
                           </button>
                           <button
                             type="submit"
                             className={s.submitBtn}
-                            disabled={
-                              updateMutation.isPending || !editText.trim()
-                            }
+                            disabled={updateMutation.isPending || !editText.trim()}
                           >
                             {updateMutation.isPending ? <Spinner /> : t('post.save')}
                           </button>
@@ -396,9 +369,7 @@ export function InlineComments({ postId, open, indented = true }: Props) {
                     ) : (
                       <div className={s.itemText}>
                         <MarkdownBody source={c.text} compact />
-                        {c.editedAt && (
-                          <span className={s.edited}> ({t('common.edited')})</span>
-                        )}
+                        {c.editedAt && <span className={s.edited}> ({t('common.edited')})</span>}
                       </div>
                     )}
                   </div>

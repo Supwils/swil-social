@@ -22,6 +22,13 @@
       "when": 1784975069293,
       "tag": "0002_flat_next_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785062400000,
+      "tag": "0003_per_user_snapshot_hash",
+      "breakpoints": true
     }
   ]
 }

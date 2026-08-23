@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import type { PostDTO } from '@/api/types';
 import { PostCard } from './PostCard';
@@ -33,19 +33,27 @@ export function VirtualPostList({
   endLabel,
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
-  const offsetRef = useRef(0);
+  const [scrollMargin, setScrollMargin] = useState(0);
 
-  // Keep the list's document offset fresh — the trending block above it loads
-  // async and shifts our start position.
+  // Trending (and other header blocks) load async and shift offsetTop.
+  // Observe the parent so that change reaches the virtualizer.
   useLayoutEffect(() => {
-    offsetRef.current = listRef.current?.offsetTop ?? 0;
-  });
+    const el = listRef.current;
+    if (!el) return undefined;
+    const parent = el.parentElement;
+    const update = () => setScrollMargin(el.offsetTop);
+    update();
+    if (!parent || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(update);
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, [items.length]);
 
   const virtualizer = useWindowVirtualizer({
     count: items.length,
     estimateSize: () => 320,
     overscan: 6,
-    scrollMargin: offsetRef.current,
+    scrollMargin,
     getItemKey: (index) => items[index]?.id ?? index,
   });
 

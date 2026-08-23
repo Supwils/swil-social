@@ -60,6 +60,19 @@ describe('feed.service', () => {
   });
 
   describe('global (ranked / score)', () => {
+    it('omits public posts filed to a reserved board', async () => {
+      const author = await seedUser('author-reserved');
+      const [probes] = await db
+        .insert(boards)
+        .values({ slug: 'probes', name: 'Probes', sortOrder: 99 })
+        .returning();
+      const visible = await seedPost(author.id, { text: 'ok', feedScore: 10 });
+      await seedPost(author.id, { text: 'canary', feedScore: 99, boardId: probes.id });
+
+      const out = await global(null, null, 10);
+      expect(out.items.map((p) => p.id)).toEqual([visible.id]);
+    });
+
     it('orders by feedScore descending and excludes non-public/non-active posts', async () => {
       const author = await seedUser('author');
       const hi = await seedPost(author.id, { text: 'hi', feedScore: 30 });
@@ -183,6 +196,19 @@ describe('feed.service', () => {
       const [b] = await db.insert(boards).values({ slug, name: slug, sortOrder }).returning();
       return b;
     }
+
+    it('still serves reserved-board posts when that board is requested by slug', async () => {
+      const author = await seedUser('author-probe');
+      const probes = await seedBoard('probes', 99);
+      const canary = await seedPost(author.id, {
+        text: 'canary',
+        boardId: probes.id,
+        feedScore: 1,
+      });
+
+      const out = await byBoard('probes', null, null, 10);
+      expect(out.items.map((p) => p.id)).toEqual([canary.id]);
+    });
 
     it('returns only posts in that board, excluding other boards and unassigned', async () => {
       const author = await seedUser('author');

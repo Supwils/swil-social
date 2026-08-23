@@ -2,15 +2,13 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Rows, SquaresFour } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import * as feedApi from '@/api/feed.api';
 import type { FeedSort } from '@/api/feed.api';
 import { qk } from '@/api/queryKeys';
-import { PostCard } from '@/features/posts/PostCard';
-import { Button, EmptyState, PostCardSkeleton } from '@/components/primitives';
-import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
-import { VirtualPostList } from '@/features/posts/VirtualPostList';
+import { Button, EmptyState } from '@/components/primitives';
+import { FeedLayoutToggle } from '@/features/posts/FeedLayoutToggle';
+import { FeedSkeletons, FeedStream } from '@/features/posts/FeedStream';
 import { useUI } from '@/stores/ui.store';
 import { useRealtime } from '@/stores/realtime.store';
 import s from './feed.module.css';
@@ -19,8 +17,6 @@ export default function FeedFollowingRoute() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const qc = useQueryClient();
-  const feedLayout = useUI((st) => st.feedLayout);
-  const setFeedLayout = useUI((st) => st.setFeedLayout);
   const language = useUI((st) => st.language);
   const newCount = useRealtime((st) => st.newFeedPostCount);
   const resetNewFeed = useRealtime((st) => st.resetNewFeedPostCount);
@@ -39,7 +35,6 @@ export default function FeedFollowingRoute() {
   });
 
   const items = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
-  const isGrid = feedLayout === 'grid';
 
   return (
     <div className={s.page}>
@@ -63,41 +58,16 @@ export default function FeedFollowingRoute() {
             </button>
           </div>
         </div>
-        <div className={s.viewToggle}>
-          <button
-            type="button"
-            className={clsx(s.viewToggleBtn, !isGrid && s.viewToggleBtnActive)}
-            onClick={() => setFeedLayout('list')}
-            aria-label="List view"
-            aria-pressed={!isGrid}
-          >
-            <Rows size={15} weight="regular" aria-hidden />
-          </button>
-          <button
-            type="button"
-            className={clsx(s.viewToggleBtn, isGrid && s.viewToggleBtnActive)}
-            onClick={() => setFeedLayout('grid')}
-            aria-label="Grid view"
-            aria-pressed={isGrid}
-          >
-            <SquaresFour size={15} weight="regular" aria-hidden />
-          </button>
-        </div>
+        <FeedLayoutToggle />
       </header>
 
       {newCount > 0 && (
         <button type="button" className={s.newPostsBanner} onClick={handleLoadNew}>
-          ↑ {newCount} 条新帖，点击查看
+          {t('feed.following.newPosts', { count: newCount })}
         </button>
       )}
 
-      {q.isLoading && (
-        <div className={isGrid ? s.postGrid : s.postList}>
-          <PostCardSkeleton />
-          <PostCardSkeleton />
-          <PostCardSkeleton />
-        </div>
-      )}
+      {q.isLoading && <FeedSkeletons />}
 
       {q.isError && (
         <EmptyState
@@ -119,27 +89,14 @@ export default function FeedFollowingRoute() {
         />
       )}
 
-      {q.isSuccess && items.length > 0 && isGrid && (
-        <>
-          <div className={s.postGrid}>
-            {items.map((post) => (
-              <PostCard key={post.id} post={post} compact />
-            ))}
-          </div>
-          <InfiniteScrollSentinel
-            hasNextPage={q.hasNextPage}
-            isFetching={q.isFetchingNextPage}
-            onLoadMore={() => q.fetchNextPage()}
-          />
-        </>
-      )}
-
-      {q.isSuccess && items.length > 0 && !isGrid && (
-        <VirtualPostList
+      {q.isSuccess && items.length > 0 && (
+        <FeedStream
           items={items}
           hasNextPage={q.hasNextPage}
           isFetchingNextPage={q.isFetchingNextPage}
-          onLoadMore={() => q.fetchNextPage()}
+          onLoadMore={() => {
+            void q.fetchNextPage();
+          }}
         />
       )}
     </div>

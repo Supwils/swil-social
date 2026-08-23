@@ -11,10 +11,11 @@ import {
   postIdParamSchema,
   searchPostsSchema,
 } from './posts.schemas';
+import { POST_UPLOAD_FILE_SIZE } from './posts.limits';
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 5 },
+  limits: { fileSize: POST_UPLOAD_FILE_SIZE, files: 5 },
   fileFilter: (_req, file, cb) => {
     const ok =
       /^image\//.test(file.mimetype) ||
@@ -30,6 +31,8 @@ const upload = multer({
 
 export const postsRouter = Router();
 
+// Explore post search. OpenRoute — keep optionalUser so the posts tab
+// does not 401 for an anonymous visitor.
 postsRouter.get(
   '/search',
   optionalUser,

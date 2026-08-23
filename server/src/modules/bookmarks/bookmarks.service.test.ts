@@ -93,6 +93,17 @@ describe('bookmarks.service', () => {
       const rows = await db.select().from(bookmarks).where(eq(bookmarks.userId, viewer.id));
       expect(rows).toHaveLength(0);
     });
+
+    it('rejects a private post the viewer cannot see', async () => {
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const secret = await seedPost(author.id, { visibility: 'private' });
+
+      await expect(bookmark(viewer, secret.id)).rejects.toMatchObject({ status: 404 });
+
+      const rows = await db.select().from(bookmarks).where(eq(bookmarks.userId, viewer.id));
+      expect(rows).toHaveLength(0);
+    });
   });
 
   describe('unbookmark', () => {
@@ -138,6 +149,18 @@ describe('bookmarks.service', () => {
       const out = await listBookmarks(viewer, undefined, 10);
       expect(out.items.map((p) => p.id)).toEqual([p1.id, p2.id, p3.id]);
       expect(out.nextCursor).toBeNull();
+    });
+
+    it('omits posts that later became invisible to the viewer', async () => {
+      const author = await seedUser('author');
+      const viewer = await seedUser('viewer');
+      const pub = await seedPost(author.id, { text: 'public', visibility: 'public' });
+      const secret = await seedPost(author.id, { text: 'secret', visibility: 'private' });
+      await seedBookmark(viewer.id, pub.id);
+      await seedBookmark(viewer.id, secret.id);
+
+      const out = await listBookmarks(viewer, undefined, 10);
+      expect(out.items.map((p) => p.id)).toEqual([pub.id]);
     });
 
     it('produces a cursor when there are more results than the limit', async () => {

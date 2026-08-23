@@ -95,12 +95,13 @@ feedRouter.get(
   }),
 );
 
+// Explore is an OpenRoute: this summary must stay optionalUser so an
+// anonymous visitor does not 401. Do not switch it to requireUser.
 feedRouter.get(
   '/explore-summary',
-  requireUser,
+  optionalUser,
   asyncHandler(async (req: Request, res: Response) => {
-    if (!req.user) throw AppError.unauthenticated();
-    const summary = await feed.getExploreSummary(req.user);
+    const summary = await feed.getExploreSummary(req.user ?? null);
     return ok(res, summary);
   }),
 );

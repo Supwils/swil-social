@@ -21,6 +21,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/socket.io': {
+        target: API_TARGET,
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   build: {
@@ -54,9 +59,9 @@ export default defineConfig({
       exclude: [
         'src/**/*.test.{ts,tsx}',
         'src/main.tsx', // bootstrap
-        'src/i18n.ts',  // pure config
+        'src/i18n.ts', // pure config
         'src/locales/**',
-        'src/api/types.ts',     // type-only
+        'src/api/types.ts', // type-only
         'src/api/queryKeys.ts', // type-only
       ],
       // Ratchet log — raise these whenever coverage rises, never lower them
@@ -70,15 +75,17 @@ export default defineConfig({
       //                               7.02 lines / 5.82 branches / 5.72 funcs /
       //                               6.77 stmts after covering formatDate,
       //                               applyTheme and the draft store.
+      //   2026-08-22  21 / 21.5 / 17.5 / 22  after render tests for PostCard,
+      //                               FeedStream, feedGlobal, feedBoard, lab.
       //
-      // The gap to a real gate is the routes tree (1.2% — lab.tsx, settings,
-      // post, user, notifications are all at 0) and the feature components.
-      // Those need render tests, not more unit tests on pure helpers.
+      // Remaining gap is still the untested routes (settings, post, user,
+      // notifications, login) and feature panels on /lab that the route
+      // smoke test mocks away.
       thresholds: {
-        lines: 6.5,
-        branches: 5,
-        functions: 5,
-        statements: 6,
+        lines: 22,
+        branches: 21.5,
+        functions: 17.5,
+        statements: 21,
       },
     },
   },

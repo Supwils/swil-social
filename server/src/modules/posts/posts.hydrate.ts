@@ -9,6 +9,7 @@ import {
   type UserRow,
   type TagRow,
 } from '../../lib/dto';
+import { canViewPost, followingSet } from './posts.visibility';
 
 /**
  * Hydrate a list of posts to their DTO contexts in a single round-trip per
@@ -94,8 +95,13 @@ export async function hydratePosts(
           .where(inArray(users.id, Array.from(origAuthorIdSet)))
       : [];
     const origAuthorById = new Map(origAuthors.map((u) => [u.id, u]));
+    const followAuthors = origPosts
+      .filter((p) => p.visibility === 'followers')
+      .map((p) => p.authorId);
+    const following = await followingSet(viewer, followAuthors);
 
     for (const orig of origPosts) {
+      if (!canViewPost(orig, viewer, following)) continue;
       const origAuthor = origAuthorById.get(orig.authorId);
       if (!origAuthor) continue;
       echoOfDtoById.set(

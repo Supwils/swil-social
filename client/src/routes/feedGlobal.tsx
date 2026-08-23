@@ -1,28 +1,25 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Rows, SquaresFour } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import * as feedApi from '@/api/feed.api';
 import type { FeedSort } from '@/api/feed.api';
 import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
-import { PostCard } from '@/features/posts/PostCard';
-import { Button, EmptyState, PostCardSkeleton, UITag } from '@/components/primitives';
-import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
-import { VirtualPostList } from '@/features/posts/VirtualPostList';
+import { Button, EmptyState, UITag } from '@/components/primitives';
+import { FeedLayoutToggle } from '@/features/posts/FeedLayoutToggle';
+import { FeedSkeletons, FeedStream } from '@/features/posts/FeedStream';
 import { useUI } from '@/stores/ui.store';
 import s from './feed.module.css';
 
 export default function FeedGlobalRoute() {
   const { t } = useTranslation();
-  const feedLayout = useUI((st) => st.feedLayout);
-  const setFeedLayout = useUI((st) => st.setFeedLayout);
   const language = useUI((st) => st.language);
   const [sort, setSort] = useState<FeedSort>('recommended');
   const q = useInfiniteQuery({
     queryKey: qk.feed.global(language, sort),
-    queryFn: ({ pageParam }) => feedApi.global({ cursor: pageParam, limit: 20, lang: language, sort }),
+    queryFn: ({ pageParam }) =>
+      feedApi.global({ cursor: pageParam, limit: 20, lang: language, sort }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
   });
@@ -33,7 +30,6 @@ export default function FeedGlobalRoute() {
   });
 
   const items = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
-  const isGrid = feedLayout === 'grid';
 
   return (
     <div className={s.page}>
@@ -42,26 +38,7 @@ export default function FeedGlobalRoute() {
           <h1 className={s.title}>{t('feed.global.title')}</h1>
           <span className={s.lede}>{t('feed.global.lede')}</span>
         </div>
-        <div className={s.viewToggle}>
-          <button
-            type="button"
-            className={clsx(s.viewToggleBtn, !isGrid && s.viewToggleBtnActive)}
-            onClick={() => setFeedLayout('list')}
-            aria-label="List view"
-            aria-pressed={!isGrid}
-          >
-            <Rows size={15} weight="regular" aria-hidden />
-          </button>
-          <button
-            type="button"
-            className={clsx(s.viewToggleBtn, isGrid && s.viewToggleBtnActive)}
-            onClick={() => setFeedLayout('grid')}
-            aria-label="Grid view"
-            aria-pressed={isGrid}
-          >
-            <SquaresFour size={15} weight="regular" aria-hidden />
-          </button>
-        </div>
+        <FeedLayoutToggle />
       </header>
 
       {trending.data && trending.data.length > 0 && (
@@ -91,13 +68,7 @@ export default function FeedGlobalRoute() {
         </div>
       )}
 
-      {q.isLoading && (
-        <div className={isGrid ? s.postGrid : s.postList}>
-          <PostCardSkeleton />
-          <PostCardSkeleton />
-          <PostCardSkeleton />
-        </div>
-      )}
+      {q.isLoading && <FeedSkeletons />}
 
       {q.isError && (
         <EmptyState
@@ -111,27 +82,14 @@ export default function FeedGlobalRoute() {
         <EmptyState title={t('feed.global.empty')} description={t('feed.global.emptyDesc')} />
       )}
 
-      {q.isSuccess && items.length > 0 && isGrid && (
-        <>
-          <div className={s.postGrid}>
-            {items.map((post) => (
-              <PostCard key={post.id} post={post} compact />
-            ))}
-          </div>
-          <InfiniteScrollSentinel
-            hasNextPage={q.hasNextPage}
-            isFetching={q.isFetchingNextPage}
-            onLoadMore={() => q.fetchNextPage()}
-          />
-        </>
-      )}
-
-      {q.isSuccess && items.length > 0 && !isGrid && (
-        <VirtualPostList
+      {q.isSuccess && items.length > 0 && (
+        <FeedStream
           items={items}
           hasNextPage={q.hasNextPage}
           isFetchingNextPage={q.isFetchingNextPage}
-          onLoadMore={() => q.fetchNextPage()}
+          onLoadMore={() => {
+            void q.fetchNextPage();
+          }}
         />
       )}
     </div>

@@ -354,3 +354,76 @@ describe('GET /agents/runtime — cycle_run aggregate (spec §5)', () => {
     expect(res.body.data.landedActions).toBe(5);
   });
 });
+
+describe('lab write ingest — first-party agents only', () => {
+  beforeEach(resetDb);
+
+  async function keyFor(over: Partial<typeof users.$inferInsert> = {}) {
+    const username = over.username ?? `labw${Math.random().toString(16).slice(2, 8)}`;
+    const [user] = await db
+      .insert(users)
+      .values({
+        username,
+        usernameDisplay: username,
+        email: `${username}@example.test`,
+        displayName: username,
+        ...over,
+      })
+      .returning();
+    const raw = `sk-swil-${randomBytes(8).toString('hex')}`;
+    await db.insert(apiKeys).values({
+      userId: user.id,
+      name: 'test',
+      keyHash: createHash('sha256').update(raw).digest('hex'),
+    });
+    return { key: raw, user };
+  }
+
+  const benchBody = {
+    batchId: 'b1',
+    persona: 'zenith',
+    model: 'haiku',
+    taskId: 'free_post',
+  };
+
+  it('rejects a human writing a benchmark run', async () => {
+    const { key } = await keyFor({ isAgent: false });
+    const res = await request(createApp())
+      .post('/api/v1/agents/benchmark/runs')
+      .set('Authorization', `Bearer ${key}`)
+      .send(benchBody);
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects a BYOA agent writing a benchmark run', async () => {
+    const { user: owner } = await keyFor({ username: 'ownerhuman', isAgent: false });
+    const { key } = await keyFor({
+      username: 'communitybot',
+      isAgent: true,
+      ownerId: owner.id,
+    });
+    const res = await request(createApp())
+      .post('/api/v1/agents/benchmark/runs')
+      .set('Authorization', `Bearer ${key}`)
+      .send(benchBody);
+    expect(res.status).toBe(403);
+  });
+
+  it('accepts a first-party agent writing a benchmark run', async () => {
+    const { key } = await keyFor({ username: 'zenith', isAgent: true });
+    const res = await request(createApp())
+      .post('/api/v1/agents/benchmark/runs')
+      .set('Authorization', `Bearer ${key}`)
+      .send(benchBody);
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects a human writing a population metric', async () => {
+    const { key } = await keyFor({ isAgent: false });
+    const res = await request(createApp())
+      .post('/api/v1/agents/population-metric')
+      .set('Authorization', `Bearer ${key}`)
+      .send({});
+    expect(res.status).toBe(403);
+  });
+});

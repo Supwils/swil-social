@@ -175,6 +175,27 @@ describe('agents.service.ingestSnapshot', () => {
     expect(out.driftFromPrev).toBe(0.05);
   });
 
+  it('lets two accounts ingest the same contentHash independently', async () => {
+    const a = await seedUser({ username: 'zenith', isAgent: true });
+    const b = await seedUser({ username: 'liushang', isAgent: true });
+    const hash = uniqHash('shared');
+    const outA = await ingestSnapshot('zenith', a, {
+      contentHash: hash,
+      embedding: axis(0),
+      snapshotType: 'dream',
+      archivePath: 'agents/zenith/personality.archive.md#1',
+      excerpt: '',
+    });
+    const outB = await ingestSnapshot('liushang', b, {
+      contentHash: hash,
+      embedding: axis(1),
+      snapshotType: 'dream',
+      archivePath: 'agents/liushang/personality.archive.md#1',
+      excerpt: '',
+    });
+    expect(outA.id).not.toBe(outB.id);
+  });
+
   it('backfills aspectDrift onto a pre-existing snapshot that lacks it', async () => {
     const agent = await seedUser({ username: 'zenith', isAgent: true });
     const hash = uniqHash('bf');

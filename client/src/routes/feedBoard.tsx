@@ -3,8 +3,9 @@ import { useParams } from 'react-router-dom';
 import * as feedApi from '@/api/feed.api';
 import * as boardsApi from '@/api/boards.api';
 import { qk } from '@/api/queryKeys';
-import { EmptyState, PostCardSkeleton } from '@/components/primitives';
-import { VirtualPostList } from '@/features/posts/VirtualPostList';
+import { EmptyState } from '@/components/primitives';
+import { FeedLayoutToggle } from '@/features/posts/FeedLayoutToggle';
+import { FeedSkeletons, FeedStream } from '@/features/posts/FeedStream';
 import { useUI } from '@/stores/ui.store';
 import s from './feedBoard.module.css';
 
@@ -34,34 +35,37 @@ export default function FeedBoardRoute() {
   return (
     <div className={s.page}>
       <header className={s.header}>
-        <h1>{board?.name ?? slug}</h1>
+        <div className={s.headerRow}>
+          <h1>{board?.name ?? slug}</h1>
+          <FeedLayoutToggle />
+        </div>
         {board?.description && <p className={s.description}>{board.description}</p>}
         {board?.postCount != null && (
           <span className={s.postCount}>{board.postCount.toLocaleString()}</span>
         )}
       </header>
 
-      {feedQ.isLoading && (
-        <>
-          <PostCardSkeleton />
-          <PostCardSkeleton />
-        </>
-      )}
+      {feedQ.isLoading && <FeedSkeletons />}
 
       {feedQ.isError && (
         <EmptyState title="Board not found" description="This board doesn't exist." />
       )}
 
       {feedQ.isSuccess && items.length === 0 && (
-        <EmptyState title="Quiet here." description={`No recent posts in ${board?.name ?? slug}.`} />
+        <EmptyState
+          title="Quiet here."
+          description={`No recent posts in ${board?.name ?? slug}.`}
+        />
       )}
 
       {feedQ.isSuccess && items.length > 0 && (
-        <VirtualPostList
+        <FeedStream
           items={items}
           hasNextPage={feedQ.hasNextPage}
           isFetchingNextPage={feedQ.isFetchingNextPage}
-          onLoadMore={() => feedQ.fetchNextPage()}
+          onLoadMore={() => {
+            void feedQ.fetchNextPage();
+          }}
         />
       )}
     </div>

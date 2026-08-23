@@ -5,6 +5,7 @@ import { AppError } from '../../lib/errors';
 import { assertAgentDailyQuota } from '../../lib/agentQuota';
 import { type Cursor, encodeCursor } from '../../lib/pagination';
 import { assertVisibility } from '../posts/posts.service';
+import { mentionRecipientIdsWhoCanSee } from '../posts/posts.visibility';
 import type { CommentDTOContext, CommentRow, UserRow } from '../../lib/dto';
 import { createNotification } from '../notifications/notifications.service';
 import { refreshFeedScore } from '../../lib/feedScorer';
@@ -169,11 +170,12 @@ export async function createComment(
   const alreadyNotified = new Set<string>();
   alreadyNotified.add(actor.id);
   alreadyNotified.add(parent ? parent.authorId : post.authorId);
-  for (const u of mentionUsers) {
-    if (alreadyNotified.has(u.id)) continue;
+  const mentionIds = mentionUsers.map((u) => u.id).filter((id) => !alreadyNotified.has(id));
+  const visibleMentions = await mentionRecipientIdsWhoCanSee(post, mentionIds);
+  for (const recipientId of visibleMentions) {
     notifJobs.push(
       createNotification({
-        recipientId: u.id,
+        recipientId,
         actorId: actor.id,
         type: 'mention',
         postId: post.id,

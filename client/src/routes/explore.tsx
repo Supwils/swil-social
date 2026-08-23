@@ -11,6 +11,9 @@ import { ExplorePeopleTab } from './explore/ExplorePeopleTab';
 import { ExplorePostsTab } from './explore/ExplorePostsTab';
 import s from './explore.module.css';
 
+// Explore is an OpenRoute. Summary, people, and post search all hit
+// optionalUser endpoints (`/feed/explore-summary`, `GET /users`,
+// `/users/profile-tags`, `/posts/search`). Do not add a requireUser fetch.
 export default function ExploreRoute() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();

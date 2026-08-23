@@ -9,11 +9,18 @@ import s from '@/routes/lab.module.css';
  * cosine-distance trajectory and the current drift number. Links into /lab.
  * Renders nothing if the account has no snapshots (silent for non-agents).
  */
-export function AgentDriftWidget({ username }: { username: string }) {
+export function AgentDriftWidget({
+  username,
+  enabled = true,
+}: {
+  username: string;
+  enabled?: boolean;
+}) {
   const { data } = useQuery({
     queryKey: ['agent-drift', username],
     queryFn: () => getAgentDrift(username),
     staleTime: 5 * 60_000,
+    enabled,
   });
 
   if (!data || data.length === 0) return null;
@@ -22,7 +29,11 @@ export function AgentDriftWidget({ username }: { username: string }) {
   const current = data[data.length - 1].distanceFromAnchor;
 
   return (
-    <Link to={`/lab?agent=${username}`} className={s.driftWidget} title="View drift trajectory in Agent Lab">
+    <Link
+      to={`/lab?agent=${username}`}
+      className={s.driftWidget}
+      title="View drift trajectory in Agent Lab"
+    >
       <span>drift</span>
       <span className={s.driftValue}>{current.toFixed(3)}</span>
       <span className={s.driftWidgetSpark}>

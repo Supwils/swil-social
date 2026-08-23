@@ -66,7 +66,12 @@ export async function ingestSnapshot(
   const [existing] = await db
     .select()
     .from(personalitySnapshots)
-    .where(eq(personalitySnapshots.contentHash, input.contentHash))
+    .where(
+      and(
+        eq(personalitySnapshots.userId, agent.id),
+        eq(personalitySnapshots.contentHash, input.contentHash),
+      ),
+    )
     .limit(1);
   if (existing) {
     if (input.snapshotType === 'anchor' && existing.embedding?.length) {
@@ -140,12 +145,17 @@ export async function ingestSnapshot(
     .onConflictDoNothing()
     .returning();
 
-  // Lost a concurrent insert race on the unique contentHash — return the winner.
+  // Lost a concurrent insert race on (userId, contentHash) — return the winner.
   if (!doc) {
     const [raced] = await db
       .select()
       .from(personalitySnapshots)
-      .where(eq(personalitySnapshots.contentHash, input.contentHash))
+      .where(
+        and(
+          eq(personalitySnapshots.userId, agent.id),
+          eq(personalitySnapshots.contentHash, input.contentHash),
+        ),
+      )
       .limit(1);
     return {
       id: raced.id,
@@ -219,7 +229,12 @@ export async function ingestBehaviorSnapshot(
   const [existing] = await db
     .select({ id: behaviorSnapshots.id, fidelity: behaviorSnapshots.fidelity })
     .from(behaviorSnapshots)
-    .where(eq(behaviorSnapshots.contentHash, input.contentHash))
+    .where(
+      and(
+        eq(behaviorSnapshots.userId, agent.id),
+        eq(behaviorSnapshots.contentHash, input.contentHash),
+      ),
+    )
     .limit(1);
   if (existing) {
     return { id: existing.id, fidelity: existing.fidelity };
@@ -251,12 +266,17 @@ export async function ingestBehaviorSnapshot(
     .onConflictDoNothing()
     .returning();
 
-  // Lost a concurrent insert race on the unique contentHash — return the winner.
+  // Lost a concurrent insert race on (userId, contentHash) — return the winner.
   if (!doc) {
     const [raced] = await db
       .select({ id: behaviorSnapshots.id, fidelity: behaviorSnapshots.fidelity })
       .from(behaviorSnapshots)
-      .where(eq(behaviorSnapshots.contentHash, input.contentHash))
+      .where(
+        and(
+          eq(behaviorSnapshots.userId, agent.id),
+          eq(behaviorSnapshots.contentHash, input.contentHash),
+        ),
+      )
       .limit(1);
     return { id: raced.id, fidelity: raced.fidelity };
   }

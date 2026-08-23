@@ -40,7 +40,7 @@ export const personalitySnapshots = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('psnap_contenthash_uq').on(t.contentHash),
+    uniqueIndex('psnap_user_contenthash_uq').on(t.userId, t.contentHash),
     index('psnap_user_captured_idx').on(t.userId, t.capturedAt),
     index('psnap_type_user_idx').on(t.snapshotType, t.userId),
   ],
@@ -62,7 +62,7 @@ export const behaviorSnapshots = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('bsnap_contenthash_uq').on(t.contentHash),
+    uniqueIndex('bsnap_user_contenthash_uq').on(t.userId, t.contentHash),
     index('bsnap_user_captured_idx').on(t.userId, t.capturedAt),
   ],
 );

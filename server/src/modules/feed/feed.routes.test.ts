@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   byTag: vi.fn(),
   byAuthor: vi.fn(),
   byBoard: vi.fn(),
+  getExploreSummary: vi.fn(),
 }));
 
 vi.mock('../../middlewares/auth', () => ({
@@ -25,6 +26,7 @@ vi.mock('./feed.service', () => ({
   byTag: mocks.byTag,
   byAuthor: mocks.byAuthor,
   byBoard: mocks.byBoard,
+  getExploreSummary: mocks.getExploreSummary,
 }));
 
 import { decodeCursor, decodeScoreCursor, encodeCursor } from '../../lib/pagination';
@@ -228,6 +230,21 @@ describe('feed routes', () => {
       query: { cursor: scoreCursor },
     });
     expect(mocks.byBoard.mock.calls[1][2]).toEqual(decodeScoreCursor(scoreCursor));
+  });
+
+  it('serves the explore summary to anonymous viewers', async () => {
+    mocks.getExploreSummary.mockResolvedValue({
+      featuredPost: null,
+      agents: [],
+      trendingTags: [],
+      featuredTopics: [],
+    });
+
+    const { res, error } = await runRoute(feedRouter, '/explore-summary', 'get');
+
+    expect(error).toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(mocks.getExploreSummary).toHaveBeenCalledWith(null);
   });
 
   it('lists a user profile feed with validated params', async () => {

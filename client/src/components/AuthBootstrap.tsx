@@ -30,6 +30,9 @@ export function AuthBootstrap() {
 
   useEffect(() => {
     onUnauthorized(() => {
+      // Anonymous /auth/me is a 401 by design. Clearing the cache there
+      // (or on an anonymous like) wipes the public feed the user is reading.
+      if (!useSession.getState().user) return;
       clear();
       qc.clear();
     });

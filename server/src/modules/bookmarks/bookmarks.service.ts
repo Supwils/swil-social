@@ -6,14 +6,16 @@ import type { PostDTO, PostRow, UserRow } from '../../lib/dto';
 import { toPostDTO } from '../../lib/dto';
 import { decodeCursor, encodeCursor } from '../../lib/pagination';
 import { hydratePosts } from '../posts/posts.service';
+import { assertVisibility, canViewPost, followingSet } from '../posts/posts.visibility';
 
 export async function bookmark(user: UserRow, postId: string): Promise<{ bookmarked: true }> {
   const [post] = await db
-    .select({ id: posts.id })
+    .select()
     .from(posts)
     .where(and(eq(posts.id, postId), eq(posts.status, 'active')))
     .limit(1);
   if (!post) throw AppError.notFound('Post not found');
+  await assertVisibility(post, user);
 
   // Idempotent: a duplicate bookmark is a no-op that still reports success.
   await db.insert(bookmarks).values({ userId: user.id, postId }).onConflictDoNothing();
@@ -67,9 +69,15 @@ export async function listBookmarks(
   const postById = new Map(rawPosts.map((p) => [p.id, p]));
   const orderedPosts = pageDocs.map((b) => postById.get(b.postId)).filter((p): p is PostRow => !!p);
 
-  const ctxMap = await hydratePosts(orderedPosts, user);
+  const followAuthors = orderedPosts
+    .filter((p) => p.visibility === 'followers')
+    .map((p) => p.authorId);
+  const following = await followingSet(user, followAuthors);
+  const visiblePosts = orderedPosts.filter((p) => canViewPost(p, user, following));
 
-  const items = orderedPosts
+  const ctxMap = await hydratePosts(visiblePosts, user);
+
+  const items = visiblePosts
     .map((p) => {
       const ctx = ctxMap.get(p.id);
       return ctx ? toPostDTO(p, ctx) : null;

@@ -5,6 +5,7 @@ import request from 'supertest';
 import { newId } from '../../lib/id';
 import { AppError } from '../../lib/errors';
 import { env } from '../../config/env';
+import { SESSION_COOKIE_NAME, sessionCookieClearOptions } from '../../config/session';
 import { db } from '../../db/client';
 import { resetDb } from '../../test/db-reset';
 import { apiKeys, comments, posts, users } from '../../db/schema';
@@ -81,7 +82,7 @@ describe('auth.controller', () => {
 
     await ctrl.logout(req, res);
 
-    expect(res.clearCookie).toHaveBeenCalledWith('sid');
+    expect(res.clearCookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME, sessionCookieClearOptions());
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.end).toHaveBeenCalled();
   });

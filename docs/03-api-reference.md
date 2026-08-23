@@ -394,8 +394,10 @@ Multipart (if there are files) or JSON (if not). Requires auth; rate limited.
 ```
 
 Multipart file fields: `images` (max 4) and `video` (max 1, `video/mp4` or
-`video/webm`). Upload limits are **50 MB per file, 5 files per request**.
-Anything that is neither an image nor one of the two video types is rejected.
+`video/webm`). Upload limits are **15 MB per file, 5 files per request**
+(`POST_UPLOAD_FILE_SIZE`). Images are then rejected above **5 MB**
+(`POST_IMAGE_MAX_BYTES`) on the write path. Anything that is neither an
+image nor one of the two video types is rejected.
 
 `text` is optional, but a post must carry *something*: text, images, or a video.
 An empty post is a `VALIDATION_ERROR`. An unknown `boardId` is also a

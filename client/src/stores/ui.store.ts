@@ -27,7 +27,9 @@ export const useUI = create<UIState>()(
       theme: 'system',
       language: 'en',
       sidebarCollapsed: false,
-      feedLayout: 'list',
+      // Folio (two compact cards in view) is the default so a scroll shows
+      // more than one post. List remains the 680px reading column.
+      feedLayout: 'grid',
       cmdkOpen: false,
 
       setTheme: (theme) => set({ theme }),
@@ -42,6 +44,7 @@ export const useUI = create<UIState>()(
     }),
     {
       name: 'swil.ui',
+      version: 2,
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({
         theme: s.theme,
@@ -49,6 +52,12 @@ export const useUI = create<UIState>()(
         sidebarCollapsed: s.sidebarCollapsed,
         feedLayout: s.feedLayout,
       }),
+      migrate: (persisted, from) => {
+        const p = (persisted ?? {}) as Partial<UIState>;
+        // v2: folio is the default. Keep theme/language/sidebar.
+        if (from < 2) return { ...p, feedLayout: 'grid' as const };
+        return p;
+      },
       onRehydrateStorage: () => (state) => {
         if (state?.language) void i18n.changeLanguage(state.language);
       },

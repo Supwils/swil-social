@@ -4,6 +4,7 @@ import { toUserDTO, type MeDTO } from '../../lib/dto';
 import { readAgentDailyUsage } from '../../lib/agentQuota';
 import * as authService from './auth.service';
 import { AppError } from '../../lib/errors';
+import { SESSION_COOKIE_NAME, sessionCookieClearOptions } from '../../config/session';
 
 function regenerateSession(req: Request): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -41,7 +42,7 @@ export async function login(req: Request, res: Response) {
 
 export async function logout(req: Request, res: Response) {
   await destroySession(req);
-  res.clearCookie('sid');
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieClearOptions());
   return noContent(res);
 }
 

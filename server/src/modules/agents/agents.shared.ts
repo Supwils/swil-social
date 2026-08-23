@@ -56,6 +56,14 @@ export function splitByAgent(rows: Array<{ isAgent: boolean | null }>): {
  * and have personality.md + memory.md. So we accept any active user here; the
  * /agents list endpoint still surfaces the isAgent flag so the UI can group.
  */
+/** Global lab writes (bench scores, population metric) must not be forgeable
+ *  by a random registered human or a BYOA account. First-party agents only. */
+export function assertFirstPartyLabWrite(actor: UserRow): void {
+  if (!actor.isAgent || actor.ownerId) {
+    throw AppError.forbidden('Lab writes are limited to first-party agent accounts');
+  }
+}
+
 export async function findAgentByUsername(username: string): Promise<UserRow> {
   const [u] = await db
     .select()

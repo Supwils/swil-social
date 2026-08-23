@@ -72,17 +72,20 @@
   flex-direction: column;
 }
 
+/* Folio: two posts in view on desktop, one stacked column on a phone.
+   Three columns cramped serif prose; two is the density bump without
+   turning the river into a tile wall. */
 .postGrid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-4);
+  gap: var(--space-3);
   align-items: start;
 }
 
-@media (min-width: 960px) {
-  .postGrid {
-    grid-template-columns: repeat(3, 1fr);
-  }
+/* Grid items default to min-content width; long serif words would then
+   blow the 2-col column past the shell. */
+.postGrid > * {
+  min-width: 0;
 }
 
 @media (max-width: 720px) {
@@ -108,7 +111,9 @@
   height: 28px;
   color: var(--color-text-subtle);
   background: transparent;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .viewToggleBtn:hover {
@@ -138,7 +143,9 @@
   font-weight: 500;
   color: var(--color-text-subtle);
   background: transparent;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
   white-space: nowrap;
 }
 
@@ -173,6 +180,12 @@
 }
 
 @keyframes bannerFadeIn {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { ok } from '../../lib/respond';
 import { AppError } from '../../lib/errors';
 import * as svc from './agents.service';
+import { assertFirstPartyLabWrite } from './agents.shared';
 import type {
   AgentEventIngestInput,
   BehaviorSnapshotIngestInput,
@@ -17,9 +18,7 @@ export async function list(req: Request, res: Response) {
 
 export async function stats(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getAgentStats(req.params.username, range);
   return ok(res, out);
 }
@@ -35,9 +34,7 @@ export async function drift(req: Request, res: Response) {
  */
 export async function driftCountdown(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getDriftCountdown(req.params.username, range);
   return ok(res, out);
 }
@@ -54,9 +51,7 @@ export async function driftCountdown(req: Request, res: Response) {
  */
 export async function collapse(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getCollapseWatch(
     req.params.username,
     svc.collapseWindow(range, new Date()),
@@ -71,59 +66,49 @@ export async function overview(_req: Request, res: Response) {
 
 export async function graph(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getInteractionGraph(range);
   return ok(res, out);
 }
 
 export async function homogenization(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getHomogenization(range);
   return ok(res, out);
 }
 
-export async function recordPopulation(_req: Request, res: Response) {
+export async function recordPopulation(req: Request, res: Response) {
+  if (!req.user) throw AppError.unauthenticated();
+  assertFirstPartyLabWrite(req.user);
   const out = await svc.recordPopulationMetric();
   return ok(res, out, 201);
 }
 
 export async function pulse(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getPulse(range);
   return ok(res, out);
 }
 
 export async function runtime(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getRuntimeHealth(range);
   return ok(res, out);
 }
 
 export async function alerts(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getAlerts(range);
   return ok(res, out);
 }
 
 export async function influences(req: Request, res: Response) {
   const range = ((req.query as { range?: '7d' | '30d' | '90d' }).range ?? '30d') as
-    | '7d'
-    | '30d'
-    | '90d';
+    '7d' | '30d' | '90d';
   const out = await svc.getInfluences(req.params.username, range);
   return ok(res, out);
 }
@@ -165,6 +150,7 @@ export async function ingestBehavior(req: Request, res: Response) {
 
 export async function benchmarkIngest(req: Request, res: Response) {
   if (!req.user) throw AppError.unauthenticated();
+  assertFirstPartyLabWrite(req.user);
   const input = req.body as BenchmarkRunIngestInput;
   const out = await svc.ingestBenchmarkRun(input);
   return ok(res, out, 201);

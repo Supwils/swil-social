@@ -49,17 +49,22 @@ export function Sidebar() {
       await authApi.logout();
     } finally {
       clear();
+      qc.clear();
       toast.success(t('nav.signOut'));
       nav('/login');
     }
   };
 
-  const linkClass = ({ isActive }: { isActive: boolean }) =>
-    clsx(s.link, isActive && s.linkActive);
+  const linkClass = ({ isActive }: { isActive: boolean }) => clsx(s.link, isActive && s.linkActive);
 
   return (
     <aside className={s.sidebar} aria-label="Primary navigation">
-      <button type="button" className={s.brand} onClick={handleBrandClick} aria-label="Refresh page">
+      <button
+        type="button"
+        className={s.brand}
+        onClick={handleBrandClick}
+        aria-label="Refresh page"
+      >
         <span className={s.brandDot} aria-hidden />
         <span>swil</span>
       </button>

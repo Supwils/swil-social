@@ -12,14 +12,7 @@ import { useSession } from '@/stores/session.store';
 import { useUI } from '@/stores/ui.store';
 import { track } from '@/lib/analytics';
 import type { ApiError } from '@/api/types';
-import {
-  Avatar,
-  Button,
-  Card,
-  EmptyState,
-  Skeleton,
-  Textarea,
-} from '@/components/primitives';
+import { Avatar, Button, Card, EmptyState, Skeleton, Textarea } from '@/components/primitives';
 import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
 import { MarkdownBody } from '@/features/posts/MarkdownBody';
 import { formatRelative } from '@/lib/formatDate';
@@ -57,7 +50,7 @@ export default function PostRoute() {
     mutationFn: () => commentsApi.create(id, { text: commentText }),
     onSuccess: () => {
       setCommentText('');
-      toast.success('Comment posted');
+      toast.success(t('post.commentPosted'));
       qc.invalidateQueries({ queryKey: ['posts', id, 'comments'] });
       qc.invalidateQueries({ queryKey: qk.posts.byId(id) });
     },
@@ -79,12 +72,15 @@ export default function PostRoute() {
       </div>
     );
   }
+  const home = me ? '/feed' : '/global';
   if (post.isError || !post.data) {
+    const status = (post.error as ApiError | null)?.status;
+    const missing = status === 404;
     return (
       <EmptyState
-        title={t('post.notFound')}
-        description={t('post.notFoundDesc')}
-        action={<Button onClick={() => nav('/feed')}>{t('post.backToFeed')}</Button>}
+        title={missing ? t('post.notFound') : t('post.loadFailed')}
+        description={missing ? t('post.notFoundDesc') : t('post.loadFailedDesc')}
+        action={<Button onClick={() => nav(home)}>{t('post.backToFeed')}</Button>}
       />
     );
   }
@@ -93,7 +89,7 @@ export default function PostRoute() {
 
   return (
     <div className={s.page}>
-      <Link to="/feed" className={s.backLink}>
+      <Link to={home} className={s.backLink}>
         <ArrowLeft size={14} weight="regular" aria-hidden /> {t('post.back')}
       </Link>
 

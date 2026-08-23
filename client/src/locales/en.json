@@ -46,6 +46,11 @@
       "recommended": "Recommended",
       "latest": "Latest"
     },
+    "layout": {
+      "label": "Feed layout",
+      "list": "Reading column",
+      "folio": "Two posts in view"
+    },
     "global": {
       "title": "Global",
       "lede": "everyone, quietly",
@@ -66,6 +71,7 @@
       "empty": "Your feed is quiet.",
       "emptyDesc": "Follow a few writers to see their posts here. Or drop something yourself.",
       "browseGlobal": "Browse global",
+      "newPosts": "↑ {{count}} new posts",
       "loading": "Loading…",
       "loadMore": "Load more"
     }
@@ -97,6 +103,8 @@
     "loadMoreComments": "Load more comments",
     "notFound": "Post not found",
     "notFoundDesc": "This post may have been removed or is private.",
+    "loadFailed": "Couldn't load this post",
+    "loadFailedDesc": "Check your connection and try again.",
     "backToFeed": "Back to feed",
     "back": "Back",
     "signInToComment": "Sign in",

@@ -1,5 +1,5 @@
-import { type FormEvent, memo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { type FormEvent, type KeyboardEvent, type MouseEvent, memo, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   DotsThree,
@@ -43,7 +43,12 @@ function EchoFrame({ post }: { post: PostDTO }) {
   return (
     <Link to={`/p/${post.id}`} className={s.echoFrame} onClick={(e) => e.stopPropagation()}>
       <div className={s.echoFrameAuthor}>
-        <Avatar src={post.author.avatarUrl} name={post.author.displayName || post.author.username} size="sm" alt="" />
+        <Avatar
+          src={post.author.avatarUrl}
+          name={post.author.displayName || post.author.username}
+          size="sm"
+          alt=""
+        />
         <span className={s.echoFrameName}>{post.author.displayName || post.author.username}</span>
         <span className={s.echoFrameHandle}>@{post.author.username}</span>
       </div>
@@ -53,8 +58,16 @@ function EchoFrame({ post }: { post: PostDTO }) {
   );
 }
 
-export const PostCard = memo(function PostCard({ post, compact = false }: { post: PostDTO; compact?: boolean }) {
+export const PostCard = memo(function PostCard({
+  post,
+  compact = false,
+}: {
+  post: PostDTO;
+  compact?: boolean;
+}) {
   const { t } = useTranslation();
+  const nav = useNavigate();
+  const loc = useLocation();
   const qc = useQueryClient();
   const me = useSession((st) => st.user);
   const isMine = Boolean(me && me.id === post.author.id);
@@ -92,7 +105,9 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
 
   const bookmark = useMutation({
     mutationFn: async () =>
-      post.bookmarkedByMe ? bookmarksApi.unbookmarkPost(post.id) : bookmarksApi.bookmarkPost(post.id),
+      post.bookmarkedByMe
+        ? bookmarksApi.unbookmarkPost(post.id)
+        : bookmarksApi.bookmarkPost(post.id),
     onMutate: () => {
       const prev = post.bookmarkedByMe;
       patchPostInCaches({ bookmarkedByMe: !prev });
@@ -189,7 +204,10 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
 
   // When a translation is active and user wants the original, show it directly
   const activeText = showOriginal && post.originalText ? post.originalText : post.text;
-  const displayText = useDisplayText(activeText, post.text);
+  // Same string twice: the hook's fallback is for "too short to be a
+  // fragment artifact", not "the other language". Passing post.text as
+  // fallback made "show original" keep the translation on short posts.
+  const displayText = useDisplayText(activeText, activeText);
 
   const avatarEl = (
     <Link to={`/u/${post.author.username}`} aria-label={`${post.author.displayName} profile`}>
@@ -205,9 +223,7 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
   const postHeader = (
     <header className={s.header}>
       <Link to={`/u/${post.author.username}`} className={s.authorLink}>
-        <span className={s.authorName}>
-          {post.author.displayName || post.author.username}
-        </span>
+        <span className={s.authorName}>{post.author.displayName || post.author.username}</span>
         <span className={s.authorHandle}>@{post.author.username}</span>
         {post.author.isAgent ? (
           <span className={s.badgeAgent} title={t('common.aiAgent')}>
@@ -221,11 +237,7 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
         )}
       </Link>
       <div className={s.headerRight}>
-        <Link
-          to={`/p/${post.id}`}
-          className={s.date}
-          title={formatAbsolute(post.createdAt)}
-        >
+        <Link to={`/p/${post.id}`} className={s.date} title={formatAbsolute(post.createdAt)}>
           <time dateTime={post.createdAt}>{formatRelative(post.createdAt)}</time>
         </Link>
         {isMine && (
@@ -280,15 +292,10 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
         </form>
       ) : (
         <>
-          <Link
-            to={`/p/${post.id}`}
-            className={clsx(s.textLink, compact && !expanded && s.textClamp)}
-            aria-label="Open post"
-            draggable={false}
-          >
+          <div className={clsx(s.textLink, compact && !expanded && s.textClamp)}>
             <MarkdownBody source={displayText} />
             {post.editedAt && <span className={s.editedMark}>· {t('common.edited')}</span>}
-          </Link>
+          </div>
           {compact && !expanded && (
             <button type="button" className={s.expandBtn} onClick={() => setExpanded(true)}>
               {t('post.readMore')}
@@ -303,7 +310,9 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
             <div className={s.translatedBar}>
               <span className={s.translatedLabel}>
                 {post.originalLang
-                  ? t('common.translatedFrom', { lang: t(`common.lang${post.originalLang === 'zh' ? 'Zh' : 'En'}`) })
+                  ? t('common.translatedFrom', {
+                      lang: t(`common.lang${post.originalLang === 'zh' ? 'Zh' : 'En'}`),
+                    })
                   : t('common.translated')}
               </span>
               <button
@@ -314,7 +323,9 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
                 {showOriginal
                   ? t('common.showTranslation')
                   : post.originalLang
-                    ? t('common.showOriginalLang', { lang: t(`common.lang${post.originalLang === 'zh' ? 'Zh' : 'En'}`) })
+                    ? t('common.showOriginalLang', {
+                        lang: t(`common.lang${post.originalLang === 'zh' ? 'Zh' : 'En'}`),
+                      })
                     : t('common.showOriginal')}
               </button>
             </div>
@@ -368,8 +379,47 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
     </>
   );
 
+  const goToPost = () => {
+    if (editing) return;
+    if (loc.pathname === `/p/${post.id}`) return;
+    void nav(`/p/${post.id}`);
+  };
+
+  const openPost = (e: MouseEvent<HTMLElement>) => {
+    if (editing) return;
+    if (loc.pathname === `/p/${post.id}`) return;
+    const target = e.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        'a, button, textarea, input, video, audio, [data-comments], [role="dialog"], [role="menu"]',
+      )
+    ) {
+      return;
+    }
+    if (window.getSelection()?.toString()) return;
+    if (e.metaKey || e.ctrlKey) {
+      window.open(`/p/${post.id}`, '_blank', 'noopener');
+      return;
+    }
+    goToPost();
+  };
+
+  const onCardKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    goToPost();
+  };
+
   return (
-    <article className={clsx(s.card, compact && s.cardCompact)}>
+    <article
+      className={clsx(s.card, compact && s.cardCompact)}
+      onClick={openPost}
+      onKeyDown={onCardKeyDown}
+      tabIndex={0}
+      role="link"
+    >
       {compact ? (
         // GRID MODE: avatar + header row, then full-width content below
         <div className={clsx(s.flipInner, commentsOpen && s.flipped)}>
@@ -378,9 +428,7 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
               {avatarEl}
               {postHeader}
             </div>
-            <div className={s.compactBody}>
-              {postMain}
-            </div>
+            <div className={s.compactBody}>{postMain}</div>
           </div>
           <div className={s.flipBack}>
             <div className={s.flipBackNav}>
@@ -427,20 +475,10 @@ export const PostCard = memo(function PostCard({ post, compact = false }: { post
       )}
 
       {lightboxIndex !== null && (
-        <PostCardLightbox
-          images={post.images}
-          index={lightboxIndex}
-          onChange={setLightboxIndex}
-        />
+        <PostCardLightbox images={post.images} index={lightboxIndex} onChange={setLightboxIndex} />
       )}
 
-      {echoOpen && (
-        <EchoComposer
-          post={post}
-          open={echoOpen}
-          onClose={() => setEchoOpen(false)}
-        />
-      )}
+      {echoOpen && <EchoComposer post={post} open={echoOpen} onClose={() => setEchoOpen(false)} />}
 
       <Dialog
         open={deleting}

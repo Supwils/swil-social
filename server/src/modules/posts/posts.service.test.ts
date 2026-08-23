@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import * as s3 from '../../config/s3';
 import { db } from '../../db/client';
-import { users, posts, tags, boards, follows, likes, bookmarks } from '../../db/schema';
+import {
+  users,
+  posts,
+  tags,
+  boards,
+  follows,
+  likes,
+  bookmarks,
+  notifications,
+} from '../../db/schema';
 import { resetDb } from '../../test/db-reset';
 import { newId } from '../../lib/id';
 import { AppError } from '../../lib/errors';
@@ -13,9 +22,11 @@ import {
   deletePost,
   getPostForViewer,
   getShowcasePosts,
+  hydratePosts,
   searchPosts,
   updatePost,
 } from './posts.service';
+import { POST_IMAGE_MAX_BYTES } from './posts.limits';
 
 let seq = 0;
 async function seedUser(over: Partial<typeof users.$inferInsert> = {}): Promise<UserRow> {
@@ -112,6 +123,21 @@ describe('posts.service', () => {
 
     const [row] = await db.select().from(posts).where(eq(posts.id, out.post.id));
     expect(row.video?.url).toBe('https://cdn.example.com/post.mp4');
+  });
+
+  it('rejects an image larger than POST_IMAGE_MAX_BYTES before any upload', async () => {
+    const author = await seedUser();
+    await expect(
+      createPost(
+        author,
+        { text: 'pic', visibility: 'public' },
+        [Buffer.alloc(POST_IMAGE_MAX_BYTES + 1)],
+        null,
+      ),
+    ).rejects.toMatchObject<Partial<AppError>>({
+      code: 'VALIDATION_ERROR',
+      message: 'Image files may not exceed 5 MB',
+    });
   });
 
   it('rejects empty posts', async () => {
@@ -342,6 +368,83 @@ describe('posts.service', () => {
     const { ctx } = await getPostForViewer(echo.id, echoer);
     expect(ctx.echoOf?.id).toBe(original.id);
     expect(ctx.echoOf?.text).toBe('original take');
+  });
+
+  it('refuses to echo a private post the caller cannot see', async () => {
+    const owner = await seedUser();
+    const stranger = await seedUser();
+    const secret = await seedPost(owner.id, { text: 'keep quiet', visibility: 'private' });
+
+    await expect(
+      createPost(
+        stranger,
+        { text: 'look at this', visibility: 'public', echoOf: secret.id },
+        [],
+        null,
+      ),
+    ).rejects.toMatchObject<Partial<AppError>>({ code: 'NOT_FOUND', status: 404 });
+  });
+
+  it('omits echoOf when the viewer cannot see the original', async () => {
+    const owner = await seedUser();
+    const echoer = await seedUser();
+    const stranger = await seedUser();
+    const secret = await seedPost(owner.id, { text: 'keep quiet', visibility: 'private' });
+    const echo = await seedPost(echoer.id, {
+      text: 'commentary',
+      visibility: 'public',
+      echoOf: secret.id,
+    });
+
+    const { ctx: asStranger } = await getPostForViewer(echo.id, stranger);
+    expect(asStranger.echoOf).toBeUndefined();
+
+    const { ctx: asOwner } = await getPostForViewer(echo.id, owner);
+    expect(asOwner.echoOf?.text).toBe('keep quiet');
+  });
+
+  it('does not notify a mention on a private post the recipient cannot see', async () => {
+    const author = await seedUser();
+    const mentioned = await seedUser({ username: 'mona', usernameDisplay: 'mona' });
+
+    await createPost(author, { text: 'secret @mona', visibility: 'private' }, [], null);
+
+    const rows = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.recipientId, mentioned.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('notifies a mention on a public post', async () => {
+    const author = await seedUser();
+    const mentioned = await seedUser({ username: 'ada', usernameDisplay: 'ada' });
+
+    await createPost(author, { text: 'hello @ada', visibility: 'public' }, [], null);
+
+    const rows = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.recipientId, mentioned.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].type).toBe('mention');
+  });
+
+  it('hydratePosts withholds a private original from a stranger on the feed', async () => {
+    const owner = await seedUser();
+    const echoer = await seedUser();
+    const stranger = await seedUser();
+    const secret = await seedPost(owner.id, { text: 'keep quiet', visibility: 'private' });
+    const echo = await seedPost(echoer.id, {
+      text: 'commentary',
+      visibility: 'public',
+      echoOf: secret.id,
+    });
+
+    const asStranger = await hydratePosts([echo], stranger);
+    expect(asStranger.get(echo.id)?.echoOf).toBeUndefined();
+    const asOwner = await hydratePosts([echo], owner);
+    expect(asOwner.get(echo.id)?.echoOf?.text).toBe('keep quiet');
   });
 
   // ── getShowcasePosts ──────────────────────────────────────────────────────

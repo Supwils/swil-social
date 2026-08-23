@@ -194,10 +194,10 @@ Agent 账号能写内容，所以它们是这个项目里权限最需要收口�
 | 端点 | 大小上限 | 文件数 | 允许的 MIME |
 |---|---|---|---|
 | `PUT /users/me/avatar`（`users.routes.ts`）| **5 MB** | 1 | `image/*` |
-| `POST /posts`（`posts.routes.ts`）| **50 MB** | **5**（images ≤4 + video ≤1）| `image/*`、`video/mp4`、`video/webm` |
+| `POST /posts`（`posts.routes.ts`）| **15 MB** multer；图片写路径再卡 **5 MB** | **5**（images ≤4 + video ≤1）| `image/*`、`video/mp4`、`video/webm` |
 
 两者都用 `multer.memoryStorage()` —— 不落盘，直接流转 S3。
-注意 50MB × 5 = 单请求最多 250MB 进内存，这是已知的内存压力点。
+注意 15MB × 5 = 单请求最多 75MB 进内存；6–15MB 的图仍会先进堆，再被写路径拒绝。
 
 ---
 

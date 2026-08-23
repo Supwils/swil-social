@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import * as feedApi from '@/api/feed.api';
 import * as tagsApi from '@/api/tags.api';
 import { qk } from '@/api/queryKeys';
-import { EmptyState, PostCardSkeleton } from '@/components/primitives';
-import { VirtualPostList } from '@/features/posts/VirtualPostList';
+import { EmptyState } from '@/components/primitives';
+import { FeedLayoutToggle } from '@/features/posts/FeedLayoutToggle';
+import { FeedSkeletons, FeedStream } from '@/features/posts/FeedStream';
 import { useUI } from '@/stores/ui.store';
 import s from './feedTag.module.css';
 
@@ -16,7 +17,8 @@ export default function FeedTagRoute() {
 
   const feedQ = useInfiniteQuery({
     queryKey: qk.feed.byTag(slug, language),
-    queryFn: ({ pageParam }) => feedApi.byTag(slug, { cursor: pageParam, limit: 20, lang: language }),
+    queryFn: ({ pageParam }) =>
+      feedApi.byTag(slug, { cursor: pageParam, limit: 20, lang: language }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     enabled: Boolean(slug),
@@ -34,13 +36,21 @@ export default function FeedTagRoute() {
   const hasMeta = Boolean(tag?.description || tag?.coverImage);
   const isArchived = tag?.status === 'archived';
 
+  const title = <h1>#{tag?.display ?? slug}</h1>;
+  const toggle = <FeedLayoutToggle />;
+
   return (
     <div className={s.page}>
       {hasMeta ? (
         <header className={s.richHeader}>
-          {tag?.coverImage && <div className={s.cover} style={{ backgroundImage: `url(${tag.coverImage})` }} />}
+          {tag?.coverImage && (
+            <div className={s.cover} style={{ backgroundImage: `url(${tag.coverImage})` }} />
+          )}
           <div className={s.headerBody}>
-            <h1>#{tag?.display ?? slug}</h1>
+            <div className={s.headerRow}>
+              {title}
+              {toggle}
+            </div>
             {tag?.description && <p className={s.description}>{tag.description}</p>}
             {tag?.postCount != null && (
               <span className={s.postCount}>
@@ -52,16 +62,12 @@ export default function FeedTagRoute() {
         </header>
       ) : (
         <header className={s.simpleHeader}>
-          <h1>#{tag?.display ?? slug}</h1>
+          {title}
+          {toggle}
         </header>
       )}
 
-      {feedQ.isLoading && (
-        <>
-          <PostCardSkeleton />
-          <PostCardSkeleton />
-        </>
-      )}
+      {feedQ.isLoading && <FeedSkeletons />}
 
       {feedQ.isError && (
         <EmptyState
@@ -71,18 +77,17 @@ export default function FeedTagRoute() {
       )}
 
       {feedQ.isSuccess && items.length === 0 && (
-        <EmptyState
-          title="Quiet here."
-          description={`No recent posts on #${slug}.`}
-        />
+        <EmptyState title="Quiet here." description={`No recent posts on #${slug}.`} />
       )}
 
       {feedQ.isSuccess && items.length > 0 && (
-        <VirtualPostList
+        <FeedStream
           items={items}
           hasNextPage={feedQ.hasNextPage}
           isFetchingNextPage={feedQ.isFetchingNextPage}
-          onLoadMore={() => feedQ.fetchNextPage()}
+          onLoadMore={() => {
+            void feedQ.fetchNextPage();
+          }}
         />
       )}
     </div>

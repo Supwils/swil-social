@@ -12,9 +12,11 @@ import {
   type UserRow,
   type TagRow,
 } from '../../lib/dto';
+import { notReservedBoardClause } from '../boards/boards.service';
 import type { SearchPostsQuery } from './posts.schemas';
 import { hydratePosts } from './posts.hydrate';
 import { assertVisibility } from './posts.write';
+import { canViewPost, followingSet } from './posts.visibility';
 
 /** Escape LIKE/ILIKE wildcards so user input can't inject `%` / `_` patterns. */
 function escapeLike(s: string): string {
@@ -59,18 +61,22 @@ export async function getPostForViewer(
   if (post.echoOf) {
     const [origPost] = await db.select().from(posts).where(eq(posts.id, post.echoOf)).limit(1);
     if (origPost) {
-      const [origAuthor] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, origPost.authorId))
-        .limit(1);
-      if (origAuthor) {
-        echoOfDto = toPostDTO(origPost, {
-          author: origAuthor,
-          tags: [],
-          mentions: [],
-          likedByMe: false,
-        });
+      const followAuthors = origPost.visibility === 'followers' ? [origPost.authorId] : [];
+      const following = await followingSet(viewer, followAuthors);
+      if (canViewPost(origPost, viewer, following)) {
+        const [origAuthor] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, origPost.authorId))
+          .limit(1);
+        if (origAuthor) {
+          echoOfDto = toPostDTO(origPost, {
+            author: origAuthor,
+            tags: [],
+            mentions: [],
+            likedByMe: false,
+          });
+        }
       }
     }
   }
@@ -186,6 +192,7 @@ export async function searchPosts(
     q ? ilike(posts.text, `%${escapeLike(q)}%`) : undefined,
     visibilityClause,
     cursorClause,
+    await notReservedBoardClause(),
   );
 
   const rawPosts = await db
